@@ -23,6 +23,7 @@
 launch/bottle_detect.launch.py，它會自己開一個在 8081）。
 不開 cv2 視窗 —— 機器人上通常沒有桌面，開了只會 crash。
 """
+import ast
 import json
 import os
 import socket
@@ -57,13 +58,13 @@ RESULT_TOPIC               = '/med_detect/bottles'
 #--- 模型 ---#
 #TensorRT engine。檔案還沒放進來，放好之後路徑要對得上；
 #也可以不改程式，用 ros2 run ... --ros-args -p engine_path:=/abs/path/best.engine 覆蓋。
-ENGINE_PATH                = os.path.join(BASE_DIR, 'Parameter', 'best.onnx')
-#模型匯出時綁定的輸入邊長。None = 開機時自動問模型（建議，見 resolve_imgsz()）。
-#⚠ 不要憑印象填這個數字。現在這顆 best.onnx 是 dynamic=False 匯出的，輸入被焊死成
-#  [1, 3, 960, 960]，填別的值 onnxruntime 會**每一幀**擋下來:
-#      INVALID_ARGUMENT: Invalid dimensions for input: images ... Got: 640 Expected: 960
-#  而且開機的暖機那一次不會出事（理由見 resolve_imgsz()），會變成「啟動看起來正常、
-#  一收到影像就整片紅」。要換邊長請重新匯出模型，不是改這裡。
+ENGINE_PATH                = os.path.join(BASE_DIR, 'Parameter', 'best.engine')
+#模型匯出時綁定的輸入邊長。None = 開機時自動從模型檔讀（建議，見 load_model_metadata()）。
+#⚠ 不要憑印象填這個數字。現在這顆模型是 dynamic=False 匯出的，輸入被焊死成
+#  [1, 3, 960, 960]，填別的值會被擋下來，而且兩種格式的死法還不一樣:
+#      .onnx   每一幀丟 INVALID_ARGUMENT: Invalid dimensions for input: images
+#      .engine 開機暖機就 AssertionError: input size ... not equal to max model size
+#  要換邊長請重新匯出模型，不是改這裡。
 IMGSZ                      = None
 #連模型都問不出來時的退路，也是 ultralytics 的預設值
 DEFAULT_IMGSZ              = 640
@@ -116,6 +117,13 @@ DISPLAY_MAX_FPS            = 30.0
 BOTTLE_COLORS              = ((0, 255, 0), (0, 200, 255), (255, 160, 0), (255, 0, 255))
 #左上角狀態列佔掉的高度(像素)。標籤會避開這一條，不跟它疊在一起。
 STATUS_ROW_PX              = 34
+#角點標記：框四個角上的圓點 + 座標編號(x1/x2/...)，畫在框的**內側**。
+#要核對編號規則時打開，平常關著畫面比較乾淨。
+DRAW_CORNERS               = False
+#框上方那行 bottle1 0.93（名稱 + 信心值）。關掉就只剩下框本身。
+#不印類別名稱:模型只有一個類別，每個框都寫一次 pill-bottle 只是佔位置。
+#類別名稱仍然照常印在終端機、也照常發在 RESULT_TOPIC 的 label 欄位。
+DRAW_LABEL                 = True
 
 #角點的順序，跟輸出的 x1..x4 一一對應
 CORNER_ORDER               = ('左上', '右上', '左下', '右下')
@@ -153,6 +161,109 @@ def map_to_strategy(x, y, src_w, src_h, zoom):
     return u, v
 
 
+def _literal(value):
+    """metadata 的值在 .onnx 裡是字串、在 .engine 裡是真的型別，統一轉回型別。"""
+    if not isinstance(value, str):
+        return value
+    try:
+        return ast.literal_eval(value)
+    except Exception:
+        return value
+
+
+def normalize_imgsz(raw):
+    """把各種寫法的 imgsz 收斂成 int（正方形）或 [高, 寬]。讀不出來回 None。"""
+    raw = _literal(raw)
+    if isinstance(raw, (list, tuple)) and len(raw) == 2:
+        try:
+            h, w = int(raw[0]), int(raw[1])
+        except (TypeError, ValueError):
+            return None
+        #動態維度在 onnx 裡是 0、在 engine 裡是 -1，兩種都不是真的尺寸
+        if h > 0 and w > 0:
+            return h if h == w else [h, w]
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+        return raw
+    return None
+
+
+def load_model_metadata(path):
+    """在**載入模型之前**先讀出模型檔自己帶的 metadata。
+
+    為什麼要提早讀：ultralytics 的暖機會拿 args.imgsz 去配輸入緩衝區，對不上時
+    是直接掛在暖機那一步，連第一張影像都收不到:
+        AssertionError: input size torch.Size([1, 3, 640, 640])
+                        not equal to max model size (1, 3, 960, 960)
+    模型自己知道答案，只是 ultralytics 不一定讀得到（見下面第 3 點）。
+
+    三個來源，由可靠到勉強:
+      1. .engine 開頭的 ultralytics metadata。格式是「4 bytes 長度(小端) + JSON +
+         engine 本體」，只有 `yolo export ... format=engine` 產的才有。
+      2. .onnx 的 graph 輸入維度。這是 onnxruntime 真正會拿去檢查的東西，
+         比 metadata 裡的 imgsz 字串可靠（後者只是匯出時抄進去的）。
+      3. .engine 旁邊同名的 .onnx。trtexec / TensorRT API 直接從 onnx 編出來的
+         engine **沒有**第 1 點那段 metadata（開頭是 TensorRT 自己的 'ftrt'），
+         但它就是拿旁邊那個 onnx 編的，輸入尺寸與類別名稱一定一樣。
+         沒有這一步，trtexec 轉出來的 engine 就只能靠手動填 IMGSZ。
+
+    Returns:
+        tuple: (meta, source)。meta 是 dict（可能含 'imgsz' / 'names'），
+            source 是一句話，寫進 log 讓人知道數字是哪來的。讀不到回 ({}, '')。
+    """
+    if path.lower().endswith('.engine'):
+        meta = _meta_from_engine_header(path)
+        if meta:
+            return meta, 'engine 內建 metadata'
+        sibling = path[:-len('.engine')] + '.onnx'
+        if os.path.exists(sibling):
+            meta = _meta_from_onnx(sibling)
+            if meta:
+                return meta, f'{os.path.basename(sibling)}（engine 是拿它編的）'
+        return {}, ''
+
+    if path.lower().endswith('.onnx'):
+        meta = _meta_from_onnx(path)
+        if meta:
+            return meta, 'onnx 檔'
+    return {}, ''
+
+
+def _meta_from_engine_header(path):
+    """讀 .engine 開頭的 ultralytics metadata；trtexec 產的沒有，回 None。"""
+    try:
+        with open(path, 'rb') as f:
+            #長度不合理就代表這不是 ultralytics 的檔頭，別拿 8 MB 去 decode
+            n = int.from_bytes(f.read(4), byteorder='little')
+            if not (0 < n < 65536):
+                return None
+            return json.loads(f.read(n).decode('utf-8'))
+    except Exception:
+        return None
+
+
+def _meta_from_onnx(path):
+    """讀 .onnx 的 metadata_props，並用 graph 的輸入維度覆蓋 imgsz。"""
+    try:
+        import onnx
+    except ImportError:
+        return None
+    try:
+        model = onnx.load(path, load_external_data=False)
+    except Exception:
+        return None
+
+    meta = {p.key: p.value for p in model.metadata_props}
+    try:
+        dims = [d.dim_value for d in model.graph.input[0].type.tensor_type.shape.dim]
+        #dim_value 是 0 表示那一維是動態的，動態就不必也不該鎖尺寸
+        if len(dims) == 4 and dims[2] > 0 and dims[3] > 0:
+            meta['imgsz'] = [dims[2], dims[3]]
+    except Exception:
+        pass
+    return meta
+
+
 def local_ip():
     """找一張對外網卡的 IP，純粹為了在 log 裡印出可以直接點的網址。
 
@@ -181,16 +292,26 @@ class BottleDetect(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE)
 
-        #空字串當作「沒有指定」，落回上面的常數。launch 檔把參數一律傳進來時
-        #用得到 —— 沒有這一段，帶了空的 engine_path 會變成去開一個叫 '' 的檔案。
+        #空字串當作「沒有指定」，落回上面的常數 —— 沒有這一段，
+        #帶了空的 -p engine_path:= 會變成去開一個叫 '' 的檔案。
         self.declare_parameter('engine_path', ENGINE_PATH)
         self.declare_parameter('image_topic', IMAGE_TOPIC)
         engine_path = str(self.get_parameter('engine_path').value).strip() or ENGINE_PATH
         image_topic = str(self.get_parameter('image_topic').value).strip() or IMAGE_TOPIC
 
+        #先問檔案、再載模型 —— 暖機就要用到輸入邊長，來不及等模型載完才問
+        meta, meta_src = load_model_metadata(engine_path)
+        self.imgsz = IMGSZ or normalize_imgsz(meta.get('imgsz'))
+        self.imgsz_src = 'IMGSZ 指定' if IMGSZ else meta_src
+
         self.model = self.load_engine(engine_path)
-        self.imgsz = self.resolve_imgsz(self.model)
-        self.names = getattr(self.model, 'names', {}) or {}
+        if not self.imgsz:
+            #檔案問不出來，退回問載好的 backend（.pt 與 yolo export 的檔走這條）
+            self.imgsz = self.backend_imgsz(self.model)
+
+        #類別名稱優先用模型檔裡的:trtexec 產的 engine 沒有這一段，ultralytics 會
+        #自己填 class0/class1…，畫面上就看不出框到的是什麼東西了。
+        self.names = _literal(meta.get('names')) or getattr(self.model, 'names', {}) or {}
 
         self._bridge = CvBridge()
         self.zoom = 1.0
@@ -232,8 +353,8 @@ class BottleDetect(Node):
             self.qos_fast, callback_group=self.image_cbg)
 
         self.get_logger().info(f"engine: {engine_path}")
-        self.get_logger().info(f"輸入邊長: {self.imgsz}"
-                               f"{'（模型自己說的）' if not IMGSZ else '（IMGSZ 指定）'}")
+        self.get_logger().info(f"輸入邊長: {self.imgsz}（來源: {self.imgsz_src}）")
+        self.get_logger().info(f"類別: {self.names or '（模型沒帶，畫面上會顯示編號）'}")
         self.get_logger().info(f"影像來源: {image_topic}")
         self.get_logger().info(f"輸出: {RESULT_TOPIC}（座標系 {IMAGE_W}x{IMAGE_H}）")
         if self.view_pub is not None:
@@ -268,45 +389,43 @@ class BottleDetect(Node):
         model = YOLO(engine_path, task='detect')
         dummy = np.zeros((IMAGE_H, IMAGE_W, 3), dtype=np.uint8)
         t0 = time.time()
-        #暖機這一次故意不傳 imgsz：backend 是第一次推論才真正建起來的，
-        #ultralytics 會在那時把匯出時綁定的邊長蓋回 args.imgsz，等於讓模型自己說。
-        model(dummy, conf=CONF_THRES, iou=IOU_THRES, verbose=False)
+        #已經從檔案問出邊長就直接指定；問不出來才不傳，讓 ultralytics 用它自己
+        #從 metadata 讀到的值（.pt 與 yolo export 產的檔都讀得到）。
+        kwargs = {'conf': CONF_THRES, 'iou': IOU_THRES, 'verbose': False}
+        if self.imgsz:
+            kwargs['imgsz'] = self.imgsz
+        model(dummy, **kwargs)
         self.get_logger().info(f"engine 暖機完成，耗時 {time.time() - t0:.2f} s")
         return model
 
-    def resolve_imgsz(self, model):
-        """問模型它自己要的輸入邊長，之後每次推論都用這個值。
+    def backend_imgsz(self, model):
+        """模型載進來之後，回頭問 backend 它要的輸入邊長。
 
-        IMGSZ 有填就聽它的，沒填就以模型匯出時寫進 metadata 的值為準。
+        這是 load_model_metadata() 問不出來時的退路。模型載好之後 ultralytics 會把
+        自己讀到的 metadata 掛在 backend 上，這裡就是去拿那一份。
 
-        為什麼要繞這一圈，而不是寫死一個數字:
-            ultralytics 只有在**建 backend 的那一次**（也就是第一次推論）才會把
-            metadata 的 imgsz 蓋回 args.imgsz。之後每次呼叫若又自己傳 imgsz=，
-            就等於把它改回來。模型是 dynamic=False 匯出的話，這會變成
-            「暖機過得去、每一幀都失敗」——
+        為什麼拿到之後每次推論都要明確傳進去、而不是靠 ultralytics 自己記得:
+            它只有在**建 backend 的那一次**（第一次推論）才會把 metadata 的 imgsz
+            蓋回 args.imgsz。之後每次呼叫若自己傳了別的 imgsz=，就等於把它改回來，
+            於是變成「暖機過得去、每一幀都失敗」——
                 [infer] failed: ... Got: 640 Expected: 960
             錯誤訊息指著模型，實際上壞的是呼叫端的參數，是最難查的那一種。
 
         Returns:
             int | list: 邊長。問不出來時回 DEFAULT_IMGSZ。
         """
-        if IMGSZ:
-            return IMGSZ
-
         predictor = getattr(model, 'predictor', None)
         #backend 的 imgsz 直接來自 metadata，比 args 可靠（args 會被呼叫端蓋掉）
         for holder in (getattr(predictor, 'model', None), getattr(predictor, 'args', None)):
-            raw = getattr(holder, 'imgsz', None)
-            if isinstance(raw, (list, tuple)) and len(raw) == 2:
-                h, w = int(raw[0]), int(raw[1])
-                return h if h == w else [h, w]
-            if isinstance(raw, int) and raw > 0:
-                return raw
+            size = normalize_imgsz(getattr(holder, 'imgsz', None))
+            if size:
+                self.imgsz_src = 'backend metadata'
+                return size
 
+        self.imgsz_src = f'問不出來，退回預設 {DEFAULT_IMGSZ}'
         self.get_logger().warn(
             f"問不出模型的輸入邊長，退回 {DEFAULT_IMGSZ}。"
-            f"若 log 出現 Invalid dimensions for input，把 IMGSZ 填成錯誤訊息裡的 "
-            f"Expected 值\033[K")
+            f"對不上的話把 IMGSZ 填成錯誤訊息裡的 Expected / max model size\033[K")
         return DEFAULT_IMGSZ
 
     # -------------------- 訂閱回呼 --------------------
@@ -535,9 +654,11 @@ class BottleDetect(Node):
         """把偵測結果畫上去。
 
         畫的東西:
-            外框 + 四個角點   每瓶一個顏色，角點旁標的就是輸出的座標編號 x1/x2/...
-                              —— 編號規則對不對，看畫面就知道，不用去比對 JSON
-            左上角一行字      瓶數、推論張數、變焦倍率，用來確認節點還活著
+            外框            每瓶一個顏色，一定會畫
+            標籤            框上方一行，名稱 + 信心值（DRAW_LABEL）
+            角點標記        圓點 + 座標編號 x1/x2/...，畫在框內側（DRAW_CORNERS）
+                            —— 編號規則對不對看畫面就知道，不用去比對 JSON
+            左上角一行字    瓶數、推論張數、變焦倍率，用來確認節點還活著
 
         Args:
             frame (np.ndarray): 底圖，可能已經縮小過。
@@ -556,22 +677,26 @@ class BottleDetect(Node):
             color = BOTTLE_COLORS[i % len(BOTTLE_COLORS)]
             xmin, ymin, xmax, ymax = b['bbox']
             cv2.rectangle(view, (s(xmin), s(ymin)), (s(xmax), s(ymax)), color, 2)
-            #標籤預設寫在框的上緣外側；太靠近畫面頂端會跟左上角的狀態列疊在一起
-            #（縮圖後更明顯，框上移了字沒有跟著縮），這時改寫到框內。
-            label_y = s(ymin) - 8
-            if label_y < STATUS_ROW_PX:
-                #挪進框內時要再往下一行，不然會疊在角點編號 x1/x2 上
-                label_y = s(ymin) + 32
-            self.put_text(view, f"{b['name']} {b['label']} {b['confidence']:.2f}",
-                          (s(xmin), label_y), color)
 
-            n = b['index']
-            for k, (x, y) in enumerate(b['corners']):
-                cv2.circle(view, (s(x), s(y)), 4, color, -1)
-                #編號往框的內側標，貼著畫面邊緣時才不會被夾字夾到疊在框上
-                dx = 7 if k in (0, 2) else -32
-                dy = 16 if k in (0, 1) else -7
-                self.put_text(view, f"x{n + k}", (s(x) + dx, s(y) + dy), color, scale=0.4)
+            if DRAW_LABEL:
+                #標籤寫在框的上緣外側。太靠近畫面頂端時上面沒位置（會疊到左上角
+                #的狀態列），改寫到**下緣外側** —— 框內一律保持乾淨，擋住的畫面
+                #比字本身還難補回來。
+                label_y = s(ymin) - 8
+                if label_y < STATUS_ROW_PX:
+                    label_y = s(ymax) + 16
+                self.put_text(view, f"{b['name']} {b['confidence']:.2f}",
+                              (s(xmin), label_y), color)
+
+            if DRAW_CORNERS:
+                n = b['index']
+                for k, (x, y) in enumerate(b['corners']):
+                    cv2.circle(view, (s(x), s(y)), 4, color, -1)
+                    #編號往框的內側標，貼著畫面邊緣時才不會被夾字夾到疊在框上
+                    dx = 7 if k in (0, 2) else -32
+                    dy = 16 if k in (0, 1) else -7
+                    self.put_text(view, f"x{n + k}", (s(x) + dx, s(y) + dy),
+                                  color, scale=0.4)
 
         head = f"bottles {len(bottles)}  infer {self._infer_fps:.1f} fps"
         if self.zoom and abs(self.zoom - 1.0) > 1e-3:
