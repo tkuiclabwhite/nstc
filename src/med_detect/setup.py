@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'med_detect = med_detect.med_detect:main',
+            'bottle_detect = med_detect.bottle_detect:main',
         ],
     },
 )

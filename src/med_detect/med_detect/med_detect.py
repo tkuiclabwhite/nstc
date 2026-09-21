@@ -35,7 +35,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 #--- Topic ---#
 #YOLO 偵測結果（暫定格式，等對方確定再改）
-YOLO_TOPIC                 = '/yolo_detections'
+YOLO_TOPIC                 = '/med_detect/bottles'
 #深度圖，公釐 uint16，由 imageprocess/depth_process_node 發布
 DEPTH_TOPIC                = '/depth_mm'
 #數位變焦倍率，image.py 也吃同一個 topic
@@ -87,9 +87,37 @@ ZOOM                       = 1.0
 LETTERBOX_TOP              = 30
 LETTERBOX_BOTTOM           = 30
 
+#--- bbox 放寬 ---#
+#反投影前先把 bbox 往外放寬這個比例（各邊）。
+#這是本作法與「像素尺寸 x 距離 / 焦距」最大的差別：那條公式**直接量 bbox**，
+#bbox 少一點尺寸就少一點；這裡 bbox 只決定「去哪裡找」，真正決定尺寸的是
+#深度分群出來的點雲。所以 bbox 寧可大也不要小 ——
+#  太小 -> 物體被切掉，點雲跟著少，尺寸一定偏小（色模侵蝕/光照就是這種）
+#  太大 -> 多進來的是背景，會被 segment_nearest_cluster() 切掉，沒有影響
+#0.40 表示各邊往外推 40% 的 bbox 寬/高。這個值是掃出來的：
+#  0.25 -> 救得回每邊被吃掉 18 px (4.1 cm) 的 bbox，30 px 就救不回來
+#  0.40 -> 30 px (6.8 cm) 也救得回來，且鄰居相距 2 cm 時仍能分開
+#  0.60 -> 開始把 2 cm 外的鄰居吃進來（量成 19.6 cm）
+BBOX_EXPAND_FRAC           = 0.40
+
 #--- 點雲 ---#
 #深度超出這個範圍(公分)的像素直接丟掉，擋掉 ZED 的飛點與量不到的區域
 DEPTH_RANGE_CM             = (10.0, 300.0)
+#放寬 bbox 之後可能把旁邊的東西也框進來。深度分群只看深度，分不出「同樣距離
+#但左右分開的兩個物體」，所以再加一道二維連通域，只留包含 bbox 中心的那一塊。
+KEEP_CENTER_COMPONENT      = True
+#連通域之前先把遮罩膨脹這麼多像素，把深度圖的破洞接起來。
+#ZED 對反光/深色/細長的物體會有成片的破洞，不接起來的話同一個物體會被切成
+#好幾塊，只留中心那塊就等於把物體砍掉一半 —— 那是最糟的失效方式（安靜地量小）。
+COMPONENT_BRIDGE_PX        = 4
+#連通域若砍掉超過這個比例的點，視為「物體被破洞切碎」而不是「旁邊有別的東西」，
+#此時放棄這一步、保留全部的點。寧可偶爾把鄰居算進來（尺寸偏大、看得出來），
+#也不要安靜地把物體砍掉一半（尺寸偏小、看不出來）。
+COMPONENT_MAX_DROP_FRAC    = 0.35
+#深度的系統性偏移(公分)，會直接等比例放大縮小量出來的尺寸。
+#ZED 的深度基準是**左目光心**，不是機殼前緣，拿捲尺從機殼量會多算一段。
+#校正方法見檔案最下方第 6(d) 點。正值表示「量到的深度要加上這個數」。
+DEPTH_OFFSET_CM            = 0.0
 #前景分群：直方圖的格寬(公分)
 CLUSTER_BIN_CM             = 1.0
 #兩團之間空超過這麼多公分才算斷開，用來把物體跟後面的牆分開
@@ -124,7 +152,7 @@ MATCH_TOLERANCE_CM         = 1.5
 #'color' 色模（YOLO 還沒好時用這個測，抓真實物體）
 #'yolo'  等 YOLO 節點接上後改成這個
 #'sim'   餵固定的假 bbox
-BBOX_SOURCE                = 'color'
+BBOX_SOURCE                = 'yolo'
 #來源是 color / sim 時的取樣週期(秒)
 TICK_PERIOD                = 0.5
 
@@ -135,8 +163,8 @@ TARGET_COLOR               = 'Red'
 MIN_COLOR_AREA             = 300
 
 #--- 模擬來源 ---#
-SIMULATE_BBOX              = [400, 250, 160, 100]      #[x, y, w, h]
-SIMULATE_LABEL             = 'sim_object'
+SIMULATE_BBOX              = [400, 250, 560, 350]      #[xmin, ymin, xmax, ymax]
+SIMULATE_LABEL             = 'sim_bottle'
 
 
 #IMU 是 REP-103 body frame（X 前、Y 左、Z 上，ZedImu.msg 註明靜止水平時 az 約 9.81），
@@ -183,35 +211,40 @@ def backproject(depth_mm, bbox, fx, fy, cx, cy):
         bbox (tuple): (xmin, ymin, xmax, ymax)，已夾回畫面內。
 
     Returns:
-        np.ndarray: (N, 3) 的點，單位公分。沒有有效像素時是 (0, 3)。
+        tuple: (points, uv)。points 是 (N, 3) 的點，單位公分；
+            uv 是 (N, 2) 的整數像素座標，供連通域過濾與回投影診斷使用。
+            沒有有效像素時兩者都是空陣列。
     """
+    empty = (np.empty((0, 3), dtype=np.float32), np.empty((0, 2), dtype=np.int32))
     xmin, ymin, xmax, ymax = bbox
     roi = depth_mm[ymin:ymax, xmin:xmax]
     if roi.size == 0:
-        return np.empty((0, 3), dtype=np.float32)
+        return empty
 
     rows, cols = np.nonzero(roi)                 #0 = 無效，順便當遮罩
     if rows.size == 0:
-        return np.empty((0, 3), dtype=np.float32)
+        return empty
 
     z = roi[rows, cols].astype(np.float32) / 10.0        #公釐 -> 公分
     lo, hi = DEPTH_RANGE_CM
     keep = (z >= lo) & (z <= hi)
     if not np.any(keep):
-        return np.empty((0, 3), dtype=np.float32)
+        return empty
 
-    z = z[keep]
+    z = z[keep] + DEPTH_OFFSET_CM
     u = (cols[keep] + xmin).astype(np.float32)
     v = (rows[keep] + ymin).astype(np.float32)
-    return np.stack([(u - cx) * z / fx,
-                     (v - cy) * z / fy,
-                     z], axis=1)
+    points = np.stack([(u - cx) * z / fx,
+                       (v - cy) * z / fy,
+                       z], axis=1)
+    uv = np.stack([u, v], axis=1).astype(np.int32)
+    return points, uv
 
 
-def segment_nearest_cluster(points,
-                            bin_cm=CLUSTER_BIN_CM,
-                            gap_cm=CLUSTER_GAP_CM,
-                            min_frac=CLUSTER_MIN_FRAC):
+def nearest_cluster_mask(points,
+                         bin_cm=CLUSTER_BIN_CM,
+                         gap_cm=CLUSTER_GAP_CM,
+                         min_frac=CLUSTER_MIN_FRAC):
     """在深度直方圖上找最近的一團，把背景切掉。
 
     比 IQR 可靠：IQR 只砍尾巴，砍不掉雙峰。bbox 裡若一半是物體一半是後面的牆，
@@ -221,25 +254,27 @@ def segment_nearest_cluster(points,
     只留落在這個區間裡的點。
 
     Returns:
-        np.ndarray: 屬於最近那一團的點，(M, 3)。
+        np.ndarray: (N,) 的布林遮罩，True 表示屬於最近那一團。
+            回傳遮罩而不是點，是為了讓呼叫端能用同一個遮罩去切點雲與像素座標。
     """
+    keep_all = np.ones(points.shape[0], dtype=bool)
     if points.shape[0] == 0:
-        return points
+        return keep_all
 
     z = points[:, 2]
     zmin, zmax = float(z.min()), float(z.max())
     span = zmax - zmin
     if span < bin_cm:
-        return points
+        return keep_all
 
     nbins = int(np.ceil(span / bin_cm))
     hist, edges = np.histogram(z, bins=nbins, range=(zmin, zmin + nbins * bin_cm))
     if hist.max() <= 0:
-        return points
+        return keep_all
 
     occupied = hist >= max(1.0, hist.max() * min_frac)
     if not np.any(occupied):
-        return points
+        return keep_all
 
     gap_bins = max(1, int(round(gap_cm / bin_cm)))
     first = int(np.argmax(occupied))              #第一個有東西的格
@@ -256,7 +291,74 @@ def segment_nearest_cluster(points,
 
     lo = edges[first]
     hi = edges[last + 1]
-    return points[(z >= lo) & (z <= hi)]
+    return (z >= lo) & (z <= hi)
+
+
+def expand_bbox(bbox, frac, shape):
+    """把 bbox 往外放寬 frac 比例，並夾回畫面內。
+
+    bbox 在本作法裡只負責「去哪裡找」，不負責「量多大」，所以寧可大不要小。
+    """
+    xmin, ymin, xmax, ymax = bbox
+    dx = int(round((xmax - xmin) * frac))
+    dy = int(round((ymax - ymin) * frac))
+    h, w = shape[:2]
+    return (max(0, xmin - dx), max(0, ymin - dy),
+            min(w, xmax + dx), min(h, ymax + dy))
+
+
+def keep_center_component(uv, mask, seed, shape):
+    """只留下包含 seed 像素的那一塊連通域。
+
+    深度分群只看深度，分不出「距離相近但左右分開的兩個物體」。bbox 放寬之後
+    旁邊的東西可能一起進來，用二維連通域把它們分開，取原本 bbox 中心所在的那塊。
+
+    Args:
+        uv (np.ndarray): (N, 2) 像素座標。
+        mask (np.ndarray): (N,) 布林，目前留下來的點。
+        seed (tuple): (x, y)，原始 bbox 的中心。
+
+    Returns:
+        np.ndarray: (N,) 布林，只留中心那一塊。分不出來、或這一步砍掉太多點時
+            原樣回傳（見 COMPONENT_MAX_DROP_FRAC）。
+    """
+    n_in = int(np.count_nonzero(mask))
+    if n_in == 0:
+        return mask
+    h, w = shape[:2]
+    img = np.zeros((h, w), np.uint8)
+    sel = uv[mask]
+    img[sel[:, 1], sel[:, 0]] = 255
+
+    #先膨脹把破洞接起來再標記。標記只用來分群，取標籤時仍用原本的像素位置，
+    #所以膨脹不會讓點雲變大，只會讓「本來就該相連的東西」連起來。
+    if COMPONENT_BRIDGE_PX > 0:
+        k = 2 * COMPONENT_BRIDGE_PX + 1
+        img = cv2.dilate(img, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
+    num, labels = cv2.connectedComponents(img, connectivity=8)
+    if num <= 2:                                  #只有背景 + 一塊，不必分
+        return mask
+
+    point_labels = labels[sel[:, 1], sel[:, 0]]
+    sx, sy = int(seed[0]), int(seed[1])
+    target = int(labels[sy, sx]) if (0 <= sy < h and 0 <= sx < w) else 0
+    if target == 0:
+        #中心剛好落在空白處，改取點數最多的那塊
+        counts = np.bincount(point_labels)
+        counts[0] = 0
+        target = int(np.argmax(counts))
+        if target == 0:
+            return mask
+
+    keep = point_labels == target
+    if int(np.count_nonzero(keep)) < n_in * (1.0 - COMPONENT_MAX_DROP_FRAC):
+        #砍掉太多了，八成是破洞把物體切碎而不是旁邊有東西。放棄這一步。
+        return mask
+
+    out = mask.copy()
+    out[mask] = keep
+    return out
 
 
 def gravity_up_optical(node):
@@ -426,17 +528,34 @@ def estimate_real_size(bbox, depths_cm, node=None):
     fx, fy, cx, cy = effective_intrinsics(getattr(node, 'zoom', ZOOM))
     detail['focal_px'] = round(fx, 1)
 
-    points = backproject(node.depth_mm, bbox, fx, fy, cx, cy)
+    #bbox 往外放寬再找點。bbox 太小會直接吃掉尺寸，太大則由深度分群擋掉。
+    search = expand_bbox(bbox, BBOX_EXPAND_FRAC, node.depth_mm.shape)
+    points, uv = backproject(node.depth_mm, search, fx, fy, cx, cy)
     detail['n_raw_points'] = int(points.shape[0])
     if points.shape[0] < MIN_CLOUD_POINTS:
-        detail['error'] = f'bbox 內有效深度只有 {points.shape[0]} 點'
+        detail['error'] = f'搜尋範圍內有效深度只有 {points.shape[0]} 點'
         return None, None
 
-    points = segment_nearest_cluster(points)
+    mask = nearest_cluster_mask(points)
+    if KEEP_CENTER_COMPONENT:
+        seed = ((bbox[0] + bbox[2]) // 2, (bbox[1] + bbox[3]) // 2)
+        mask = keep_center_component(uv, mask, seed, node.depth_mm.shape)
+
+    points, uv = points[mask], uv[mask]
     detail['n_object_points'] = int(points.shape[0])
     if points.shape[0] < MIN_CLOUD_POINTS:
         detail['error'] = f'前景分群後只剩 {points.shape[0]} 點'
         return None, None
+
+    #診斷：物體的點雲比輸入的 bbox 多出多少。四個值是各邊往外超出的像素數，
+    #正值代表 bbox 把物體切掉了（色模侵蝕、HSV 門檻吃掉暗面時就會這樣），
+    #0 代表 bbox 剛好或偏大。這是分辨「bbox 有問題」與「深度有問題」的關鍵。
+    detail['bbox_overflow_px'] = [
+        int(max(0, bbox[0] - uv[:, 0].min())),       #左
+        int(max(0, bbox[1] - uv[:, 1].min())),       #上
+        int(max(0, uv[:, 0].max() - (bbox[2] - 1))),  #右
+        int(max(0, uv[:, 1].max() - (bbox[3] - 1))),  #下
+    ]
 
     result = measure_cloud(points, up)
     if result is None:
@@ -621,34 +740,54 @@ class MedDetect(API):
             self.get_logger().warn(f"[zoom] bad value: {e}")
 
     def yolo_callback(self, msg: String):
-        """YOLO 偵測結果。
+        """藥罐偵測結果，來自 bottle_detect_node。
 
-        暫定格式（沿用本專案 detections 的慣例，等對方確定再改）::
+        格式::
 
             {"stamp": {"sec": 0, "nanosec": 0},
-             "objects": [{"bbox": [x, y, w, h],
+             "image_size": [960, 600],
+             "count": 2,
+             "bottles": [{"name": "bottle1",
                           "label": "...",
-                          "confidence": 0.93}]}
+                          "confidence": 0.93,
+                          "bbox": [xmin, ymin, xmax, ymax],
+                          "points": {"x1": .., "y1": .., ... "x4": .., "y4": ..}}],
+             "coords": {...}}
 
-        bbox 是 [左上x, 左上y, 寬, 高]，座標系 960x600，與 /depth_mm 對齊。
+        bbox 已經是 [xmin, ymin, xmax, ymax]（不是寬高），座標系 960x600，
+        與 /depth_mm 對齊，上游已經夾回畫面內，可以直接用。
+
+        bottles 已由左到右排序，name 是 bottle1 / bottle2 …，
+        這裡照原順序處理，編號與上游一致。
+        points / coords 只是同一個 bbox 的另一種表示，用不到。
         """
         try:
             data = json.loads(msg.data)
-            objects = data.get('objects', [])
+            bottles = data.get('bottles', [])
         except Exception as e:
             self.get_logger().error(f"[yolo] parse error: {e}")
             return
 
-        for obj in objects:
-            try:
-                x, y, w, h = obj['bbox']
-            except Exception as e:
-                self.get_logger().warn(f"[yolo] malformed object: {e}")
-                continue
-            self.process_object(
-                (int(x), int(y), int(x + w), int(y + h)),
-                obj.get('label', ''))
+        #上游保證與本節點同一個座標系，不同就代表有一邊改過設定
+        size = data.get('image_size')
+        if size and self.depth_mm is not None:
+            h, w = self.depth_mm.shape[:2]
+            if [w, h] != list(size):
+                self.get_logger().warn(
+                    f"[yolo] 座標系不一致: 偵測端 {size} vs 深度圖 [{w}, {h}]\033[K")
 
+        for b in bottles:
+            try:
+                xmin, ymin, xmax, ymax = b['bbox']
+            except Exception as e:
+                self.get_logger().warn(f"[yolo] malformed bottle: {e}")
+                continue
+            #name 帶進來，log 與輸出才對得回上游的 bottle 編號
+            label = b.get('name', '')
+            if b.get('label'):
+                label = f"{label}:{b['label']}" if label else str(b['label'])
+            self.process_object(
+                (int(xmin), int(ymin), int(xmax), int(ymax)), label)
     # -------------------- 主流程 --------------------
     def process_object(self, bbox, label=''):
         """一個物體走完整條流程並發布結果。"""
@@ -693,6 +832,13 @@ class MedDetect(API):
             f"偏轉 {detail['yaw_deg']:.0f} 度、"
             f"{detail['n_object_points']} 點、"
             f"重力來源 {detail['up_source']}）\033[K")
+
+        over = detail.get('bbox_overflow_px')
+        if over and max(over) > 0:
+            self.get_logger().info(
+                f"bbox 把物體切掉了，左/上/右/下各少 {over} px"
+                f"（約 {max(over) * detail['mean_depth_cm'] / detail['focal_px']:.1f} cm）"
+                f"—— 色模門檻或侵蝕吃掉了邊緣，尺寸仍以點雲為準\033[K")
 
         best, err, ok = match_size(width_cm, height_cm, self.size_table)
         if best is None:
@@ -807,7 +953,8 @@ class MedDetect(API):
             for key in ('horizontal_short_cm', 'yaw_deg', 'mean_depth_cm'):
                 if key in detail:
                     out[key] = round(detail[key], 2)
-            for key in ('n_object_points', 'up_source', 'focal_px', 'error'):
+            for key in ('n_object_points', 'up_source', 'focal_px',
+                        'bbox_overflow_px', 'error'):
                 if key in detail:
                     out[key] = detail[key]
         if best is not None:
@@ -856,18 +1003,23 @@ class MedDetect(API):
 
     # -------------------- 模擬來源 --------------------
     def simulate_tick(self):
-        """自己發一筆假的偵測給自己，純粹驗證鏈路。"""
-        x, y, w, h = SIMULATE_BBOX
+        """自己發一筆假的偵測給自己，純粹驗證鏈路。
+
+        格式與 bottle_detect_node 一致，方便直接比對。
+        """
+        xmin, ymin, xmax, ymax = SIMULATE_BBOX
         fake = {
             'stamp': {'sec': 0, 'nanosec': 0},
-            'objects': [{'bbox': [x, y, w, h],
+            'image_size': [960, 600],
+            'count': 1,
+            'bottles': [{'name': 'bottle1',
                          'label': SIMULATE_LABEL,
-                         'confidence': 1.0}],
+                         'confidence': 1.0,
+                         'bbox': [xmin, ymin, xmax, ymax]}],
         }
         msg = String()
         msg.data = json.dumps(fake)
         self.yolo_callback(msg)
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -911,10 +1063,12 @@ if __name__ == '__main__':
 # -----------------------------------------------------------------------------
 # 2. 實際作法
 # -----------------------------------------------------------------------------
-#     backproject()             bbox 內每個有效深度像素 -> 相機座標系的 3D 點
+#     expand_bbox()             先把 bbox 往外放寬（見下面「bbox 只決定去哪裡找」）
+#     backproject()             範圍內每個有效深度像素 -> 相機座標系的 3D 點
 #                                   X = (u - cx) * Z / fx
 #                                   Y = (v - cy) * Z / fy
-#     segment_nearest_cluster() 在深度直方圖上找最近的一團，把背景切掉
+#     nearest_cluster_mask()    在深度直方圖上找最近的一團，把背景切掉
+#     keep_center_component()   二維連通域，把旁邊同距離的別的物體分開
 #     gravity_up_optical()      用 IMU 求「上」在相機座標系裡的方向
 #     gravity_frame()           由「上」建一組重力對齊的正交基底
 #     measure_cloud()           在那個座標系裡直接量：
@@ -946,7 +1100,37 @@ if __name__ == '__main__':
 #     **3D 擬合失效的情況，剛好就是不需要它的情況。**
 #
 # -----------------------------------------------------------------------------
-# 4. 輸入從哪裡來
+# 4. bbox 只決定「去哪裡找」，不決定「量多大」
+# -----------------------------------------------------------------------------
+#     這是本作法與「像素尺寸 x 距離 / 焦距」最重要的差別。那條公式直接量 bbox，
+#     所以 bbox 的品質就是尺寸的品質；這裡 bbox 只圈出搜尋範圍，真正決定尺寸的
+#     是深度分群出來的點雲。因此：
+#         bbox 太小 -> 物體被切掉，點雲跟著少，尺寸一定偏小
+#         bbox 太大 -> 多進來的是背景，會被深度分群切掉，沒有影響
+#     結論是 bbox 寧可大不要小，所以反投影前先用 BBOX_EXPAND_FRAC 往外放寬。
+#
+#     為什麼要在意：色模的 bbox 會偏小，而且是**單邊**偏小。
+#         ERODE:3 (見 strategy 的 opencv.ini) 在 320x240 上每邊吃掉 1 px，
+#         放大到 960x600 是 3 px，距離 50 cm 時等於每邊 0.34 cm、一個維度 0.68 cm。
+#         這一項不大。真正大的是 HSV 門檻：物體背光那一面或有反光的那一面
+#         落在門檻外就整片不見，實測單邊少 4~5 cm（等於 35~44 px @960x600，
+#         也就是 12~15 px @320x240）並不罕見。侵蝕只佔其中約 17%。
+#
+#     合成測試（test_geometry.py 第 6 項）：bbox 每邊被吃掉 30 px（6.8 cm）時
+#         直接量 bbox   -> 誤差 49.5%
+#         本作法        -> 誤差  0.1%
+#
+#     放寬的代價是可能把旁邊的東西圈進來，所以加了 keep_center_component()。
+#     BBOX_EXPAND_FRAC = 0.40 是掃出來的：0.60 以上會開始把 2 cm 外的鄰居吃進來。
+#
+#     ⚠ keep_center_component() 有個陷阱：ZED 對反光/深色物體會有成片破洞，
+#       不先把洞接起來的話同一個物體會被切成好幾塊，只留中心那塊等於安靜地
+#       把物體砍掉一半。所以標記前先膨脹 COMPONENT_BRIDGE_PX，而且這一步若砍掉
+#       超過 COMPONENT_MAX_DROP_FRAC 的點就直接放棄 —— 寧可偶爾把鄰居算進來
+#       （尺寸偏大，看得出來），也不要安靜地量小（看不出來）。
+#
+# -----------------------------------------------------------------------------
+# 5. 輸入從哪裡來
 # -----------------------------------------------------------------------------
 #     bbox          estimate_real_size() 的參數，960x600 座標系
 #     深度圖         node.depth_mm，mono16 公釐，0 代表無效
@@ -958,7 +1142,7 @@ if __name__ == '__main__':
 #     頭部馬達角度   ⚠ 拿不到，API 只有發送端沒有位置回授。用 IMU 取代。
 #
 # -----------------------------------------------------------------------------
-# 5. 上機前必須確認的三件事
+# 6. 上機前必須確認的事
 # -----------------------------------------------------------------------------
 #     這三項都不影響演算法結構，只是參數，但沒確認之前量出來的數字不能信。
 #
@@ -982,8 +1166,18 @@ if __name__ == '__main__':
 #         順便確認補黑邊界：np.count_nonzero(depth_mm[0:30, :]) 應該是 0。
 #         若不是 0，代表深度圖沒有補黑，LETTERBOX_TOP/BOTTOM 要改成 0。
 #
+#     (d) 深度的系統性偏移 DEPTH_OFFSET_CM
+#         尺寸與深度成正比，深度差 5% 尺寸就差 5%，所以這一項要先清掉。
+#         拿一面平牆，在三個已知距離（例如 30 / 50 / 80 cm）各量一次 depth_at：
+#             誤差固定       -> 是基準點不同（ZED 的深度基準是**左目光心**，
+#                               不是機殼前緣，捲尺從機殼量會多算一段）。
+#                               把差值填進 DEPTH_OFFSET_CM 就好。
+#             誤差隨距離放大 -> 是尺度問題，屬於相機標定，改 DEPTH_OFFSET_CM
+#                               沒用，要回頭查 ZED 的標定與 /depth_mm 的產生方式。
+#         兩者混合就分別讀出固定項與比例項。
+#
 # -----------------------------------------------------------------------------
-# 6. 合成驗證結果（test/test_geometry.py，不需要 ROS 也不需要相機）
+# 7. 合成驗證結果（test/test_geometry.py，不需要 ROS 也不需要相機）
 # -----------------------------------------------------------------------------
 #     作法是反過來做一遍：給定真實尺寸與相機姿態 -> 產生合成深度圖（z-buffer
 #     含遮擋）-> 丟回本管線 -> 看能不能量回真值。
@@ -999,10 +1193,10 @@ if __name__ == '__main__':
 #     物體後方 25 cm 有牆：量出 12.07 x 8.04（前景分群有效切掉背景）
 #
 #     ⚠ 這是合成資料。真實的 ZED 深度圖有雜訊、破洞與飛點，實機誤差一定更大。
-#       上機後請照第 5 點校正，並用實物重測一次。
+#       上機後請照第 6 點校正，並用實物重測一次。
 #
 # -----------------------------------------------------------------------------
-# 7. 已知的限制
+# 8. 已知的限制
 # -----------------------------------------------------------------------------
 #     只看得到正面      水平短邊（厚度）在只看得到一個面時量不到，會接近 0。
 #                       對照表比對只用長邊與高度，不受影響。
@@ -1020,7 +1214,7 @@ if __name__ == '__main__':
 #                       本實作忽略。要更準可以把它乘進 R_OPT_FROM_BODY。
 #
 # -----------------------------------------------------------------------------
-# 8. 實測參考數據（2026-09-18，ZED、960x600、zoom=1.0）
+# 9. 實測參考數據（2026-09-18，ZED、960x600、zoom=1.0）
 # -----------------------------------------------------------------------------
 #     10 x 10 cm 圓柱：
 #         bbox (480, 192, 566, 281)  ->  86 x 89 px
