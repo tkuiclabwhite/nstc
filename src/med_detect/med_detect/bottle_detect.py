@@ -69,7 +69,7 @@ IMGSZ                      = None
 #連模型都問不出來時的退路，也是 ultralytics 的預設值
 DEFAULT_IMGSZ              = 640
 #信心值門檻，低於這個值的框直接丟掉
-CONF_THRES                 = 0.50
+CONF_THRES                 = 0.70
 #NMS 的 IoU 門檻
 IOU_THRES                  = 0.45
 #畫面中最多幾瓶藥罐。多於這個數量時只留信心值最高的前幾瓶。
@@ -100,7 +100,7 @@ EDGE_MARGIN_PX             = 2
 #偵測與 RESULT_TOPIC 不受影響。
 PUBLISH_IMAGE              = True
 #畫面的 topic。用瀏覽器看:
-#    http://<機器人IP>:8080/stream?topic=/med_detect/image
+#    http://172.17.121.10:8080/stream?topic=/med_detect/image
 #8080 是 camera.launch.py 帶起來的 web_video_server。只跑這個節點時自己開一個:
 #    ros2 run web_video_server web_video_server
 IMAGE_OUT_TOPIC            = '/med_detect/image'

@@ -9,6 +9,8 @@ setup(
     package_data={
         'med_detect': [
             'Parameter/*.ini',
+            'Parameter/*.engine',
+            'Parameter/*.onnx',
         ],
     },
     include_package_data=True,
@@ -32,6 +34,7 @@ setup(
         'console_scripts': [
             'med_detect = med_detect.med_detect:main',
             'bottle_detect = med_detect.bottle_detect:main',
+            'bottle_detect_v2 = med_detect.bottle_detect_v2:main',
         ],
     },
 )

@@ -4,10 +4,10 @@
 
 流程:
     1. 收 YOLO 偵測到的物體 bbox（別的節點發，格式見 YOLO_TOPIC 說明）
-    2. 把 bbox 內的深度像素反投影成 3D 點雲
-    3. 在深度上分群，把背景切掉，只留最近的那一團（物體）
-    4. 用 IMU 求重力方向，把點雲轉到「上」是真正的上的座標系
-    5. 直接量點雲：重力軸的延伸就是高，水平投影的最小外接矩形就是長寬
+    2. 把最近幾幀深度圖逐像素取中位數（去雜訊），bbox 內的像素反投影成 3D 點雲
+    3. 用 IMU 求重力方向，把點雲轉到「上」是真正的上的座標系
+    4. 在重力座標系裡找出桌面（支撐平面）拿掉，再在深度上分群切掉後面的牆
+    5. 直接量點雲：桌面到頂端就是高，水平投影的最小外接矩形就是長寬
     6. 拿量到的尺寸去對照表找最相近的，輸出結果
 
 四區塊深度不再參與尺寸計算，改當可信度閘門 —— 左右/上下的深度差接近 0
@@ -20,6 +20,7 @@ import json
 import math
 import os
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -93,7 +94,7 @@ LETTERBOX_BOTTOM           = 30
 #bbox 少一點尺寸就少一點；這裡 bbox 只決定「去哪裡找」，真正決定尺寸的是
 #深度分群出來的點雲。所以 bbox 寧可大也不要小 ——
 #  太小 -> 物體被切掉，點雲跟著少，尺寸一定偏小（色模侵蝕/光照就是這種）
-#  太大 -> 多進來的是背景，會被 segment_nearest_cluster() 切掉，沒有影響
+#  太大 -> 多進來的是背景，會被 nearest_cluster_mask() 切掉，沒有影響
 #0.40 表示各邊往外推 40% 的 bbox 寬/高。這個值是掃出來的：
 #  0.25 -> 救得回每邊被吃掉 18 px (4.1 cm) 的 bbox，30 px 就救不回來
 #  0.40 -> 30 px (6.8 cm) 也救得回來，且鄰居相距 2 cm 時仍能分開
@@ -120,7 +121,10 @@ COMPONENT_MAX_DROP_FRAC    = 0.35
 DEPTH_OFFSET_CM            = 0.0
 #前景分群：直方圖的格寬(公分)
 CLUSTER_BIN_CM             = 1.0
-#兩團之間空超過這麼多公分才算斷開，用來把物體跟後面的牆分開
+#兩團之間空超過這麼多公分才算斷開，用來把物體跟後面的牆分開。
+#⚠ 這一招只對「後面」的東西有效，對「底下」的桌面無效：桌面在深度上是連續的，
+#  物體前方的桌面比物體還近、後方的比物體還遠，中間沒有空隙可以切。
+#  所以桌面要先由 find_support_plane() 在重力座標系裡拿掉，再做這一步。
 CLUSTER_GAP_CM             = 3.0
 #某一格的點數少於最高格的這個比例就當它是空的
 CLUSTER_MIN_FRAC           = 0.05
@@ -133,6 +137,39 @@ OUTLIER_IQR_FENCE          = True
 EXTENT_TRIM_PCT            = 1.0
 #點太多時隨機抽樣到這個數量，minAreaRect 不需要全部的點
 MAX_CLOUD_POINTS           = 20000
+
+#--- 支撐平面（桌面） ---#
+#物體放在桌上時，先把桌面找出來拿掉，高度改由「桌面到物體頂端」量。
+#桌面在重力座標系裡是一個高度幾乎固定的薄層，高度直方圖上是一根尖峰；
+#物體的側面則是攤平的一片。靠這個差別把兩者分開，見 find_support_plane()。
+REMOVE_SUPPORT_PLANE       = True
+#高度直方圖的格寬(公分)
+PLANE_BIN_CM               = 0.5
+#桌面至少要在 bbox 中心的點的中位高度以下這麼多公分，避免把物體頂面當成桌面
+PLANE_BELOW_SEED_CM        = 1.5
+#尖峰 (±1 格) 至少要有這麼多點
+PLANE_MIN_POINTS           = 150
+#尖峰 (±1 格) 的點數要是兩側鄰近區間的這麼多倍，才算「薄層」而不是物體側面
+PLANE_SHARPNESS            = 3.0
+#IMU 有誤差時，桌面在重力座標系裡是斜的，高度會被抹開成好幾格、尖峰就不見了
+#（實測 IMU 差 3 度、桌面前後 40 cm 就抹開 2 cm）。所以在 IMU 的「上」附近
+#前後左右各試這幾個角度(度)，取尖峰最高的那個方向，再交給平面擬合細修。
+PLANE_SEARCH_DEG           = (-6.0, -3.0, 0.0, 3.0, 6.0)
+#擬合出來的法向量與 IMU 的「上」夾角超過這個值(度)就不信擬合，改用搜尋到的方向
+PLANE_MAX_TILT_DEG         = 10.0
+#離桌面這麼近(公分)的點當作桌面拿掉。實際用的是 max(這個值, 3 倍桌面雜訊)
+PLANE_TOL_CM               = 1.0
+#物體最低的點離桌面超過「容許帶 + 這個值」(公分)，代表物體不是放在這個桌面上
+#（例如拿在手上），此時高度退回用點雲自己的上下延伸
+PLANE_CONTACT_CM           = 2.0
+
+#--- 深度融合 ---#
+#保留最近幾幀深度圖，逐像素取中位數。ZED 的深度每幀都在抖，飛點也會閃，
+#取中位數可以把雜訊壓下來、把一閃即逝的飛點濾掉。1 表示不融合。
+DEPTH_FUSE_FRAMES          = 5
+#只融合與最新一幀姿態相近的幀。頭一動、前後幀的像素就對不上了，
+#融合反而會把兩個位置的物體疊在一起。
+DEPTH_FUSE_MAX_UP_DEG      = 1.0
 
 #--- IMU ---#
 #加速度模長與 9.81 差在這個範圍(m/s^2)內才當作靜止，此時加速度計就是重力方向
@@ -191,6 +228,49 @@ def effective_intrinsics(zoom=ZOOM):
             FOCAL_PX * zoom,
             (PRINCIPAL_X - x0) * zoom,
             (PRINCIPAL_Y - y0) * zoom)
+
+
+def fuse_depth(frames, bbox, up_ref):
+    """把最近幾幀深度圖在 bbox 範圍內逐像素取中位數。
+
+    只在 bbox 內算，整張圖取中位數太浪費。一個像素要在過半的幀裡有效才算數，
+    這樣一閃即逝的飛點（只出現在一兩幀）會被濾掉，而不是被保留下來。
+
+    Args:
+        frames (list): [(depth_mm, up), ...]，由舊到新。up 是收到該幀時的「上」，可為 None。
+        bbox (tuple): (xmin, ymin, xmax, ymax)，已夾回畫面內。
+        up_ref (np.ndarray): 目前的「上」。與它夾角超過 DEPTH_FUSE_MAX_UP_DEG 的幀不融合。
+
+    Returns:
+        tuple: (depth_mm, n_used)。depth_mm 與最新一幀同尺寸，只有 bbox 內有值。
+            只有一幀可用時直接回傳最新那幀。
+    """
+    latest = frames[-1][0]
+    cos_min = math.cos(math.radians(DEPTH_FUSE_MAX_UP_DEG))
+    use = []
+    for d, up in frames:
+        if d is None or d.shape != latest.shape or up is None:
+            continue
+        if float(np.dot(up, up_ref)) < cos_min:       #頭動過，像素對不上
+            continue
+        use.append(d)
+    if len(use) <= 1:
+        return latest, 1
+
+    xmin, ymin, xmax, ymax = bbox
+    stack = np.stack([d[ymin:ymax, xmin:xmax] for d in use])
+    valid = stack > 0
+    n_valid = valid.sum(axis=0)
+    #無效值排到最後，每個像素前 n_valid 個就是由小到大的有效值
+    s = np.sort(np.where(valid, stack, np.iinfo(np.uint16).max), axis=0).astype(np.uint32)
+    lo = np.take_along_axis(s, (np.maximum(n_valid - 1, 0) // 2)[None], axis=0)[0]
+    hi = np.take_along_axis(s, (n_valid // 2).clip(max=len(use) - 1)[None], axis=0)[0]
+    med = (lo + hi) // 2
+    med[n_valid < (len(use) + 1) // 2] = 0
+
+    out = np.zeros_like(latest)
+    out[ymin:ymax, xmin:xmax] = med.astype(latest.dtype)
+    return out, len(use)
 
 
 def backproject(depth_mm, bbox, fx, fy, cx, cy):
@@ -417,6 +497,123 @@ def gravity_frame(up):
     return np.stack([np.cross(fwd, up), fwd, up])
 
 
+def plane_peak(hz, h_seed):
+    """在高度直方圖上找桌面的尖峰。
+
+    只看 h_seed 下方 PLANE_BELOW_SEED_CM 以外的部分，由上往下找第一根
+    「比兩側鄰近區間多 PLANE_SHARPNESS 倍」的尖峰 —— 最貼近物體底部的那一層，
+    桌面下方看得到地板時不會選到地板。
+
+    Returns:
+        tuple: (高度, ±1 格內的點數)；找不到時回 None。
+    """
+    lo = float(hz.min())
+    nb = int(np.ceil((float(hz.max()) - lo) / PLANE_BIN_CM)) + 1
+    if nb < 8:                                    #整團點的高度差不到幾公分
+        return None
+    hist, edges = np.histogram(hz, bins=nb, range=(lo, lo + nb * PLANE_BIN_CM))
+    hist = hist.astype(np.float64)
+    win = np.convolve(hist, np.ones(3), mode='same')      #±1 格
+
+    for i in range(nb - 1, -1, -1):
+        centre = 0.5 * (edges[i] + edges[i + 1])
+        if centre > h_seed - PLANE_BELOW_SEED_CM or win[i] < PLANE_MIN_POINTS:
+            continue
+        if (i > 0 and win[i] < win[i - 1]) or (i < nb - 1 and win[i] < win[i + 1]):
+            continue                              #不是局部最高
+        #兩側鄰近區間：往上/往下 2~4 格（中間空一格當緩衝），各 3 格與尖峰同寬
+        above = hist[i + 2:i + 5].sum()
+        below = hist[max(0, i - 4):max(0, i - 1)].sum()
+        if win[i] >= PLANE_SHARPNESS * max(above, below, 1.0):
+            return centre, float(win[i])
+    return None
+
+
+def find_support_plane(points, up, seed_mask):
+    """找物體底下的支撐平面（桌面）。
+
+    深度分群只看「離相機多遠」，而桌面在深度上是連續的 —— 物體前方的桌面比物體
+    還近，後方的比物體還遠，中間沒有空隙，怎麼切都會跟物體黏在一起。
+    但在重力座標系裡，桌面是一個**高度幾乎固定**的薄層：高度直方圖上是一根尖峰，
+    物體的側面則是攤平的一片。
+
+    作法：
+        1. 以 bbox 中心附近的點的中位高度當作「物體在哪個高度」
+        2. 在它下方找高度直方圖的尖峰（見 plane_peak()）。IMU 有誤差時桌面是斜的、
+           尖峰會被抹開，所以在 IMU 的「上」附近試 PLANE_SEARCH_DEG 幾個方向，
+           取尖峰點數最多的那個
+        3. 對尖峰附近的點做平面擬合，反覆收緊容許帶把物體底部的點排掉。
+           擬合出來的法向量同時修正了 IMU 的誤差，桌面稍微斜也跟著走
+        4. 法向量與 IMU 的「上」差超過 PLANE_MAX_TILT_DEG 就不信擬合，改用第 2 步
+           搜尋到的方向（擬合失敗通常是桌面只露出細細一條，法向量定不出來）
+
+    Args:
+        points (np.ndarray): (N, 3) 相機座標系的點，公分。
+        up (np.ndarray): (3,) 相機座標系下的「上」。
+        seed_mask (np.ndarray): (N,) 布林，原始 bbox 中心附近的點。
+
+    Returns:
+        dict: 找不到時回 None。點 p 到平面的有號距離 = p·normal - offset，正值在上方。
+            normal    (3,) 相機座標系下的法向量，朝上
+            offset    float
+            tol_cm    離平面這麼近的點算桌面
+            sigma_cm  桌面點的高度雜訊（MAD 估計）
+            tilt_deg  法向量與 IMU「上」的夾角
+            fit       'fit' 用擬合的法向量；'grid' 擬合不可信，用搜尋到的方向
+            n_points  桌面點數
+    """
+    R = gravity_frame(up)
+    if R is None or np.count_nonzero(seed_mask) < MIN_VALID_PIXELS:
+        return None
+
+    world = points @ R.T
+
+    #在 IMU 的「上」附近試幾個方向，取尖峰點數最多的那個
+    best = None
+    for a in PLANE_SEARCH_DEG:
+        for b in PLANE_SEARCH_DEG:
+            n = np.array([math.tan(math.radians(a)), math.tan(math.radians(b)), 1.0])
+            n /= np.linalg.norm(n)
+            hz = world @ n
+            peak = plane_peak(hz, float(np.median(hz[seed_mask])))
+            if peak is not None and (best is None or peak[1] > best[2]):
+                best = (n, peak[0], peak[1])
+    if best is None:
+        return None
+    grid_n, h0, _ = best
+
+    #平面擬合。第一次用尖峰那 3 格的點，之後用上一次的容許帶
+    sel = np.abs(world @ grid_n - h0) <= 1.5 * PLANE_BIN_CM
+    normal, offset, tol, sigma, fit = grid_n, h0, PLANE_TOL_CM, 0.0, 'grid'
+    for _ in range(3):
+        P = world[sel]
+        if P.shape[0] < PLANE_MIN_POINTS:
+            break
+        c = P.mean(axis=0)
+        n = np.linalg.svd(P - c, full_matrices=False)[2][2]
+        if n[2] < 0:
+            n = -n
+        if math.degrees(math.acos(min(1.0, float(n[2])))) <= PLANE_MAX_TILT_DEG:
+            normal, offset, fit = n, float(c @ n), 'fit'
+        else:
+            normal, offset, fit = grid_n, float(np.median(P @ grid_n)), 'grid'
+        d = world @ normal - offset
+        sigma = 1.4826 * float(np.median(np.abs(d[sel])))
+        tol = max(PLANE_TOL_CM, 3.0 * sigma)
+        sel = np.abs(d) <= tol
+
+    #world = points @ R.T，所以 world·n = points·(R.T n)，offset 不變
+    return {
+        'normal': R.T @ normal,
+        'offset': offset,
+        'tol_cm': tol,
+        'sigma_cm': sigma,
+        'tilt_deg': math.degrees(math.acos(min(1.0, float(normal[2])))),
+        'fit': fit,
+        'n_points': int(np.count_nonzero(sel)),
+    }
+
+
 def robust_extent(values, trim=None):
     """一維上的穩健延伸量測。
 
@@ -436,11 +633,13 @@ def robust_extent(values, trim=None):
     return float(lo), float(hi)
 
 
-def measure_cloud(points, up):
+def measure_cloud(points, up, floor=None):
     """在重力對齊的座標系裡直接量點雲的尺寸。
 
     高度取重力軸上的延伸 —— 量的是實際的 3D 點，不是輪廓，所以不需要
     「輪廓高 = h*cos(φ) + d*sin(φ)」那條式子，也就沒有一式兩未知的問題。
+    有 floor（桌面在 up 軸上的位置）時，高度改由桌面量到頂端：桌面附近的點已經
+    當成桌面拿掉了，拿點雲自己的最低點來量會少掉那一截。
 
     水平長寬取點雲投影到水平面後的最小外接矩形。看得到物體兩個面時（偏轉角
     θ 不是 0 度也不是 90 度，正好是誤差最大的那些情況）投影是 L 形，
@@ -459,7 +658,7 @@ def measure_cloud(points, up):
     world = points @ R.T
 
     lo_z, hi_z = robust_extent(world[:, 2])
-    height_cm = float(hi_z - lo_z)
+    height_cm = float(hi_z - (lo_z if floor is None else floor))
 
     #水平投影。minAreaRect 取的是凸包的外接矩形，一顆飛點就能把它撐大，
     #所以先濾離群點 —— 但要用**離質心的距離**而不是兩軸各自的柵欄。
@@ -507,8 +706,9 @@ def estimate_real_size(bbox, depths_cm, node=None):
         node (MedDetect): 節點本身，用來取深度圖與 IMU。
 
     Returns:
-        tuple: (width_cm, height_cm)。width 取水平面上的長邊，height 取重力軸上的
-            延伸。算不出來時回 (None, None)，失敗原因寫在 node.size_detail['error']。
+        tuple: (width_cm, height_cm)。width 取水平面上的長邊，height 取桌面到頂端
+            （沒找到桌面時取重力軸上的延伸）。算不出來時回 (None, None)，
+            失敗原因寫在 node.size_detail['error']。
     """
     detail = {}
     if node is not None:
@@ -530,11 +730,31 @@ def estimate_real_size(bbox, depths_cm, node=None):
 
     #bbox 往外放寬再找點。bbox 太小會直接吃掉尺寸，太大則由深度分群擋掉。
     search = expand_bbox(bbox, BBOX_EXPAND_FRAC, node.depth_mm.shape)
-    points, uv = backproject(node.depth_mm, search, fx, fy, cx, cy)
+    frames = list(getattr(node, 'depth_buffer', None) or []) or [(node.depth_mm, up)]
+    depth_mm, n_fused = fuse_depth(frames, search, up)
+    detail['n_fused_frames'] = n_fused
+    points, uv = backproject(depth_mm, search, fx, fy, cx, cy)
     detail['n_raw_points'] = int(points.shape[0])
     if points.shape[0] < MIN_CLOUD_POINTS:
         detail['error'] = f'搜尋範圍內有效深度只有 {points.shape[0]} 點'
         return None, None
+
+    #桌面要在深度分群之前拿掉，否則桌面會把物體跟前後的東西全部連成一團
+    plane = None
+    if REMOVE_SUPPORT_PLANE:
+        bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        seed_mask = ((np.abs(uv[:, 0] - (bbox[0] + bbox[2]) / 2.0) <= bw / 4.0) &
+                     (np.abs(uv[:, 1] - (bbox[1] + bbox[3]) / 2.0) <= bh / 4.0))
+        plane = find_support_plane(points, up, seed_mask)
+    if plane is not None:
+        detail['plane_fit'] = plane['fit']
+        detail['plane_tilt_deg'] = round(plane['tilt_deg'], 2)
+        detail['plane_sigma_cm'] = round(plane['sigma_cm'], 3)
+        above = points @ plane['normal'] - plane['offset'] > plane['tol_cm']
+        points, uv = points[above], uv[above]
+        if points.shape[0] < MIN_CLOUD_POINTS:
+            detail['error'] = f'拿掉桌面後只剩 {points.shape[0]} 點'
+            return None, None
 
     mask = nearest_cluster_mask(points)
     if KEEP_CENTER_COMPONENT:
@@ -557,7 +777,19 @@ def estimate_real_size(bbox, depths_cm, node=None):
         int(max(0, uv[:, 1].max() - (bbox[3] - 1))),  #下
     ]
 
-    result = measure_cloud(points, up)
+    #物體真的站在這個桌面上，才用桌面當高度基準與「上」。
+    #桌面的法向量比 IMU 準（IMU 有安裝偏移與雜訊），桌面稍斜時物體也是跟著桌面斜。
+    meas_up, floor = up, None
+    detail['height_ref'] = 'cloud'
+    if plane is not None:
+        lo_d, _ = robust_extent(points @ plane['normal'] - plane['offset'])
+        if lo_d <= plane['tol_cm'] + PLANE_CONTACT_CM:
+            meas_up, floor = plane['normal'], plane['offset']
+            detail['height_ref'] = 'plane'
+        else:
+            detail['plane_gap_cm'] = round(lo_d, 2)
+
+    result = measure_cloud(points, meas_up, floor)
     if result is None:
         detail['error'] = '點雲量測失敗（點太少或光軸與重力平行）'
         return None, None
@@ -687,6 +919,8 @@ class MedDetect(API):
         #自己留一份深度圖。API 內部也有訂 /depth_mm，但那是私有的，
         #而且 depth_at() 只回鄰域中位數，拿不到整個區塊的像素分佈。
         self.depth_mm = None
+        #最近幾幀深度圖與收到當下的「上」，給 fuse_depth() 融合用
+        self.depth_buffer = deque(maxlen=max(1, DEPTH_FUSE_FRAMES))
         self.create_subscription(
             RosImage, DEPTH_TOPIC, self.depth_mm_callback,
             self.qos_fast, callback_group=self.image_cbg)
@@ -726,11 +960,17 @@ class MedDetect(API):
 
     # -------------------- 訂閱回呼 --------------------
     def depth_mm_callback(self, msg: RosImage):
-        """快取深度圖。mono16，單位公釐，0 代表無效（上游已把 NaN/inf 歸零）。"""
+        """快取深度圖。mono16，單位公釐，0 代表無效（上游已把 NaN/inf 歸零）。
+
+        同時連同當下的「上」存進 depth_buffer，融合時才知道哪幾幀是同一個姿態拍的。
+        """
         try:
-            self.depth_mm = self._bridge.imgmsg_to_cv2(msg, desired_encoding='mono16')
+            depth = self._bridge.imgmsg_to_cv2(msg, desired_encoding='mono16')
         except Exception as e:
             self.get_logger().error(f"[depth_mm] convert failed: {e}")
+            return
+        self.depth_mm = depth
+        self.depth_buffer.append((depth, gravity_up_optical(self)[0]))
 
     def zoom_callback(self, msg):
         """數位變焦倍率。image.py 的 zoomValue 也是吃同一個 topic。"""
@@ -823,7 +1063,7 @@ class MedDetect(API):
             self.get_logger().warn(
                 f"量不出尺寸（{detail.get('error', '未知原因')}），"
                 f"只輸出 bbox 與四區塊深度\033[K")
-            self.publish_result(label, bbox, depths)
+            self.publish_result(label, bbox, depths, detail=detail)
             return
 
         self.get_logger().info(
@@ -831,7 +1071,19 @@ class MedDetect(API):
             f"（厚 {detail['horizontal_short_cm']:.2f}、"
             f"偏轉 {detail['yaw_deg']:.0f} 度、"
             f"{detail['n_object_points']} 點、"
+            f"融合 {detail['n_fused_frames']} 幀、"
             f"重力來源 {detail['up_source']}）\033[K")
+
+        if 'plane_fit' in detail:
+            ref = ('高度由桌面量起' if detail['height_ref'] == 'plane' else
+                   f"物體最低點離桌面 {detail.get('plane_gap_cm', 0):.1f} cm，"
+                   f"不像放在桌上，高度改用點雲自己的上下延伸")
+            self.get_logger().info(
+                f"桌面: 法向量與 IMU 差 {detail['plane_tilt_deg']:.1f} 度"
+                f"（{detail['plane_fit']}）、雜訊 {detail['plane_sigma_cm']:.2f} cm，"
+                f"{ref}\033[K")
+        else:
+            self.get_logger().info("桌面: 沒找到，高度用點雲自己的上下延伸\033[K")
 
         over = detail.get('bbox_overflow_px')
         if over and max(over) > 0:
@@ -884,7 +1136,7 @@ class MedDetect(API):
 
         ⚠ IQR 只砍尾巴，砍不掉雙峰。區塊裡一半是物體一半是後面的牆時，
         平均值會停在兩者中間。所以這個數字只適合看趨勢（哪半邊比較遠），
-        不適合當絕對距離用。真正的前景分割在 segment_nearest_cluster()。
+        不適合當絕對距離用。真正的前景分割在 nearest_cluster_mask()。
 
         Returns:
             list: 四個平均深度(公分)，有效像素不足的區塊為 None。
@@ -953,8 +1205,9 @@ class MedDetect(API):
             for key in ('horizontal_short_cm', 'yaw_deg', 'mean_depth_cm'):
                 if key in detail:
                     out[key] = round(detail[key], 2)
-            for key in ('n_object_points', 'up_source', 'focal_px',
-                        'bbox_overflow_px', 'error'):
+            for key in ('n_object_points', 'n_fused_frames', 'up_source', 'focal_px',
+                        'bbox_overflow_px', 'height_ref', 'plane_fit',
+                        'plane_tilt_deg', 'plane_sigma_cm', 'plane_gap_cm', 'error'):
                 if key in detail:
                     out[key] = detail[key]
         if best is not None:
@@ -1064,15 +1317,17 @@ if __name__ == '__main__':
 # 2. 實際作法
 # -----------------------------------------------------------------------------
 #     expand_bbox()             先把 bbox 往外放寬（見下面「bbox 只決定去哪裡找」）
+#     fuse_depth()              最近幾幀深度圖逐像素取中位數，只融合同一個姿態的幀
 #     backproject()             範圍內每個有效深度像素 -> 相機座標系的 3D 點
 #                                   X = (u - cx) * Z / fx
 #                                   Y = (v - cy) * Z / fy
-#     nearest_cluster_mask()    在深度直方圖上找最近的一團，把背景切掉
-#     keep_center_component()   二維連通域，把旁邊同距離的別的物體分開
 #     gravity_up_optical()      用 IMU 求「上」在相機座標系裡的方向
 #     gravity_frame()           由「上」建一組重力對齊的正交基底
+#     find_support_plane()      在重力座標系裡找桌面拿掉（見第 4.5 點）
+#     nearest_cluster_mask()    在深度直方圖上找最近的一團，把後面的牆切掉
+#     keep_center_component()   二維連通域，把旁邊同距離的別的物體分開
 #     measure_cloud()           在那個座標系裡直接量：
-#                                   高      = 重力軸上的延伸
+#                                   高      = 桌面到頂端（沒桌面時是重力軸上的延伸）
 #                                   水平長寬 = 水平投影的最小外接矩形
 #     robust_extent()           量延伸時擋飛點：IQR 柵欄 + percentile
 #
@@ -1128,6 +1383,29 @@ if __name__ == '__main__':
 #       把物體砍掉一半。所以標記前先膨脹 COMPONENT_BRIDGE_PX，而且這一步若砍掉
 #       超過 COMPONENT_MAX_DROP_FRAC 的點就直接放棄 —— 寧可偶爾把鄰居算進來
 #       （尺寸偏大，看得出來），也不要安靜地量小（看不出來）。
+#
+# -----------------------------------------------------------------------------
+# 4.5 物體放在桌上：先拿掉桌面，再做深度分群
+# -----------------------------------------------------------------------------
+#     nearest_cluster_mask() 靠「深度上有一段空隙」把物體跟後面的牆分開。
+#     桌面沒有這段空隙：物體前方的桌面比物體還近、後方的比物體還遠，深度上
+#     從近到遠連成一片，物體就黏在中間。舊版在桌面場景的實際表現：
+#         俯角 0   只抓到物體前面那塊桌面，高量成 0.07 cm
+#         俯角 30  桌面整片算進來，寬量成 39~55 cm
+#     這不是參數調不好，是「只看深度」這件事本身分不開。
+#
+#     但換到重力座標系就分得開：桌面是一個高度幾乎固定的薄層，高度直方圖上
+#     是一根尖峰；物體的側面則是攤平的一片。find_support_plane() 找這根尖峰，
+#     擬合平面後把平面附近的點拿掉，剩下的才交給深度分群。
+#
+#     找到桌面還有兩個附帶好處：
+#       - 高度改由「桌面到頂端」量，不受物體底部被當成桌面拿掉的那一截影響
+#       - 桌面的法向量拿來當「上」，比 IMU 準。IMU 差 8 度照樣量得回來
+#         （IMU 差太多時桌面在重力座標系裡是斜的、尖峰會被抹開，所以在 IMU 的
+#         「上」附近 ±6 度內搜尋，見 PLANE_SEARCH_DEG）
+#
+#     物體若不是放在桌上（最低點離桌面超過 PLANE_CONTACT_CM），桌面照樣拿掉，
+#     但高度退回用點雲自己的上下延伸。
 #
 # -----------------------------------------------------------------------------
 # 5. 輸入從哪裡來
@@ -1192,6 +1470,14 @@ if __name__ == '__main__':
 #
 #     物體後方 25 cm 有牆：量出 12.07 x 8.04（前景分群有效切掉背景）
 #
+#     桌面場景（test_table_scene.py，桌面 + 雜訊 + 1 px 暈開 + 5 幀融合）：
+#         12x4x8 方盒，俯角 0~45 x 偏轉 0~45   12.12~12.72 x 7.85~8.14
+#         5x9 圓柱，俯角 0~45                  5.14~5.21 x 8.85~9.11
+#         舊版同樣的場景                        13~55 x 0.07~9.2，幾乎全錯
+#         IMU 俯仰或滾轉差 1~8 度               12.23 x 8.07（不受影響）
+#         旁邊 1.8 cm 有另一瓶                  5.19 x 8.96
+#         後面 10 cm 有牆                       12.10 x 7.90
+#
 #     ⚠ 這是合成資料。真實的 ZED 深度圖有雜訊、破洞與飛點，實機誤差一定更大。
 #       上機後請照第 6 點校正，並用實物重測一次。
 #
@@ -1212,6 +1498,16 @@ if __name__ == '__main__':
 #     IMU 安裝偏移      ZED 的 IMU 與左目光心之間還有一個固定的機械旋轉
 #                       （SDK 的 camera_imu_transform），通常小於 1 度，
 #                       本實作忽略。要更準可以把它乘進 R_OPT_FROM_BODY。
+#                       有桌面時改用桌面法向量，這一項自動消失。
+#     貼著牆放          物體背面離牆不到約 5 cm 時，深度上沒有空隙，牆會被算進來
+#                       （合成測試：牆在物體中心後 5 cm -> 24.7 x 11.9）。
+#                       桌面拿得掉是因為它水平；牆是垂直的，目前沒有對應處理。
+#     大偏轉的長方體    偏轉 60 度時長邊斜著看、遠端的點很稀，1% 截尾會把遠端
+#                       截掉，12 cm 量成 10.6~11.5。有沒有桌面都一樣，是本來就有的。
+#                       圓柱形的藥罐不受影響。
+#     融合要站定        fuse_depth() 只融合與目前的「上」相差 1 度以內的幀，
+#                       頭轉動時會自動退回單幀（輸出的 n_fused_frames 看得到）。
+#                       但身體平移、頭不轉的話擋不住，量的時候請站定。
 #
 # -----------------------------------------------------------------------------
 # 9. 實測參考數據（2026-09-18，ZED、960x600、zoom=1.0）
