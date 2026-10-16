@@ -1,0 +1,77 @@
+# bottle_localizer 節點參數。
+# 節點不帶任何預設值，這裡少一個參數就會啟動失敗並列出缺什麼。
+# 小數參數請寫成小數（例如 0.0），整數參數寫整數。
+# 各參數的依據見 README.md。
+bottle_localizer:
+  ros__parameters:
+    # --- 輸入 topic（2026-10 查證結果）---
+    detection_topic: /med_detect/bottles           # bottle_detect_v2 的輸出，std_msgs/String（JSON）
+    # 深度圖用 ZED wrapper 的原始深度（32FC1 公尺，30 Hz，和 YOLO 用的影像同一次擷取、同一個 stamp）。
+    # 2026-10 上機量到 /depth_mm 只有約 21 Hz、延遲約 146 ms，偵測結果到時同一幀的深度還沒到，
+    # 所以改用 wrapper 的深度。只能在 zoom = 1.0 時使用（見下方 depth_is_zoomed）。
+    depth_topic: /zed/zed_node/depth/depth_registered
+    camera_info_topic: /zed/zed_node/left/camera_info
+
+    # --- YOLO 類別（key 必須和 bottle_dims.yaml 一致）---
+    class_names: [b1, b2, b3, b4]
+
+    # --- 原生 camera_info -> 偵測座標系 ---
+    # ZED X Mini：HD1200 由 wrapper 縮成 960x600 發布，camera_info 已是 960x600 的內參，
+    # 影像沒有補黑邊，所以縮放 1、黑邊 0。
+    image_scale: 1.0
+    letterbox_top: 0
+    letterbox_left: 0
+    # 數位變焦倍率。抓取時固定這個值，必須和 ZedCameraSet.ini 的 zoomin、
+    # 以及 bottle_detect_v2 / depth_process_node 實際在用的倍率相同。
+    zoom: 1.0
+    # 深度圖是否已套用和偵測框相同的數位變焦。
+    #   ZED wrapper 的 depth_registered：false（沒裁切，只能配 zoom = 1.0）
+    #   depth_process_node 的 /depth_mm：true（和 image.py 同樣的中心裁切）
+    depth_is_zoomed: false
+
+    # --- 座標系 ---
+    target_frame: base_link
+    z_table: 0.0                  # 桌面在 base_link 下的高度（m）。【待量測】
+
+    # --- 偵測框過濾 ---
+    score_threshold: 0.5          # YOLO 信心值門檻（bottle_detect_v2 本身已用 0.70 過濾）
+    edge_margin: 2                # 框離畫面邊緣幾個像素內算碰到邊緣（同 bottle_detect_v2 的 EDGE_MARGIN_PX）
+    min_valid_points: 20          # 框內有效深度點的最少數量
+
+    # --- 時間配對 / TF ---
+    # 偵測與深度圖的時間配對容許誤差（s）。上機實測 wrapper 深度圖比偵測結果晚到約 40 ms，
+    # 偵測到達時最新的深度圖是 1～2 幀前（33～67 ms），0.05 會跳過約兩成，暫時放寬到 0.1。
+    # 頭固定、瓶子靜止時用 1～2 幀前的深度算出的位置相同。
+    sync_tolerance: 0.1
+    depth_buffer_size: 10         # 保留最近幾張深度圖（30 fps 時約涵蓋 0.33 s，需大於 YOLO 延遲，實測約 80 ms）
+    tf_timeout: 0.1               # lookup_transform 的等待時間（s）
+
+    # --- 多幀平滑 ---
+    smoothing_frames: 5
+    smoothing_timeout: 1.0        # 某類別超過此秒數沒被偵測到就清空它的緩衝（s）
+
+    # --- 合理性檢查 ---
+    enable_size_check: true
+    size_check_ratio: 0.3
+
+    # --- 工作區域過濾（base_link，m）---
+    enable_workspace_bounds: false
+    workspace_x_min: 0.0
+    workspace_x_max: 0.0
+    workspace_y_min: 0.0
+    workspace_y_max: 0.0
+
+    # --- 選用修正（不在原始規格內，預設關閉 = 照規格）---
+    # 理由與合成測試結果見 README「選用修正」。
+    enable_top_surface_filter: false   # 去掉 base_link 高度 >= z_table + H - margin 的點（瓶蓋頂面）
+    top_surface_margin: 0.01           # m
+    enable_symmetric_arc: false        # 只用正對相機、左右對稱的弧段重算中心
+    symmetric_arc_iterations: 3
+    symmetric_arc_trim_pct: 2.0        # 決定弧段半寬時兩端各去掉的百分位
+
+    # --- RViz marker ---
+    marker_rgba: [0.1, 0.8, 0.2, 0.6]
+    marker_text_size: 0.03        # 文字高度（m），也當作文字離瓶頂的距離
+
+    # --- log ---
+    warn_throttle_sec: 2.0        # 同一個警告最快幾秒印一次

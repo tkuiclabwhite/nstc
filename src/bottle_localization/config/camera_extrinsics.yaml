@@ -1,0 +1,22 @@
+# 相機外參：base_link -> zed_camera_link（量測值）。【待量測】
+#
+# zed_camera_link 是 ZED X Mini 底部的螺絲孔（ZED URDF 的根）。
+# 量的是「zed_camera_link 在 base_link 下的位置與姿態」：
+#   x, y, z           公尺
+#   roll, pitch, yaw  弧度，與 static_transform_publisher / URDF 同一個慣例
+#                     （繞固定軸依序 X -> Y -> Z）。相機往下看時 pitch 為正。
+#
+# 注意：ZED wrapper 會發 odom -> zed_camera_link，zed_camera_link 已經有 parent。
+# 所以 launch 會把這組數值反過來，發 zed_camera_link -> base_link（README「TF」一節）。
+# 查 base_link <-> 左眼 optical frame 的結果與直接發 base_link -> zed_camera_link 相同。
+#
+# 量完把 measured 改成 true，launch 就不會再印警告。
+measured: false
+parent_frame: base_link
+child_frame: zed_camera_link
+x: 0.01125
+y: 0.0844
+z: 0.20975
+roll: 0.0
+pitch: 0.0
+yaw: 0.0

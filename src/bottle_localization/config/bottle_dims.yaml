@@ -1,0 +1,10 @@
+# 藥罐尺寸（單位：公尺）。【待量測】
+# key 必須和 YOLO 的類別名稱完全一致（best(1).onnx 的 names: b1 b2 b3 b4）。
+# diameter = 瓶身直徑 D，height = 直立時的總高 H（桌面到瓶蓋頂）。
+# 任何一個值 <= 0 或缺少類別時，節點會在啟動時報錯並列出缺什麼。
+bottle_dims:
+  b1: {diameter: 0.08290, height: 0.09230}
+  b2: {diameter: 0.04943, height: 0.07803}
+  b3: {diameter: 0.03722, height: 0.08960}
+  b4: {diameter: 0.03785, height: 0.07924}
+
