@@ -5,6 +5,6 @@
 bottle_dims:
   b1: {diameter: 0.08290, height: 0.09230}
   b2: {diameter: 0.04943, height: 0.07803}
-  b3: {diameter: 0.03722, height: 0.08960}
+  b3: {diameter: 0.04485, height: 0.08988}
   b4: {diameter: 0.03785, height: 0.07924}
 

@@ -11,12 +11,12 @@
 # 查 base_link <-> 左眼 optical frame 的結果與直接發 base_link -> zed_camera_link 相同。
 #
 # 量完把 measured 改成 true，launch 就不會再印警告。
-measured: false
+measured: true
 parent_frame: base_link
 child_frame: zed_camera_link
-x: 0.01125
-y: 0.0844
-z: 0.20975
-roll: 0.0
-pitch: 0.0
+x: 0.0870
+y: 0.0916
+z: 0.1507
+roll: 0.0120
+pitch: 0.5397
 yaw: 0.0

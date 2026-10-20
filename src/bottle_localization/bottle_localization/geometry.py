@@ -18,7 +18,7 @@ ROS 節點（bottle_localizer.py）只負責訂閱、時間配對、TF 查詢，
     transform_point()           步驟 4：轉到 base_link（R, t 由節點從 TF 取得）
     radius_correction()         步驟 5：沿水平方向往後推一個半徑
     bottle_center()             步驟 6：垂直位置用桌面高度 + H/2
-    check_size()                步驟 7：框寬/框高與深度的合理性檢查
+    check_size()                步驟 7：框寬/框高與「圓柱投影的預期框」比對（已改，見函式說明）
     CenterSmoother              步驟 8：每個類別多幀取中位數
 localize() 把步驟 1~7 串起來，節點與測試走的是同一條路。
 
@@ -394,28 +394,71 @@ def relative_error(estimate, actual):
     return abs(estimate - actual) / abs(actual)
 
 
-def check_size(intr, diameter, height, bbox_w, bbox_h, z_med, ratio):
-    """步驟 7：用框寬、框高與深度互相驗證。
+#圓柱上下兩圈各取幾個點來投影；72 點時外接矩形的誤差不到半徑的 0.1%
+CYLINDER_RING_POINTS = 72
 
-        Z_size   = fx' * D / w      -> 和 Z_med 比對
-        h_expect = fy' * H / Z_med  -> 和 h 比對
 
-    相機往下看時框高會包含瓶蓋頂面，框高比較寬鬆是正常的。
+def expected_bbox(center_xy, diameter, height, z_table, rot, trans, intr):
+    """把直徑 D、高 H、直立在桌面上的圓柱投影回影像，回傳預期的外接矩形。
+
+    圓柱是上下兩個圓的凸包，凸包投影後仍是兩圈投影點的凸包，
+    所以外接矩形只要看兩圈點投影的最小 / 最大值。透視、低頭角度、偏離畫面中心
+    （廣角時越靠左右兩側框越寬）都自動包含在內。
+
+    Args:
+        center_xy: 瓶身中軸在 base_link 的 (x, y)。
+        rot, trans: optical -> base_link（p_base = rot @ p_opt + trans）。
+
+    Returns:
+        (u0, v0, u1, v1)，像素；有點在相機後方時回 None。
+    """
+    a = np.linspace(0.0, 2.0 * np.pi, CYLINDER_RING_POINTS, endpoint=False)
+    ring = np.column_stack([diameter / 2.0 * np.cos(a), diameter / 2.0 * np.sin(a)]) + \
+        np.asarray(center_xy, dtype=np.float64)[:2]
+    n = CYLINDER_RING_POINTS
+    pts = np.vstack([np.column_stack([ring, np.full(n, z_table)]),
+                     np.column_stack([ring, np.full(n, z_table + height)])])
+    p_opt = (pts - np.asarray(trans, dtype=np.float64)) @ np.asarray(rot, dtype=np.float64)
+    if np.any(p_opt[:, 2] <= 0.0):
+        return None
+    u, v = project(p_opt, intr)
+    return float(u.min()), float(v.min()), float(u.max()), float(v.max())
+
+
+def check_size(bbox, expected, ratio):
+    """步驟 7：YOLO 框的寬、高和「圓柱投影的預期框」（expected_bbox()）比對。
+
+    （偏離原始規格）原規格的公式是
+        Z_size = fx' * D / w 對 Z_med、 h_expect = fy' * H / Z_med 對 h
+    只在畫面中央成立。ZED 是廣角，瓶子放在畫面左右兩側時框會被透視拉寬：
+    實測 b3（D 4.485 cm）在偏離中心約 30 度的位置框寬 74 px，原公式的相對誤差 0.37 > 0.3，正確的瓶子被擋掉；
+    只乘 1/cos(偏角) 也修不乾淨（相機往下看，透視不只左右方向）。
+    改成把圓柱放在算出來的中心、投影回影像得到預期的框，合成測試在偏離 ±38 度內誤差 3% 以內。
+    類別認錯（例如把 b3 當成 b1）時框寬誤差約 60%，照樣擋得下來。
+
+    Args:
+        bbox: YOLO 的框 (xmin, ymin, xmax, ymax)。
+        expected: expected_bbox() 的結果。
+        ratio (float): 寬、高任一項的相對誤差（|預期 - 框| / 框）超過就不通過。
 
     Returns:
         tuple: (ok, reason)。不通過時 reason 說明是哪一項、數值多少；通過時是 ''。
     """
-    if bbox_w <= 0 or bbox_h <= 0 or z_med <= 0:
-        return False, f'框或深度不合法 (w={bbox_w}, h={bbox_h}, Z_med={z_med:.3f})'
-    z_size = intr.fx * diameter / bbox_w
-    err_z = relative_error(z_size, z_med)
-    if err_z > ratio:
-        return False, (f'框寬不符: Z_size={z_size:.3f} m vs Z_med={z_med:.3f} m '
-                       f'(相對誤差 {err_z:.2f} > {ratio})')
-    h_expect = intr.fy * height / z_med
-    err_h = relative_error(h_expect, bbox_h)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+    if w <= 0 or h <= 0:
+        return False, f'框不合法 (w={w}, h={h})'
+    if expected is None:
+        return False, '預期的框有一部分在相機後方'
+    ew = expected[2] - expected[0]
+    eh = expected[3] - expected[1]
+    err_w = relative_error(ew, w)
+    if err_w > ratio:
+        return False, (f'框寬不符: 預期 {ew:.1f} px vs 框 {w} px '
+                       f'(相對誤差 {err_w:.2f} > {ratio})')
+    err_h = relative_error(eh, h)
     if err_h > ratio:
-        return False, (f'框高不符: h_expect={h_expect:.1f} px vs h={bbox_h} px '
+        return False, (f'框高不符: 預期 {eh:.1f} px vs 框 {h} px '
                        f'(相對誤差 {err_h:.2f} > {ratio})')
     return True, ''
 
@@ -547,14 +590,6 @@ def localize(depth_m, bbox, intr, diameter, height, rot, trans, z_table,
             return None, f'去掉瓶蓋頂面後有效深度點少於 {min_valid_points}'
     surface_opt = np.median(points, axis=0)
 
-    #步驟 7（不需要 TF，先做）
-    if size_check_ratio is not None:
-        ok, reason = check_size(intr, diameter, height,
-                                bbox[2] - bbox[0], bbox[3] - bbox[1],
-                                z_med, size_check_ratio)
-        if not ok:
-            return None, reason
-
     #步驟 4 ~ 6
     surface_base = transform_point(rot, trans, surface_opt)
     center = bottle_center(surface_base, trans, radius, z_table, height)
@@ -563,6 +598,14 @@ def localize(depth_m, bbox, intr, diameter, height, rot, trans, z_table,
     if arc_iterations > 0:
         center[:2] = symmetric_arc_center(points, rot, trans, radius, center[:2],
                                           arc_iterations, arc_trim_pct, min_valid_points)
+
+    #步驟 7：把圓柱放在算出來的中心，投影回影像和 YOLO 的框比
+    if size_check_ratio is not None:
+        ok, reason = check_size(
+            bbox, expected_bbox(center[:2], diameter, height, z_table, rot, trans, intr),
+            size_check_ratio)
+        if not ok:
+            return None, reason
 
     if workspace is not None and not in_workspace(center[0], center[1], *workspace):
         return None, f'中心 ({center[0]:.3f}, {center[1]:.3f}) 在工作區域外'

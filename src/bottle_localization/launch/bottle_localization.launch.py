@@ -8,6 +8,9 @@ bottle_detect_v2 負責（同一時間只能有一個程式開相機）。
 三個設定檔都可以用 launch 參數換掉:
     params_file:=...  dims_file:=...  extrinsics_file:=...
 
+看每個框被跳過的原因（合理性檢查、點數不足、碰到邊緣…）:
+    log_level:=debug
+
 相機外參（camera_extrinsics.yaml）量的是 base_link -> zed_camera_link，
 但 ZED wrapper 已經在發 odom -> zed_camera_link，zed_camera_link 不能再有第二個 parent。
 所以這裡發的是反過來的 zed_camera_link -> base_link（README「TF」一節）。
@@ -80,6 +83,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'extrinsics_file', default_value=os.path.join(config, 'camera_extrinsics.yaml'),
             description='相機外參 base_link -> zed_camera_link'),
+        DeclareLaunchArgument(
+            'log_level', default_value='info',
+            description='bottle_localizer 的 log 等級；debug 會印出每個框被跳過的原因'),
 
         OpaqueFunction(function=_static_tf),
 
@@ -89,5 +95,8 @@ def generate_launch_description():
             name='bottle_localizer',
             output='screen',
             parameters=[params_file, {'bottle_dims_file': dims_file}],
+            #只調本節點的 logger，不會把 rclpy 自己的 debug 訊息也打開
+            arguments=['--ros-args', '--log-level',
+                       ['bottle_localizer:=', LaunchConfiguration('log_level')]],
         ),
     ])

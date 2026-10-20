@@ -29,6 +29,10 @@ label 是種類 "b1".."b4"，med_detect.py 不用改就能接。
 要改換算規則改那邊，兩個節點會一起生效。
 
 http://172.17.121.10:8080/stream?topic=/med_detect/image
+
+source ~/ros2_adult/install/setup.bash
+source ~/nstc/install/local_setup.bash
+
 """
 import json
 import os

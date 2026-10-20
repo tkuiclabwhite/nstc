@@ -62,6 +62,48 @@ ros2 launch bottle_localization bottle_localization.launch.py
 
 三個設定檔都可以用 launch 參數換掉：`params_file:=`、`dims_file:=`、`extrinsics_file:=`。
 
+### 即時查看輸出的座標
+
+```bash
+ros2 run bottle_localization bottle_viewer                       # 另開一個終端機
+ros2 run bottle_localization bottle_viewer --ros-args -p window:=5.0
+```
+
+終端機畫面每秒更新 5 次（`refresh_hz`），每個類別一行：
+
+| 欄位 | 意思 |
+|---|---|
+| x / y / z | 最新的瓶身中心（`base_link`，公尺） |
+| 信心 | 這一筆的 YOLO 信心值 |
+| 多久前 | 最後一次出現在輸出裡是幾秒前 |
+| 出現率 | 最近 `window` 秒（預設 3）的訊息裡，有幾成包含這個類別。偏低代表 YOLO 時有時無，或被本節點跳過 |
+| 抖動 | 最近 `window` 秒內 x、y 的標準差（mm）。瓶子靜止時就是量測的重複性 |
+
+### 在桌機用 RViz 看
+
+機器人的 `~/.bashrc` 設了 `ROS_DOMAIN_ID=10`、`ROS_LOCALHOST_ONLY=1`：ROS 2 只在機器人內部通訊，
+桌機收不到。實測 Humble / Fast DDS 上 `ROS_LOCALHOST_ONLY=1` 與 `=0` 的節點彼此不通，
+所以不能只把本套件改成對外。改用轉發程式，機器人其他設定不動：
+
+source /opt/ros/humble/setup.bash
+rviz2 -d /home/iclab/nstc_ws/nstc/src/bottle_localization/rviz/bottle_localization.rviz
+
+```bash
+# 機器人上（bottle_localization.launch.py 在跑的同時）
+ros2 run bottle_localization rviz_relay                 # 轉 /tf、/tf_static、/bottle_markers 到 domain 0
+ros2 run bottle_localization rviz_relay --point-cloud   # 連 ZED 點雲一起轉（很吃頻寬）
+
+# 桌機上（ROS_DOMAIN_ID 不設 = 0）
+source /opt/ros/humble/setup.bash
+rviz2 -d <套件>/rviz/bottle_localization.rviz
+```
+
+轉發程式在同一個行程裡開兩個 context（一個只在本機、一個對外），單向原樣轉發；
+輸出 domain 不能和機器人的一樣，避免資料繞回來。
+
+YOLO 有框到、輸出卻沒有那個瓶子時，加 `log_level:=debug` 會印出每個框被跳過的原因
+（`框寬不符`／`框高不符` 是步驟 7 的合理性檢查、`有效深度點少於` 是步驟 2、`碰到畫面邊緣` 是前置過濾）。
+
 ---
 
 ## 介面
@@ -139,6 +181,26 @@ roll → pitch → yaw 固定軸慣例；相機往下看時 pitch 為正）。
 桌面在 `base_link` 下的高度（m）。瓶身中心的 z 直接用 `z_table + H/2`，不用深度估計值。
 
 ---
+
+## 準確度校正流程
+
+工具在 `tools/`（不會被安裝，直接用 python3 執行）。
+
+1. **擺好抓取姿勢**：頭低到抓取角度（記下 `/joint_states` 的馬達 28、29 刻度，之後每次抓取都轉回這組）、
+   軀幹直立、機器人不動。
+2. **量外參**（都在抓取姿勢下）：
+   - 右肩關節點 → 鏡頭中點（前面玻璃上兩顆鏡頭圓心連線的中點）沿 前／左／上 的距離 Δx、Δy、Δz（cm）
+   - roll、pitch：**優先用 `python3 tools/table_plane.py`**，從深度圖擬合桌面，直接量相機相對桌面的角度（取樣區域要是空的桌面）。
+     `tools/zed_imu_average.py` 讀的是 IMU 晶片自己的方向，和鏡頭之間有出廠安裝角度（實測 roll −0.96°、pitch −0.24°、yaw 0.54°，見 `/zed/zed_node/left_cam_imu_transform`），只適合粗略核對
+   - `python3 tools/zed_stl_front.py`（先 source `ros2_adult`）：前面玻璃到螺絲孔的距離 a
+   - `python3 tools/extrinsics_calc.py --dx … --dy … --dz … --pitch … --roll … --a …`，
+     把印出來的 7 行貼進 `config/camera_extrinsics.yaml`，重新 launch
+3. **`z_table`**：桌面比右肩關節點高多少（通常是負的）再加 0.01475 m（關節點在 `base_link` 原點上方 1.475 cm）。
+   外參填好後，可用 RViz 的 Publish Point 點桌面核對。
+4. **RViz 檢查**：點雲裡桌面應該是水平的、高度在 `z_table`；圓柱應立在桌上、和瓶子重疊。
+5. **實測與微調**：瓶子放在 `base_link` 下已知位置的幾個點（前後、左右分散），用 `bottle_viewer`
+   讀輸出、和真值比對。整體偏移調 `x`、`y`；隨位置旋轉的偏差調 `yaw`。
+   同一組點再開啟兩個選用修正各測一次，決定要不要開。
 
 ## TF
 
@@ -230,9 +292,15 @@ zoom = 1.0 時，wrapper 的 `depth_registered` 也是同一個座標系（`/dep
 4. **轉到 base_link**：`lookup_transform(target_frame, optical_frame, 影像 stamp, timeout)`；相機位置 `C` 是轉換的平移。
 5. **水平半徑修正**：`d_h = (P_s − C).xy`，`center.xy = P_s.xy + r·d_h/‖d_h‖`（不沿完整視線方向推）。
 6. **垂直位置**：`center.z = z_table + H/2`。
-7. **合理性檢查**（`enable_size_check`）：`Z_size = fx'·D/w` 對 `Z_med`、`h_expect = fy'·H/Z_med` 對 `h`，
-   相對誤差超過 `size_check_ratio` 就跳過（debug log 記錄是哪一項、數值多少）；
-   啟用 `enable_workspace_bounds` 時中心落在範圍外也跳過。
+7. **合理性檢查**（`enable_size_check`，**已偏離原始規格**）：把直徑 D、高 H 的圓柱放在算出來的中心、
+   投影回影像得到預期的框，和 YOLO 框的寬、高比；任一項相對誤差超過 `size_check_ratio` 就跳過
+   （debug log 記錄是哪一項、預期幾 px、實際幾 px）。啟用 `enable_workspace_bounds` 時中心落在範圍外也跳過。
+
+   原規格是 `Z_size = fx'·D/w` 對 `Z_med`、`h_expect = fy'·H/Z_med` 對 `h`，只在畫面中央成立。
+   ZED 是廣角，瓶子放在畫面左右兩側時框會被透視拉寬：實測 b3 在偏離中心約 30° 的位置，
+   原公式相對誤差 0.37，正確的瓶子被擋掉（只乘 1/cos 偏角也修不乾淨，因為相機是往下看的）。
+   投影的做法在合成測試中，偏離 ±38° 內框寬、框高誤差都在 3% 以內；類別認錯（b3 當成 b1）時
+   框寬誤差約 60%，照樣擋得下來。這一步需要中心，所以移到步驟 6 之後。
 8. **多幀平滑**：每個類別保留 `smoothing_frames` 個 base_link 中心，發布 x、y 的中位數；
    超過 `smoothing_timeout` 沒有新的有效偵測就清空。同一類別多個框取信心值最高的並警告。
 

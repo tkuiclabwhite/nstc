@@ -499,13 +499,17 @@ class BottleLocalizer(Node):
             txt.id = i
             txt.type = Marker.TEXT_VIEW_FACING
             txt.action = Marker.ADD
+            #分兩行：RViz 2 的文字把空白畫得特別寬，寫成一行時類別和信心值會被拉得很開
+            lines = [label, f"{conf:.2f}"]
             txt.pose.position.x = float(center[0])
             txt.pose.position.y = float(center[1])
-            txt.pose.position.z = float(center[2] + bottle_h / 2.0 + self.p.marker_text_size)
+            #文字以 pose 為中心上下置中，往上抬「行數 x 字高」，最下面那行剛好在瓶頂上方
+            txt.pose.position.z = float(center[2] + bottle_h / 2.0 +
+                                        len(lines) * self.p.marker_text_size)
             txt.pose.orientation.w = 1.0
             txt.scale.z = self.p.marker_text_size
             txt.color.r, txt.color.g, txt.color.b, txt.color.a = r, g, b, a
-            txt.text = f"{label} {conf:.2f}"
+            txt.text = '\n'.join(lines)
             markers.markers.append(txt)
 
         self.det_pub.publish(out)

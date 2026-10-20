@@ -15,6 +15,7 @@ setup(
         ('share/' + package_name, ['package.xml', 'README.md']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -31,6 +32,7 @@ setup(
         'console_scripts': [
             'bottle_localizer = bottle_localization.bottle_localizer:main',
             'bottle_viewer = bottle_localization.bottle_viewer:main',
+            'rviz_relay = bottle_localization.rviz_relay:main',
         ],
     },
 )

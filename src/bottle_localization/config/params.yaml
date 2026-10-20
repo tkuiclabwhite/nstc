@@ -31,7 +31,7 @@ bottle_localizer:
 
     # --- 座標系 ---
     target_frame: base_link
-    z_table: 0.0                  # 桌面在 base_link 下的高度（m）。【待量測】
+    z_table: -0.1803                  #    正式的桌子 80.5 cm、肩關節點 94 cm -> -0.1203；測試用的桌子 74.5 cm -> -0.1803
 
     # --- 偵測框過濾 ---
     score_threshold: 0.5          # YOLO 信心值門檻（bottle_detect_v2 本身已用 0.70 過濾）

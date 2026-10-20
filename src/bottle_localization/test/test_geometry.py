@@ -253,20 +253,62 @@ def test_radius_correction_oblique_direction():
     assert np.linalg.norm(xy - p[:2]) == pytest.approx(0.04)
 
 
-def test_size_check():
-    intr = g.Intrinsics(400.0, 400.0, 480.0, 300.0)
-    dia, hgt, z = 0.05, 0.09, 0.5
-    w_ok = intr.fx * dia / z                  #40 px
-    h_ok = intr.fy * hgt / z                  #72 px
-    ok, reason = g.check_size(intr, dia, hgt, w_ok, h_ok, z, 0.3)
+def test_check_size():
+    """步驟 7：YOLO 框和預期框比，寬、高任一項超過容許比例就擋下。"""
+    expected = (100.0, 200.0, 140.0, 272.0)                #預期 40 x 72 px
+    ok, reason = g.check_size((100, 200, 140, 272), expected, 0.3)
     assert ok and reason == ''
-    #框高多出 20%（俯視時多了瓶蓋頂面）仍在容許範圍內
-    assert g.check_size(intr, dia, hgt, w_ok, h_ok * 1.2, z, 0.3)[0]
-
-    ok, reason = g.check_size(intr, dia, hgt, w_ok / 2, h_ok, z, 0.3)      #框寬只剩一半
+    assert g.check_size((98, 195, 143, 280), expected, 0.3)[0]          #差幾 px 照樣通過
+    ok, reason = g.check_size((100, 200, 120, 272), expected, 0.3)      #框寬只剩一半
     assert not ok and '框寬' in reason
-    ok, reason = g.check_size(intr, dia, hgt, w_ok, h_ok * 2.1, z, 0.3)    #框高兩倍
+    ok, reason = g.check_size((100, 200, 140, 350), expected, 0.3)      #框高多一倍
     assert not ok and '框高' in reason
+    assert not g.check_size((100, 200, 140, 272), None, 0.3)[0]
+
+
+#實機內參與相機姿態（2026-10 上機量測），用來檢查廣角下畫面左右兩側的框
+REAL_INTR = g.Intrinsics(364.95, 364.95, 472.73, 308.38)
+REAL_ROT = g.rpy_to_matrix(0.0120, 0.5397, 0.0) @ R_BODY_FROM_OPT
+REAL_CAM = np.array([0.0875, 0.1163, 0.1700])
+REAL_Z_TABLE = -0.1803
+
+
+@pytest.mark.parametrize('lateral', [0.12, 0.28, 0.40, -0.15])
+@pytest.mark.parametrize('dims', [(0.04485, 0.08988), (0.0829, 0.0923), (0.03785, 0.07924)])
+def test_expected_bbox_matches_render(lateral, dims):
+    """圓柱投影的預期框和光線追蹤出來的外框一致（畫面中央到偏離 ±38 度）。"""
+    dia, hgt = dims
+    _, labels = render([(0.338, lateral, dia, hgt)], REAL_ROT, REAL_CAM,
+                       z_table=REAL_Z_TABLE, intr=REAL_INTR)
+    vs, us = np.nonzero(labels == 1)
+    w, h = us.max() - us.min(), vs.max() - vs.min()
+    e = g.expected_bbox((0.338, lateral), dia, hgt, REAL_Z_TABLE, REAL_ROT, REAL_CAM, REAL_INTR)
+    assert abs((e[2] - e[0]) - w) / w < 0.05
+    assert abs((e[3] - e[1]) - h) / h < 0.05
+    assert abs((e[0] + e[2]) / 2 - (us.min() + us.max()) / 2) < 2.0      #位置也對得上
+
+
+def _real_scene_localize(lateral, true_dims, used_dims):
+    dia, hgt = true_dims
+    depth, labels = render([(0.338, lateral, dia, hgt)], REAL_ROT, REAL_CAM,
+                           z_table=REAL_Z_TABLE, intr=REAL_INTR)
+    return g.localize(to_depth_mm_and_back(depth), bbox_of(labels, 1), REAL_INTR,
+                      used_dims[0], used_dims[1], REAL_ROT, REAL_CAM, REAL_Z_TABLE,
+                      MIN_POINTS, SIZE_RATIO)
+
+
+@pytest.mark.parametrize('lateral', [0.33, 0.40, -0.15])
+def test_off_center_bottle_passes_size_check(lateral):
+    """實測情境：b3 放在畫面左右兩側（偏離 30~38 度），原規格的公式會擋掉，現在要通過。"""
+    res, reason = _real_scene_localize(lateral, (0.04485, 0.08988), (0.04485, 0.08988))
+    assert res is not None, reason
+    assert np.linalg.norm(res.center[:2] - np.array([0.338, lateral])) < 0.005
+
+
+def test_wrong_class_is_rejected():
+    """b3 被 YOLO 認成 b1（尺寸差很多）時，合理性檢查要擋下來。"""
+    res, reason = _real_scene_localize(0.33, (0.04485, 0.08988), (0.0829, 0.0923))
+    assert res is None and '框寬' in reason
 
 
 def test_not_enough_points_returns_none():
