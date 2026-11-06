@@ -1,19 +1,22 @@
-"""只啟動 bottle_localizer 與相機外參的 static transform。
+"""只啟動 bottle_localizer 與相機外參的 TF（camera_tf_publisher）。
 
 不啟動 ZED、YOLO 或深度節點 —— 那些由機器人既有的 camera.launch.py 與
 bottle_detect_v2 負責（同一時間只能有一個程式開相機）。
 
     ros2 launch bottle_localization bottle_localization.launch.py
 
-三個設定檔都可以用 launch 參數換掉:
-    params_file:=...  dims_file:=...  extrinsics_file:=...
+四個設定檔都可以用 launch 參數換掉:
+    params_file:=...  dims_file:=...  extrinsics_file:=...  reference_file:=...
 
 看每個框被跳過的原因（合理性檢查、點數不足、碰到邊緣…）:
     log_level:=debug
 
+執行中調整桌高、外參：另開一個終端機執行 bottle_tuner（README「bottle_tuner」）。
+TUI 需要鍵盤輸入，launch 底下的程式收不到，所以不包在這裡。
+
 相機外參（camera_extrinsics.yaml）量的是 base_link -> zed_camera_link，
 但 ZED wrapper 已經在發 odom -> zed_camera_link，zed_camera_link 不能再有第二個 parent。
-所以這裡發的是反過來的 zed_camera_link -> base_link（README「TF」一節）。
+所以 camera_tf_publisher 發的是反過來的 zed_camera_link -> base_link（README「TF」一節）。
 """
 import os
 
@@ -24,55 +27,63 @@ from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from bottle_localization.geometry import invert_transform, matrix_to_quaternion, rpy_to_matrix
+EXTRINSIC_KEYS = ('x', 'y', 'z', 'roll', 'pitch', 'yaw')
 
 
-def _static_tf(context):
-    path = LaunchConfiguration('extrinsics_file').perform(context)
+def _load_yaml(context, arg, keys):
+    path = LaunchConfiguration(arg).perform(context)
     with open(path, 'r', encoding='utf-8') as f:
-        cfg = yaml.safe_load(f)
-
-    keys = ('parent_frame', 'child_frame', 'x', 'y', 'z', 'roll', 'pitch', 'yaw')
+        cfg = yaml.safe_load(f) or {}
     missing = [k for k in keys if k not in cfg]
     if missing:
         raise RuntimeError(f'{path} 缺少欄位: {", ".join(missing)}')
+    return path, cfg
 
-    rot = rpy_to_matrix(float(cfg['roll']), float(cfg['pitch']), float(cfg['yaw']))
-    trans = [float(cfg['x']), float(cfg['y']), float(cfg['z'])]
-    inv_rot, inv_trans = invert_transform(rot, trans)
-    qx, qy, qz, qw = matrix_to_quaternion(inv_rot)
+
+def _nodes(context):
+    ref_path, ref = _load_yaml(context, 'reference_file',
+                               ('base_frame', 'reference_point', 'reference_height_cm'))
+    ext_path, ext = _load_yaml(context, 'extrinsics_file', ('child_frame',) + EXTRINSIC_KEYS)
+    point = ref['reference_point']
+    if not isinstance(point, list) or len(point) != 3:
+        raise RuntimeError(f'{ref_path} 的 reference_point 要是 [x, y, z]')
 
     actions = []
-    if not cfg.get('measured', False):
+    if not ext.get('measured', False):
         actions.append(LogInfo(msg=(
-            f'[bottle_localization] 警告：{path} 還是 placeholder（measured: false），'
-            f'{cfg["parent_frame"]} 的位置不可信。量完外參後填入並把 measured 改成 true。')))
+            f'[bottle_localization] 警告：{ext_path} 還是 placeholder（measured: false），'
+            f'{ref["base_frame"]} 的位置不可信。量完外參後填入並把 measured 改成 true。')))
 
     actions.append(Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
+        package='bottle_localization',
+        executable='camera_tf_publisher',
         name='bottle_localization_camera_tf',
-        arguments=[
-            '--x', repr(float(inv_trans[0])),
-            '--y', repr(float(inv_trans[1])),
-            '--z', repr(float(inv_trans[2])),
-            '--qx', repr(qx), '--qy', repr(qy), '--qz', repr(qz), '--qw', repr(qw),
-            # 反轉換：parent/child 對調
-            '--frame-id', str(cfg['child_frame']),
-            '--child-frame-id', str(cfg['parent_frame']),
-        ],
         output='screen',
+        parameters=[dict({'base_frame': str(ref['base_frame']),
+                          'camera_frame': str(ext['child_frame'])},
+                         **{k: float(ext[k]) for k in EXTRINSIC_KEYS})],
+    ))
+
+    actions.append(Node(
+        package='bottle_localization',
+        executable='bottle_localizer',
+        name='bottle_localizer',
+        output='screen',
+        parameters=[LaunchConfiguration('params_file').perform(context), {
+            'bottle_dims_file': LaunchConfiguration('dims_file').perform(context),
+            'target_frame': str(ref['base_frame']),
+            'reference_height_cm': float(ref['reference_height_cm']),
+            'reference_z': float(point[2]),
+        }],
+        #只調本節點的 logger，不會把 rclpy 自己的 debug 訊息也打開
+        arguments=['--ros-args', '--log-level',
+                   'bottle_localizer:=' + LaunchConfiguration('log_level').perform(context)],
     ))
     return actions
 
 
 def generate_launch_description():
-    share = get_package_share_directory('bottle_localization')
-    config = os.path.join(share, 'config')
-
-    params_file = LaunchConfiguration('params_file')
-    dims_file = LaunchConfiguration('dims_file')
-
+    config = os.path.join(get_package_share_directory('bottle_localization'), 'config')
     return LaunchDescription([
         DeclareLaunchArgument(
             'params_file', default_value=os.path.join(config, 'params.yaml'),
@@ -84,19 +95,10 @@ def generate_launch_description():
             'extrinsics_file', default_value=os.path.join(config, 'camera_extrinsics.yaml'),
             description='相機外參 base_link -> zed_camera_link'),
         DeclareLaunchArgument(
+            'reference_file', default_value=os.path.join(config, 'robot_reference.yaml'),
+            description='base_link 名稱與量測基準點（換手臂時改這個檔）'),
+        DeclareLaunchArgument(
             'log_level', default_value='info',
             description='bottle_localizer 的 log 等級；debug 會印出每個框被跳過的原因'),
-
-        OpaqueFunction(function=_static_tf),
-
-        Node(
-            package='bottle_localization',
-            executable='bottle_localizer',
-            name='bottle_localizer',
-            output='screen',
-            parameters=[params_file, {'bottle_dims_file': dims_file}],
-            #只調本節點的 logger，不會把 rclpy 自己的 debug 訊息也打開
-            arguments=['--ros-args', '--log-level',
-                       ['bottle_localizer:=', LaunchConfiguration('log_level')]],
-        ),
+        OpaqueFunction(function=_nodes),
     ])

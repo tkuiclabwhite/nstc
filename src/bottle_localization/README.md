@@ -5,10 +5,13 @@
 
 精度目標：`base_link` 下絕對誤差 ≤ 1 cm。
 
-> **上線前必須先填的量測值**（目前都是 placeholder，節點或 launch 會報錯／警告）：
+> **上線前要確認的量測值**（少了節點或 launch 會報錯／警告）：
 > 1. `config/bottle_dims.yaml`：四種藥罐的直徑與高度
 > 2. `config/camera_extrinsics.yaml`：`base_link → zed_camera_link`
-> 3. `config/params.yaml` 的 `z_table`：桌面在 `base_link` 下的高度
+> 3. `config/params.yaml` 的 `table_height_cm`：桌面離地高度（cm），換桌子時要改
+> 4. `config/robot_reference.yaml`：`base_link` 名稱與量測基準點（換手臂時要改）
+>
+> 執行中可以用 `bottle_tuner` 直接調桌高與外參並存回設定檔（見「執行中調整桌高與外參」）。
 >
 > 另外，抓取時數位變焦必須固定在 `params.yaml` 的 `zoom`（目前是 1.0），見「數位變焦」一節。
 
@@ -19,12 +22,18 @@
 | 檔案 | 內容 |
 |---|---|
 | `bottle_localization/geometry.py` | 幾何計算，不依賴 ROS（內參換算、步驟 1–7、平滑、設定檔檢查） |
-| `bottle_localization/bottle_localizer.py` | ROS 節點：訂閱、時間配對、TF 查詢、呼叫 `geometry.py`、發布 |
+| `bottle_localization/bottle_localizer.py` | ROS 節點：訂閱、時間配對、TF 查詢、呼叫 `geometry.py`、發布；執行中可改桌高 |
+| `bottle_localization/camera_tf_publisher.py` | ROS 節點：發相機外參的 TF（`zed_camera_link → base_link`），執行中可改外參 |
+| `bottle_localization/bottle_tuner.py` | 終端機介面：執行中調桌高與外參、存回設定檔 |
+| `bottle_localization/bottle_viewer.py` | 終端機即時顯示輸出的座標 |
+| `bottle_localization/rviz_relay.py` | 把 TF 與 marker 轉到桌機的 RViz |
 | `config/params.yaml` | 節點參數（節點不帶預設值，少一個就啟動失敗） |
 | `config/bottle_dims.yaml` | 藥罐尺寸（公尺） |
 | `config/camera_extrinsics.yaml` | 相機外參 `base_link → zed_camera_link` |
-| `launch/bottle_localization.launch.py` | 只啟動本節點與外參的 static transform |
-| `test/test_geometry.py` | pytest：單元測試 + 合成場景 |
+| `config/robot_reference.yaml` | `base_link` 名稱與量測基準點（換手臂時改這個檔） |
+| `launch/bottle_localization.launch.py` | 只啟動 `bottle_localizer` 與 `camera_tf_publisher` |
+| `tools/` | 校正與實測工具（不會被安裝，直接用 python3 執行，見「準確度校正流程」） |
+| `test/` | pytest：單元測試、合成場景、工具與設定檔的檢查 |
 
 ---
 
@@ -47,7 +56,8 @@ workspace 記進去。沒 source `ros2_adult` 就建置的話，之後 `source ~
 不會再載入 `ros2_adult`，`med_detect` 會找不到 `tku_msgs`。確認方式：
 `grep COLCON_CURRENT_PREFIX= ~/nstc/install/setup.bash` 應該同時看到 `/opt/ros/humble` 與 `ros2_adult/install`。
 
-`--symlink-install` 讓 `config/` 裡的 yaml 改完重新 launch 就生效，不用重建。
+`--symlink-install` 讓 `config/` 裡的 yaml 改完重新 launch 就生效，不用重建；`bottle_tuner` 存檔時也是直接改到 `src` 裡的檔案。
+新增程式（`setup.py` 的 `console_scripts`）之後要重新 `colcon build` 一次，`ros2 run` 才找得到。
 
 執行順序：
 
@@ -60,7 +70,7 @@ ros2 run med_detect bottle_detect_v2
 ros2 launch bottle_localization bottle_localization.launch.py
 ```
 
-三個設定檔都可以用 launch 參數換掉：`params_file:=`、`dims_file:=`、`extrinsics_file:=`。
+四個設定檔都可以用 launch 參數換掉：`params_file:=`、`dims_file:=`、`extrinsics_file:=`、`reference_file:=`。
 
 ### 即時查看輸出的座標
 
@@ -78,6 +88,38 @@ ros2 run bottle_localization bottle_viewer --ros-args -p window:=5.0
 | 多久前 | 最後一次出現在輸出裡是幾秒前 |
 | 出現率 | 最近 `window` 秒（預設 3）的訊息裡，有幾成包含這個類別。偏低代表 YOLO 時有時無，或被本節點跳過 |
 | 抖動 | 最近 `window` 秒內 x、y 的標準差（mm）。瓶子靜止時就是量測的重複性 |
+
+### 執行中調整桌高與外參（`bottle_tuner`）
+
+```bash
+ros2 run bottle_localization bottle_tuner      # 另開一個終端機（SSH 也可以），launch 要先在跑
+```
+
+```
+   參數                    目前生效         設定檔        步距
+ > 桌高                    74.5 cm          74.5 cm       0.5 cm
+   外參 x（往前）          88.0 mm        * 87.0 mm       1 mm
+   ...
+即時座標（base_link，m）
+   b2     x +0.352   y -0.099   z -0.141    0.1 秒前
+```
+
+| 按鍵 | 動作 |
+|---|---|
+| ↑ ↓ | 選參數 |
+| ← → | 減少／增加一個步距（外參 0.5／1／5 mm、0.05／0.1／0.5°，桌高 0.1／0.5／1 cm） |
+| `[` `]` | 換小／大一級的步距 |
+| Enter | 直接輸入數值（量到的桌高用這個） |
+| `s` | 存回設定檔（只改那幾行的數字，註解保留，舊檔留一份 `.bak`） |
+| `r` | 放棄修改，還原成設定檔裡的值 |
+| `q` | 離開；有沒存的修改會問要存檔、還原，還是直接離開 |
+
+- 調整**立刻生效**（不用重新 launch），`*` 表示已經生效但還沒存檔；要按 `s` 才會寫回設定檔，下次 launch 才會沿用。
+- 外參 x、y、z 以 mm、角度以度顯示，存檔時換回 m、rad。各參數對輸出的影響：x、y 讓所有瓶子一起前後、左右移；
+  yaw 讓瓶子繞相機轉（越遠偏越多）；pitch、roll 每 0.1° 大約讓瓶子前後、左右移 0.5 mm；z 對 x、y 幾乎沒有影響。
+- 只有桌高和外參能在執行中改，其他參數（`ros2 param set` 也一樣）會被拒絕，請改設定檔後重新 launch。
+- TUI 需要鍵盤輸入，launch 底下的程式收不到，所以不包在 launch 裡。
+- launch 時用 `params_file:=`／`extrinsics_file:=` 換過檔案的話，`bottle_tuner` 也要用 `--params-file`／`--extrinsics-file` 指定同一個。
 
 ### 在桌機用 RViz 看
 
@@ -170,15 +212,41 @@ key 必須和 YOLO 類別名稱完全一致：`b1`、`b2`、`b3`、`b4`（`best(
 ### `config/camera_extrinsics.yaml`
 
 `zed_camera_link` 在 `base_link` 下的位置（m）與姿態（rad，與 URDF／`static_transform_publisher` 相同的
-roll → pitch → yaw 固定軸慣例；相機往下看時 pitch 為正）。
+roll → pitch → yaw 固定軸慣例）。x、y、z 往前、往左、往上為正；yaw 左右轉頭（往左為正）、
+pitch 點頭（往下看為正）、roll 歪頭（左邊抬高為正）。`base_link` 的名稱來自 `robot_reference.yaml`。
 
 - `zed_camera_link` 是 **ZED X Mini 底部的螺絲孔**（ZED URDF 的根）。
 - 左眼光心在 `zed_camera_link` 的 (−0.010, +0.025, +0.016) m（ZED URDF 的 zedxm 數值，由 wrapper 發布，不用自己加）。
 - 量完把 `measured` 改成 `true`，launch 就不再印警告。
 
-### `params.yaml` 的 `z_table`
+### 桌高：`params.yaml` 的 `table_height_cm`
 
-桌面在 `base_link` 下的高度（m）。瓶身中心的 z 直接用 `z_table + H/2`，不用深度估計值。
+桌面離地高度（cm），用捲尺量。節點換算成桌面在 `base_link` 下的高度：
+
+```
+z_table = (table_height_cm − reference_height_cm) / 100 + reference_point.z
+```
+
+瓶身中心的 z 直接用 `z_table + H/2`，不用深度估計值。正式的桌子 80.5 cm（`z_table` −0.1203），
+測試用的桌子 74.5 cm（−0.1803）。
+
+### `config/robot_reference.yaml`（換手臂時改）
+
+| 欄位 | 目前值 | 說明 |
+|---|---|---|
+| `base_frame` | `base_link` | 輸出座標系，也是外參的 parent |
+| `reference_name` | 右肩關節點 | 量測工具的提示文字 |
+| `reference_point` | [−0.01375, −0.0436, 0.01475] | 基準點在 `base_frame` 下的位置（m），抄自 URDF（`armurdf4_with_hand.urdf` 的 `RshoulderJoint`） |
+| `reference_height_cm` | 94.0 | 基準點離地高度（cm），實際量 |
+
+基準點是量外參（Δx、Δy、Δz）、實測瓶子位置時在機器人身上實際量的那一點。launch（`target_frame`、桌高換算）
+和 `tools/` 的量測工具都讀這個檔，程式裡不寫死。
+
+### 換手臂（`base_link` 改變）時
+
+1. 改 `robot_reference.yaml`：新的 `base_frame` 名稱、基準點在新 `base_frame` 下的位置（從新的 URDF 抄）、基準點離地高度。
+2. 照「準確度校正流程」第 2 步重量外參（Δx、Δy、Δz 從新的基準點量），`extrinsics_calc.py` 會讀新的基準點。
+3. 重新 launch，用 `bottle_tuner` 或實測工具確認。
 
 ---
 
@@ -189,18 +257,42 @@ roll → pitch → yaw 固定軸慣例；相機往下看時 pitch 為正）。
 1. **擺好抓取姿勢**：頭低到抓取角度（記下 `/joint_states` 的馬達 28、29 刻度，之後每次抓取都轉回這組）、
    軀幹直立、機器人不動。
 2. **量外參**（都在抓取姿勢下）：
-   - 右肩關節點 → 鏡頭中點（前面玻璃上兩顆鏡頭圓心連線的中點）沿 前／左／上 的距離 Δx、Δy、Δz（cm）
+   - 基準點（`robot_reference.yaml`，目前是右肩關節點）→ 鏡頭中點（前面玻璃上兩顆鏡頭圓心連線的中點）沿 前／左／上 的距離 Δx、Δy、Δz（cm）
    - roll、pitch：**優先用 `python3 tools/table_plane.py`**，從深度圖擬合桌面，直接量相機相對桌面的角度（取樣區域要是空的桌面）。
      `tools/zed_imu_average.py` 讀的是 IMU 晶片自己的方向，和鏡頭之間有出廠安裝角度（實測 roll −0.96°、pitch −0.24°、yaw 0.54°，見 `/zed/zed_node/left_cam_imu_transform`），只適合粗略核對
    - `python3 tools/zed_stl_front.py`（先 source `ros2_adult`）：前面玻璃到螺絲孔的距離 a
    - `python3 tools/extrinsics_calc.py --dx … --dy … --dz … --pitch … --roll … --a …`，
      把印出來的 7 行貼進 `config/camera_extrinsics.yaml`，重新 launch
-3. **`z_table`**：桌面比右肩關節點高多少（通常是負的）再加 0.01475 m（關節點在 `base_link` 原點上方 1.475 cm）。
+3. **桌高**：用捲尺量桌面離地高度，填 `params.yaml` 的 `table_height_cm`，或在 `bottle_tuner` 裡按 Enter 輸入後按 `s` 存檔。
+   基準點離地高度（`robot_reference.yaml` 的 `reference_height_cm`）也要是實際量的。
    外參填好後，可用 RViz 的 Publish Point 點桌面核對。
 4. **RViz 檢查**：點雲裡桌面應該是水平的、高度在 `z_table`；圓柱應立在桌上、和瓶子重疊。
-5. **實測與微調**：瓶子放在 `base_link` 下已知位置的幾個點（前後、左右分散），用 `bottle_viewer`
-   讀輸出、和真值比對。整體偏移調 `x`、`y`；隨位置旋轉的偏差調 `yaw`。
-   同一組點再開啟兩個選用修正各測一次，決定要不要開。
+5. **實測與微調**（`tools/position_check.py`）：
+   - **先開啟兩個選用修正**。以實機的相機姿態（離桌面 35 cm、低頭 31°）模擬，外參完全正確時，
+     照原規格的演算法本身在 28～40 cm 的近距離就有不規則的誤差（b2 最大 8 mm、b1 最大 14 mm），
+     開啟選用修正後都在 2 mm 以內。演算法誤差每個點不一樣，會混進擬合、把外參帶歪。
+   - **形狀檢查（`tools/pair_check.py`，不用量瓶子的位置）**：兩個不同類別的瓶子中間平放一把尺，
+     尺的兩端貼著瓶身、對準兩瓶圓心，兩瓶圓心的真實距離 = 尺的全長 + 兩瓶半徑。
+     在工作範圍內前後、左右、斜放各擺幾次，比較相機量到的兩瓶距離：
+     `python3 tools/pair_check.py --labels b2 b3 --length <尺的全長cm>`
+     外參的小誤差只會讓所有點一起平移、旋轉，不影響兩瓶距離，所以這一步只檢查深度與定位演算法。
+     形狀不對（某個方向被拉長或壓縮）時，擬合外參也修不好，要先找原因。
+   - 真值的量法（建議用 A）：
+     - **A. 桌邊兩點量距離**：左右肩關節點各垂一條線，量線到桌邊的垂直距離 a_R、a_L，
+       在桌邊標出兩個垂足 P0（右肩正前方）、P0_L（左肩正前方），量 P0 到 P0_L 的距離。
+       之後瓶子隨便放，每個點用捲尺從 P0、P0_L 各量一次到瓶身的最短距離，工具加上半徑、
+       算出瓶子圓心。桌子不用擺正，也不用在桌上畫點：
+       `python3 tools/position_check.py --label b2 --edge <a_R> <a_L> <P0到P0_L>`
+     - **B. 在桌上畫點**：桌子擺正後，以 P0 為基準畫好點，每個點輸入
+       「瓶子圓心相對右肩關節點往前、往左的水平距離（cm）」（往前 = a + 離桌邊的距離）：
+       `python3 tools/position_check.py --label b2`
+   - 同一瓶（建議 b2）放 6～8 個點，前後左右分散、涵蓋實際抓取的範圍。工具每個點收 3 秒取平均、算誤差。
+     真值和相機輸出差超過 `--max-diff`（預設 3 cm）的點會先問要不要記錄，多半是量錯或輸入錯。
+   - 按 Enter 結束後，工具擬合 `真值 ≈ Rz(δ)·輸出 + d`，印出修正後的 `x`、`y`、`yaw`。
+     合成測試（真值帶 ±2 mm 量測誤差、外參誤差 yaw ±2°、位置 ±1 cm）：用 b2 擬合後最大誤差 1.7～1.8 mm。
+   - 用 `bottle_tuner` 填進外參並存檔（或改 `camera_extrinsics.yaml` 後重新 launch），在**不同的點**用新的 CSV 再測一次確認（`--out ~/check_after.csv`），
+     其他瓶子也各放幾個點，確認整體誤差。
+   - 已存的 CSV 可在任何電腦重新分析：`python3 tools/position_check.py --analyze points.csv --extrinsics config/camera_extrinsics.yaml`
 
 ## TF
 
@@ -209,7 +301,8 @@ ZED wrapper 預設會發布 `map → odom → zed_camera_link`（positional trac
 zed_left_camera_optical_frame` 則由 ZED 的 URDF 靜態發布。
 
 `zed_camera_link` 已經有 parent（`odom`），不能再發 `base_link → zed_camera_link`。
-所以 launch 把量到的 `base_link → zed_camera_link` **反過來**，發 `zed_camera_link → base_link`：
+所以 `camera_tf_publisher` 把量到的 `base_link → zed_camera_link` **反過來**，發 `zed_camera_link → base_link`
+（`/tf_static`；執行中外參改了會重新發布）：
 
 ```
 map → odom → zed_camera_link ─┬→ zed_camera_center → zed_left_camera_frame → zed_left_camera_optical_frame
@@ -221,7 +314,7 @@ map → odom → zed_camera_link ─┬→ zed_camera_center → zed_left_camera
 
 日後改用頭部馬達做動態 TF（`base_link → 頸部 → 頭 → zed_camera_link`）時，必須讓 ZED 不再發
 `odom → zed_camera_link`（ZED launch 加 `publish_tf:=false`；策略 API 用的是 `/zed/zed_node/odom`
-topic，不是 TF，不受影響），並移除本 launch 的 static transform。節點本身已經用影像 stamp 查 TF，不用改。
+topic，不是 TF，不受影響），並移除本 launch 的 `camera_tf_publisher`。節點本身已經用影像 stamp 查 TF，不用改。
 
 頭部馬達的回授（給日後的動態 TF）：`motor_control/driver_node` 以 50 Hz 發 `/joint_states`，
 pan 是 `name = "28"`、tilt 是 `"29"`，`position` 是 Dynamixel 原始刻度（一圈 4096，約 0.088°/格），
@@ -333,8 +426,7 @@ zoom = 1.0 時，wrapper 的 `depth_registered` 也是同一個座標系（`/dep
 | `image_scale` | 1.0 | 原生 → 偵測座標系的縮放比 s |
 | `letterbox_top` / `letterbox_left` | 0 / 0 | 黑邊列數／行數（視為上下、左右對稱） |
 | `zoom` | 1.0 | 抓取時固定的數位變焦倍率 |
-| `target_frame` | `base_link` | 需與 `camera_extrinsics.yaml` 的 `parent_frame` 相同 |
-| `z_table` | 0.0 | **待量測** |
+| `table_height_cm` | 80.5 | 桌面離地（cm），換算成 `z_table`；執行中可改（`bottle_tuner`） |
 | `score_threshold` | 0.5 | `bottle_detect_v2` 本身已用 0.70 過濾 |
 | `edge_margin` | 2 | 框離邊緣幾個像素內算碰到邊緣 |
 | `min_valid_points` | 20 | |
@@ -351,7 +443,9 @@ zoom = 1.0 時，wrapper 的 `depth_registered` 也是同一個座標系（`/dep
 | `marker_rgba` / `marker_text_size` | [0.1, 0.8, 0.2, 0.6] / 0.03 | RViz |
 | `warn_throttle_sec` | 2.0 | 同一個警告最快幾秒印一次 |
 
-`bottle_dims_file` 由 launch 帶入。小數參數寫成整數（例如 `0`）也可以，節點會轉型。
+`bottle_dims_file`（`dims_file:=`）、`target_frame`、`reference_height_cm`、`reference_z`（`robot_reference.yaml`）由 launch 帶入，
+不寫在 `params.yaml`。小數參數寫成整數（例如 `0`）也可以，節點會轉型。
+執行中只有 `table_height_cm` 可以改，其他參數改了會被拒絕。
 
 ---
 
@@ -417,6 +511,7 @@ ros2 topic hz /bottle_detections_3d                          # 應接近 YOLO �
 - **zoom 同步**：見「數位變焦」，本節點無法偵測上游兩個節點的 zoom 不一致。
 - **時間配對**：wrapper 深度圖從擷取到送達約 124 ms，比偵測結果（約 80 ms）晚到，偵測到達時最新的深度圖是 1～2 幀前，所以 `sync_tolerance` 放寬到 0.1，配到的是 1～2 幀前的深度。頭固定、瓶子靜止時沒有影響；手臂伸進畫面等移動中的情況可能有影響，正規的修法是讓偵測結果等同一幀的深度圖（尚未實作）。
 - **深度來源與 zoom**：用 wrapper 的深度圖時 zoom 只能是 1.0；抓取時必須用 zoom ≠ 1 的話，要改回 `/depth_mm`，並接受它的頻率與延遲（見上方量測）。
+- **瓶子必須立在桌上**：z 直接用 `z_table + H/2`，不看深度。合理性檢查（步驟 7）把圓柱「立在桌面上」投影成預期的框，瓶子被拿起來、或放在別的高度時框對不上而被跳過，不會輸出錯誤的高度給抓取端。只抬高一兩公分時可能還在容許範圍內，此時 z 會差那一兩公分。
 - **瓶子形狀**：演算法假設直立圓柱、瓶身直徑 D。瓶肩或瓶蓋比瓶身細時，若中央區域取到那些部位，中心會偏後；`enable_top_surface_filter` 只去掉最上面 `top_surface_margin` 的高度。
 - **深度截斷**：只有改回 `/depth_mm` 時才有：它是公尺 × 1000 直接截斷成 uint16，深度最多偏小 1 mm。
 - **相機正上方**：相機在瓶子正上方時水平方向無法決定，該框跳過。

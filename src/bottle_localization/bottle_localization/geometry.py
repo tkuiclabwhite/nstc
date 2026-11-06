@@ -341,6 +341,27 @@ def invert_transform(rot, trans):
     return r.T, -r.T @ t
 
 
+def inverse_extrinsics(x, y, z, roll, pitch, yaw):
+    """外參 base -> camera（位置 m、rpy 弧度）-> 反轉換 camera -> base 的 (平移, 四元數 xyzw)。
+
+    ZED wrapper 已經發 odom -> zed_camera_link，相機的 frame 不能再有第二個 parent，
+    所以 TF 發的是反過來的 camera -> base（README「TF」一節）。
+    """
+    inv_rot, inv_trans = invert_transform(rpy_to_matrix(roll, pitch, yaw), [x, y, z])
+    return inv_trans, matrix_to_quaternion(inv_rot)
+
+
+def table_z(table_height_cm, reference_height_cm, reference_z):
+    """桌面離地高度 -> 桌面在 base_link 下的高度 z_table（m）。
+
+    Args:
+        table_height_cm (float): 桌面離地（cm）。
+        reference_height_cm (float): 量測基準點離地（cm）。
+        reference_z (float): 基準點在 base_link 下的 z（m）。
+    """
+    return (table_height_cm - reference_height_cm) / 100.0 + reference_z
+
+
 def transform_point(rot, trans, point):
     """p_target = R p_source + t。"""
     return np.asarray(rot, dtype=np.float64) @ np.asarray(point, dtype=np.float64) + \

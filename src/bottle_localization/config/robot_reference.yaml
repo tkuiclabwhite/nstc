@@ -1,0 +1,19 @@
+# 機器人的基準：輸出座標系（base_link）的名稱，以及量測時用的基準點。
+# 換手臂（base_link 改變）時改這個檔，再照 README「準確度校正流程」重量外參。
+#
+# 基準點 = 量外參（Δx、Δy、Δz）、量高度、實測瓶子位置時，在機器人身上實際量的那一點。
+# 目前是右肩關節點（armurdf4_with_hand.urdf 的 RshoulderJoint）。
+#
+# 被 launch（節點的 target_frame、桌高換算）和 tools/ 底下的量測工具共用。
+
+# 輸出座標系，也是相機外參的 parent
+base_frame: base_link
+
+# 基準點的名稱（量測工具的提示文字用）
+reference_name: 右肩關節點
+
+# 基準點在 base_frame 下的位置 [x, y, z]（m），抄自 URDF 的 joint origin
+reference_point: [-0.01375, -0.0436, 0.01475]
+
+# 基準點離地高度（cm），用捲尺實際量（抓取姿勢、站在平常的位置）
+reference_height_cm: 94.0

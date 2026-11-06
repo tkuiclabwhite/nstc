@@ -17,22 +17,25 @@
     /bottle_detections_3d   vision_msgs/Detection3DArray
     /bottle_markers         visualization_msgs/MarkerArray（RViz 檢查用）
 
-所有數值都從 params.yaml / bottle_dims.yaml 讀，程式裡不寫預設值。
-參數說明見 README.md。
+所有數值都從 params.yaml / bottle_dims.yaml / robot_reference.yaml 讀，程式裡不寫預設值。
+參數說明見 README.md。執行中只有 table_height_cm（桌高）可以修改（bottle_tuner 或 ros2 param set）。
 """
 import json
+import math
 from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
 import rclpy
 import rclpy.executors
+from rclpy.executors import ExternalShutdownException
 import yaml
 from rclpy.logging import get_logger
 from cv_bridge import CvBridge
-from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from rclpy.time import Time
 
@@ -47,9 +50,12 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from bottle_localization import geometry
 
+#執行中可以修改的參數
+RUNTIME_PARAMS = ('table_height_cm',)
 
-#節點參數與型別。全部由 params.yaml 提供（bottle_dims_file 由 launch 帶進來），
-#少任何一個就在啟動時報錯，不在程式裡放預設值。
+
+#節點參數與型別。全部由 params.yaml 提供（bottle_dims_file、target_frame、reference_height_cm、
+#reference_z 由 launch 從其他設定檔帶進來），少任何一個就在啟動時報錯，不在程式裡放預設值。
 PARAM_SPEC = (
     ('detection_topic',         str),
     ('depth_topic',             str),
@@ -62,7 +68,9 @@ PARAM_SPEC = (
     ('letterbox_left',          int),
     ('zoom',                    float),
     ('depth_is_zoomed',         bool),
-    ('z_table',                 float),
+    ('table_height_cm',         float),
+    ('reference_height_cm',     float),
+    ('reference_z',             float),
     ('score_threshold',         float),
     ('min_valid_points',        int),
     ('edge_margin',             int),
@@ -127,6 +135,8 @@ class BottleLocalizer(Node):
 
         self.p = self.load_params()
         self.validate_params()
+        self._z_table = geometry.table_z(self.p.table_height_cm, self.p.reference_height_cm,
+                                         self.p.reference_z)
         with open(self.p.bottle_dims_file, 'r', encoding='utf-8') as f:
             self.dims = geometry.parse_bottle_dims(yaml.safe_load(f), self.p.class_names)
 
@@ -185,10 +195,13 @@ class BottleLocalizer(Node):
         self.get_logger().info(
             "藥罐尺寸: " + ", ".join(f"{k}=(D {d:.4f}, H {h:.4f})"
                                      for k, (d, h) in self.dims.items()))
-        self.get_logger().info(f"輸出座標系: {self.p.target_frame}，z_table={self.p.z_table}")
+        self.get_logger().info(f"輸出座標系: {self.p.target_frame}")
+        self.log_table()
         self.get_logger().info(
             f"選用修正: 去瓶蓋頂面={'開' if self._top_margin is not None else '關'}，"
             f"對稱弧={'開' if self._arc_iterations else '關'}")
+        #參數都讀完、檢查過才掛上，宣告參數時不會觸發
+        self.add_on_set_parameters_callback(self.on_set_parameters)
         self.get_logger().info("Bottle Localizer Node Initialized")
 
     # -------------------- 參數 --------------------
@@ -247,8 +260,39 @@ class BottleLocalizer(Node):
         if p.enable_workspace_bounds and (p.workspace_x_min >= p.workspace_x_max or
                                           p.workspace_y_min >= p.workspace_y_max):
             problems.append('啟用 enable_workspace_bounds 時，min 必須小於 max')
+        for name in ('table_height_cm', 'reference_height_cm'):
+            if getattr(p, name) <= 0:
+                problems.append(f'{name} 必須 > 0（{getattr(p, name)}）')
         if problems:
             raise ValueError('params.yaml 有問題:\n  ' + '\n  '.join(problems))
+
+    def on_set_parameters(self, params):
+        """執行中只接受 RUNTIME_PARAMS；值不合理就拒絕，參數維持原值。
+
+        參數服務和三個訂閱在同一個互斥群組，不會和偵測回呼同時執行，直接改值就好。
+        """
+        updates = {}
+        for prm in params:
+            if prm.name not in RUNTIME_PARAMS:
+                return SetParametersResult(
+                    successful=False,
+                    reason=f'執行中只能修改 {", ".join(RUNTIME_PARAMS)}；{prm.name} 請改設定檔後重新 launch')
+            if (prm.type_ not in (Parameter.Type.DOUBLE, Parameter.Type.INTEGER)
+                    or not (math.isfinite(prm.value) and prm.value > 0)):
+                return SetParametersResult(successful=False,
+                                           reason=f'{prm.name} 必須是大於 0 的數字（{prm.value!r}）')
+            updates[prm.name] = float(prm.value)
+        for name, value in updates.items():
+            setattr(self.p, name, value)
+        self._z_table = geometry.table_z(self.p.table_height_cm, self.p.reference_height_cm,
+                                         self.p.reference_z)
+        self.log_table()
+        return SetParametersResult(successful=True)
+
+    def log_table(self):
+        self.get_logger().info(
+            f"桌高 {self.p.table_height_cm:.1f} cm（基準點離地 {self.p.reference_height_cm:.1f} cm）"
+            f" -> z_table = {self._z_table:+.4f} m")
 
     # -------------------- 訂閱回呼 --------------------
     def camera_info_callback(self, msg: CameraInfo):
@@ -339,7 +383,7 @@ class BottleLocalizer(Node):
                 diameter, bottle_h = self.dims[label]
                 res, reason = geometry.localize(
                     depth_m, bbox, intr, diameter, bottle_h, rot, trans,
-                    self.p.z_table, self.p.min_valid_points,
+                    self._z_table, self.p.min_valid_points,
                     self.p.size_check_ratio if self.p.enable_size_check else None,
                     self._workspace, self._top_margin,
                     self._arc_iterations, self.p.symmetric_arc_trim_pct)
@@ -528,7 +572,7 @@ def main(args=None):
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

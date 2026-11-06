@@ -29,9 +29,13 @@ bottle_localizer:
     #   depth_process_node 的 /depth_mm：true（和 image.py 同樣的中心裁切）
     depth_is_zoomed: false
 
-    # --- 座標系 ---
-    target_frame: base_link
-    z_table: -0.1803                  #    正式的桌子 80.5 cm、肩關節點 94 cm -> -0.1203；測試用的桌子 74.5 cm -> -0.1803
+    # --- 桌子 ---
+    # 桌面離地高度（cm），用捲尺量。換桌子時改這裡，或執行中用 bottle_tuner 直接改。
+    # 節點換算成桌面在 base_link 下的高度：
+    #   z_table = (桌高 − 基準點離地) / 100 + 基準點的 z（基準點見 robot_reference.yaml）
+    # 正式的桌子 80.5 cm，測試用的桌子 74.5 cm。
+    # 輸出座標系（target_frame）由 launch 從 robot_reference.yaml 的 base_frame 帶進來。
+    table_height_cm: 74.5
 
     # --- 偵測框過濾 ---
     score_threshold: 0.5          # YOLO 信心值門檻（bottle_detect_v2 本身已用 0.70 過濾）
@@ -63,15 +67,15 @@ bottle_localizer:
 
     # --- 選用修正（不在原始規格內，預設關閉 = 照規格）---
     # 理由與合成測試結果見 README「選用修正」。
-    enable_top_surface_filter: false   # 去掉 base_link 高度 >= z_table + H - margin 的點（瓶蓋頂面）
+    enable_top_surface_filter: true   # 去掉 base_link 高度 >= z_table + H - margin 的點（瓶蓋頂面）
     top_surface_margin: 0.01           # m
-    enable_symmetric_arc: false        # 只用正對相機、左右對稱的弧段重算中心
+    enable_symmetric_arc: true        # 只用正對相機、左右對稱的弧段重算中心
     symmetric_arc_iterations: 3
     symmetric_arc_trim_pct: 2.0        # 決定弧段半寬時兩端各去掉的百分位
 
     # --- RViz marker ---
     marker_rgba: [0.1, 0.8, 0.2, 0.6]
-    marker_text_size: 0.03        # 文字高度（m），也當作文字離瓶頂的距離
+    marker_text_size: 0.03        # 文字高度（m）。標籤分兩行（類別、信心值）放在瓶頂上方
 
     # --- log ---
     warn_throttle_sec: 2.0        # 同一個警告最快幾秒印一次

@@ -1,0 +1,165 @@
+# 啟動指令
+
+只列開啟各個節點和常用工具的指令，參數和原理看各套件的 README。沒特別註明的都在機器人上執行，每個指令開一個終端機。
+
+## 每個新終端機先執行
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ros2_adult/install/setup.bash
+source ~/nstc/install/setup.bash
+```
+
+## 藥罐定位（照順序開）
+
+```bash
+# 1. 機器人主系統（ZED 相機、馬達、步態等）。同一時間只能有一個程式開相機
+ros2 launch usb_cam camera.launch.py
+
+# 2. YOLO 藥罐偵測（b1～b4），發布 /med_detect/bottles
+ros2 run med_detect bottle_detect_v2
+
+# 3. 藥罐 3D 定位，發布 /bottle_detections_3d
+ros2 launch bottle_localization bottle_localization.launch.py
+```
+
+## 查看與調整（上面三個在跑的時候）
+
+```bash
+# 即時查看輸出的座標
+ros2 run bottle_localization bottle_viewer
+
+# 執行中調整桌高與外參
+ros2 run bottle_localization bottle_tuner
+
+# YOLO 有框到、卻沒有輸出座標時，印出被跳過的原因（取代上面第 3 步）
+ros2 launch bottle_localization bottle_localization.launch.py log_level:=debug
+```
+
+看 YOLO 畫面：在桌機的瀏覽器開 `http://172.17.121.10:8080/stream?topic=/med_detect/image`
+
+## 在桌機用 RViz 看
+
+```bash
+# 機器人上：把 TF 和標記轉發到桌機
+ros2 run bottle_localization rviz_relay
+
+# 桌機上（ROS_DOMAIN_ID 不要設）
+source /opt/ros/humble/setup.bash
+rviz2 -d ~/nstc_ws/nstc/src/bottle_localization/rviz/bottle_localization.rviz
+```
+
+## 其他節點
+
+```bash
+# 策略
+ros2 run strategy <策略名稱>
+
+# 藥物尺寸辨識
+ros2 run med_detect med_detect
+
+# 舊版 YOLO（不分種類，現在用 bottle_detect_v2）
+ros2 run med_detect bottle_detect
+```
+
+## 外參與桌高校正
+
+工具在 `src/bottle_localization/tools/`，沒有安裝成 ROS 節點，所以直接用 `python3` 執行。詳細步驟見 `src/bottle_localization/README.md` 的「準確度校正流程」。
+
+```bash
+cd ~/nstc/src/bottle_localization/tools
+
+# 量相機相對桌面的 roll、pitch 和高度（換桌子時用）。ZED 要開著，畫面下方中間那塊只能有桌面
+python3 table_plane.py
+
+# 藥罐放在量好的位置，算出誤差和外參的修正量。藥罐定位要在跑
+python3 position_check.py --label b2
+
+# 兩瓶距離檢查：兩罐中間放一把尺，只檢查定位本身準不準。藥罐定位要在跑
+python3 pair_check.py --labels b2 b3 --length <尺的全長 cm>
+```
+
+重新量外參時才用（例如換手臂、相機位置改變）：
+
+```bash
+# ZED IMU 的 roll、pitch，平均 5 秒（只當參考，角度以 table_plane.py 為準）
+python3 zed_imu_average.py
+
+# 從 ZED 的 3D 模型讀出鏡頭玻璃到螺絲孔的距離 a
+python3 zed_stl_front.py
+
+# 由量到的值算出 camera_extrinsics.yaml 要填的數字（任何電腦都能跑）
+python3 extrinsics_calc.py --dx <cm> --dy <cm> --dz <cm> --pitch <度> --roll <度> --a <m>
+```
+
+## FoundationPose 試驗（實驗用，不影響上面的系統）
+
+桌機上的指令都在 `~/nstc_ws/nstc/foundationpose_trial` 執行。第一次在新電腦上用，要先照該資料夾 README.md 的「建立工具用的 Python 環境」和「階段 2」建好環境。
+
+### 即時看效果
+
+```bash
+# 第一次要先把工具傳到機器人（在桌機上）
+ssh iclab@172.17.121.10 mkdir -p fp_bags
+scp tools/fp_stream_server.py tools/fp_record.py iclab@172.17.121.10:~/fp_bags/
+
+# 機器人上（藥罐定位的三個要先開）
+python3 ~/fp_bags/fp_stream_server.py
+
+# 桌機上
+tools/fp_run.sh python tools/fp_live_view.py
+
+# 沒有機器人時，用錄好的資料重播（兩個都在桌機上）
+tools/fp_run.sh python tools/fp_stream_server.py --replay data/robot_inverted_01
+tools/fp_run.sh python tools/fp_live_view.py --server 127.0.0.1
+```
+
+### 錄資料與離線分析
+
+```bash
+# 1. 錄 bag（機器人上，藥罐定位的三個要先開）
+#    名稱要含 upright、inverted 或 tilted，彙總時用來判斷瓶蓋應該朝哪邊
+cd ~/fp_bags && python3 fp_record.py robot_upright_02 --seconds 20
+
+# 2. 傳回桌機
+scp -r iclab@172.17.121.10:~/fp_bags/robot_upright_02 bags/
+
+# 3. 匯出成 FoundationPose 的格式
+env -u PYTHONPATH .venv/bin/python tools/export_rosbag.py bags/robot_upright_02 --out data
+
+# 4. 跑 FoundationPose，每個類別一次，輸出姿態和疊圖影片 overlay.mp4
+for l in b1 b2 b3 b4; do
+    tools/fp_run.sh python tools/run_fp_scene.py --scene data/robot_upright_02/$l \
+        --mesh meshes/shaped/$l.obj --out outputs/robot_upright_02_${l}_shaped
+done
+
+# 5. 彙總傾角、中心高度、瓶蓋方向
+tools/fp_run.sh python tools/summarize_runs.py robot_upright_02
+
+# 6. 和現有定位（/bottle_detections_3d）比較位置、頻率、延遲
+env -u PYTHONPATH .venv/bin/python tools/compare_localizer.py robot_upright_02
+```
+
+### 其他
+
+```bash
+# 改了 config/bottle_shapes.yaml（藥罐尺寸）之後，重新產生 mesh
+env -u PYTHONPATH .venv/bin/python tools/make_shaped_meshes.py
+
+# 跑測試
+env -u PYTHONPATH .venv/bin/python -m pytest tests/ -q
+```
+
+桌機的 `~/.bashrc` 會載入 ROS，它的 `PYTHONPATH` 會讓這些工具出錯，所以指令前要加 `env -u PYTHONPATH`；`tools/fp_run.sh` 已經處理好了。
+`tools/` 裡沒列在這裡的是開發和驗證用的工具，用法見 README.md。
+
+## 改了程式之後重新建置
+
+```bash
+# 一定要先 source ros2_adult，否則 med_detect 會找不到 tku_msgs
+source /opt/ros/humble/setup.bash
+source ~/ros2_adult/install/setup.bash
+cd ~/nstc
+colcon build --symlink-install
+source install/setup.bash
+```

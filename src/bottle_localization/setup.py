@@ -31,6 +31,8 @@ setup(
     entry_points={
         'console_scripts': [
             'bottle_localizer = bottle_localization.bottle_localizer:main',
+            'camera_tf_publisher = bottle_localization.camera_tf_publisher:main',
+            'bottle_tuner = bottle_localization.bottle_tuner:main',
             'bottle_viewer = bottle_localization.bottle_viewer:main',
             'rviz_relay = bottle_localization.rviz_relay:main',
         ],
