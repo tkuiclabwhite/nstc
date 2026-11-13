@@ -1,0 +1,16 @@
+# ExecuteTaskPlan.action
+# Goal
+Subtask subtask
+
+---
+
+# Result
+bool success
+uint8 error_code
+string message
+
+---
+
+# Feedback
+string status
+float32 progress

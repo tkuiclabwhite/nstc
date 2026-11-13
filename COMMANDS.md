@@ -4,17 +4,33 @@
 
 ## 每個新終端機先執行
 
+nstc 已經不靠 ros2_adult，不用再 source 它。`~/.bashrc` 裡如果有自動 source ros2_adult，也不影響（nstc 最後 source，同名套件以 nstc 為準）。
+
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/ros2_adult/install/setup.bash
 source ~/nstc/install/setup.bash
 ```
+
+## 系統啟動（nstc.launch.py）
+
+ZED、手臂馬達 driver、motionpackage、雙手、影像處理 4 個節點、rosbridge 9090、web_video_server 8080、手臂 MoveIt + 橋接。
+同一時間只能有一個程式開相機和 U2D2，不要再同時開 ros2_adult 的 `camera.launch.py`。
+
+```bash
+ros2 launch ~/nstc/launch/nstc.launch.py                 # 全部
+ros2 launch ~/nstc/launch/nstc.launch.py hands:=left     # 只接左手（right 同理）
+ros2 launch ~/nstc/launch/nstc.launch.py hands:=none     # 不開手
+ros2 launch ~/nstc/launch/nstc.launch.py arm:=false      # 不開手臂 MoveIt / 橋接
+```
+
+網頁：在桌機用 sftp 掛載 `~/nstc/web/` 直接開 html（IP 自動判斷）。
+Motion、ImageProcess、HandControl、HandMotion、HandTouch、RobotViewer。
 
 ## 藥罐定位（照順序開）
 
 ```bash
-# 1. 機器人主系統（ZED 相機、馬達、步態等）。同一時間只能有一個程式開相機
-ros2 launch usb_cam camera.launch.py
+# 1. 系統（ZED 相機、馬達、手等），見上一節
+ros2 launch ~/nstc/launch/nstc.launch.py
 
 # 2. YOLO 藥罐偵測（b1～b4），發布 /med_detect/bottles
 ros2 run med_detect bottle_detect_v2
@@ -51,7 +67,7 @@ rviz2 -d ~/nstc_ws/nstc/src/bottle_localization/rviz/bottle_localization.rviz
 
 ## 手臂（armpackage）
 
-說明在 `~/arm_ws/README.md`（還沒搬進 nstc，套件名稱看成 `armpackage`）。`~/arm_ws/install/setup.bash` 不要跟 nstc 一起 source，兩邊都有 `seven_axis_arm_urdf`、`seven_axis_arm_moveit_config`。
+程式已搬進 `src/armpackage`（套件名稱 `armpackage`），說明還在 `~/arm_ws/README.md`。`~/arm_ws/install/setup.bash` 不要跟 nstc 一起 source，兩邊都有 `seven_axis_arm_urdf`、`seven_axis_arm_moveit_config`。
 
 ```bash
 # 模擬：MoveIt + rosbridge + 網頁橋接。從 SSH 開的要加 rviz:=false
@@ -69,7 +85,7 @@ ros2 topic pub --once /arm_real_enable std_msgs/msg/Bool "{data: true}"
 網頁：在桌機的瀏覽器用 sftp 掛載打開 `~/nstc/web/RobotViewer.html`。實機每次停穩會記一行到 `~/.ros/arm_settle_log.csv`。
 
 ```bash
-# 開機自我檢查（只讀）：要在 camera.launch.py 開之前跑，driver_node 開著會佔住 U2D2
+# 開機自我檢查（只讀）：要在 nstc.launch.py 開之前跑，driver_node 開著會佔住 U2D2
 ros2 run armpackage self_check.py
 ros2 run armpackage self_check.py config        # 只檢查設定檔，不碰馬達，隨時可以跑
 
@@ -86,12 +102,63 @@ ros2 run armpackage jog_motor.py check right    # 左手：check left
 ros2 run armpackage build_viewer.py
 ```
 
+## 子三任務管理（sp3_task_manager）
+
+接主控的取放任務 `/manip/pick_place`（型別 `interfaces/action/ExecuteTaskPlan`），說明在 `src/sp3_task_manager/README.md`。
+主控模擬器在 `src/drivers/ros2_task_plan_demo`。
+
+### 不接硬體測流程（dry_run）
+
+```bash
+# 終端機 1：任務管理，各模組模擬成功
+ros2 launch sp3_task_manager task_manager.launch.py dry_run:=true
+
+# 終端機 2：主控模擬器（要有螢幕），按「送出請求」
+ros2 run task_plan_demo client_gui
+```
+
+想看失敗時的回覆：改 `src/sp3_task_manager/config/task_manager.yaml` 的 `dry_run.fail`
+（`detect` 找不到藥瓶、`arm` 手臂到不了、`grip` 沒夾到、`hold` 抬起後沒夾住；`''` 全部成功），重開終端機 1。
+
+### 接實機
+
+```bash
+# 1. 系統（含手臂）
+ros2 launch ~/nstc/launch/nstc.launch.py
+# 2. YOLO 與藥罐定位
+ros2 run med_detect bottle_detect_v2
+ros2 launch bottle_localization bottle_localization.launch.py
+# 3. 網頁 IK 面板打開「實機跟隨」（或下一行）
+ros2 topic pub --once /arm_real_enable std_msgs/msg/Bool "{data: true}"
+# 4. 任務管理
+ros2 launch sp3_task_manager task_manager.launch.py
+```
+
+上實機前先填 `task_manager.yaml` 標【待量測】的放置點 `place_targets` 與工作範圍 `workspace`。
+
+### 沒有螢幕時用指令送任務、看狀態
+
+```bash
+# 送任務（Ctrl+C 會取消）。keys 可用：task_id、bottle_class（必填 b1～b4）、arm（auto/left/right）、place_target、timeout_s
+ros2 action send_goal --feedback /manip/pick_place interfaces/action/ExecuteTaskPlan \
+  "{subtask: {parameter_keys: [bottle_class, arm, place_target], parameter_values: [b1, auto, tray_1]}}"
+
+# 狀態（IDLE / BUSY / ERROR / ESTOP），1 Hz
+ros2 topic echo /manip/status
+
+# 急停／解除
+ros2 topic pub --once /estop std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /estop std_msgs/msg/Bool "{data: false}"
+```
+
+```bash
+# 單元測試（不需要 ROS）
+cd ~/nstc/src/sp3_task_manager && python3 -m pytest test -q
+```
+
 ## 其他節點
 
 ```bash
-# 策略
-ros2 run strategy <策略名稱>
-
 # 藥物尺寸辨識
 ros2 run med_detect med_detect
 
@@ -193,10 +260,12 @@ env -u PYTHONPATH .venv/bin/python -m pytest tests/ -q
 ## 改了程式之後重新建置
 
 ```bash
-# 一定要先 source ros2_adult，否則 med_detect 會找不到 tku_msgs
+# nstc 自己有 nstc_msgs，不用 source ros2_adult
 source /opt/ros/humble/setup.bash
-source ~/ros2_adult/install/setup.bash
 cd ~/nstc
 colcon build --symlink-install
 source install/setup.bash
+
+# 只建改到的套件，例如任務管理
+colcon build --symlink-install --packages-select sp3_task_manager
 ```
