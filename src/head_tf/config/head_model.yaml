@@ -1,0 +1,59 @@
+# 頭部模型：由頭部馬達刻度算 zed_camera_link 的姿態（head_tf/head_model.py）。
+# 由 tools/fit_head_model.py 擬合產生，不要手改；重新收資料後重跑那支程式。
+# offset_to_screw：軸上一點 -> 螺絲孔（m，基準刻度時的 base_link）；基準姿態用 camera_extrinsics.yaml。
+reference_ticks:
+  pan: 2048
+  tilt: 2300
+deg_per_tick: 0.087890625
+pan:
+  sign: 1
+  scale: 1.0
+  direction:
+  - 0.127195
+  - 0.000353
+  - 0.991878
+  offset_to_screw:
+  - 0.08449
+  - -0.00208
+  - 0.0
+tilt:
+  sign: 1
+  scale: 1.0
+  direction:
+  - 0.007132
+  - 0.999974
+  - 0.000692
+  offset_to_screw:
+  - 0.08095
+  - 0.0
+  - 0.03165
+fit:
+  date: 2026-11-10 22:29
+  sweeps:
+  - /home/iclab/nstc_ws/head_sweeps/sweep_01
+  extrinsics: /home/iclab/nstc_ws/head_sweeps/sweep_01/robot_config/camera_extrinsics.yaml
+  residual_rms:
+    imu_deg: 0.0583
+    table_mm: 1.38
+  imu_mount_roll_pitch_deg:
+  - 0.218
+  - 0.577
+  table_z_m:
+    sweep_01: -0.17827
+  validation_mm:
+    固定外參（現在的做法）:
+      median: 59.4
+      p95: 78.18
+      max: 87.46
+    手量的轉軸（pan 當垂直）:
+      median: 8.42
+      p95: 11.81
+      max: 11.96
+    擬合的模型:
+      median: 1.42
+      p95: 2.63
+      max: 3.53
+    擬合的模型（留一驗證）:
+      median: 1.45
+      p95: 2.62
+      max: 3.63

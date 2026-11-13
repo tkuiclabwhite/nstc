@@ -1,0 +1,9 @@
+std_msgs/MultiArrayLayout layout
+string name
+string item_name
+int32 motionstate
+int32 id
+int32 savestate
+bool saveflag
+int32[] motionlist
+int32[] motordata

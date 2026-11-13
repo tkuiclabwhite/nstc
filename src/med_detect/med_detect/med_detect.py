@@ -27,7 +27,7 @@ import numpy as np
 import rclpy
 from std_msgs.msg import String
 from sensor_msgs.msg import Image as RosImage
-from tku_msgs.msg import Zoom
+from nstc_msgs.msg import Zoom
 
 from strategy.API import API
 

@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>handpackage</name>
+  <version>0.0.0</version>
+  <description>LinkerHand O6 雙手控制：模式仲裁、雙手同步、夾持到壓力停止、手部動作序列。
+  硬體通訊交給 linker_hand_ros2_sdk，這裡只處理它做不到的事。</description>
+  <maintainer email="5454sky@gmail.com">iclab</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nstc_msgs</exec_depend>
+  <exec_depend>linker_hand_ros2_sdk</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

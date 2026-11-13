@@ -13,7 +13,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
-  <exec_depend>tku_msgs</exec_depend>
+  <exec_depend>nstc_msgs</exec_depend>
   <exec_depend>strategy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

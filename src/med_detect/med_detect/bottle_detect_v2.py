@@ -50,7 +50,7 @@ from std_msgs.msg import String
 from sensor_msgs.msg import Image as RosImage
 from cv_bridge import CvBridge
 
-from tku_msgs.msg import Zoom
+from nstc_msgs.msg import Zoom
 
 from med_detect.bottle_detect import (
     map_to_strategy, _literal, normalize_imgsz, load_model_metadata, local_ip,

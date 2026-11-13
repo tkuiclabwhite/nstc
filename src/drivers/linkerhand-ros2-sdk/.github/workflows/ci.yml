@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  basic-checks:
+    name: Basic checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Reject generated and backup files tracked by Git
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          generated_files="$({
+            git ls-files \
+              | grep -E '(^|/)(__pycache__/|build/|install/|log/)|\.py[co]$'
+          } || true)"
+
+          if [[ -n "${generated_files}" ]]; then
+            echo "Generated files must not be committed:"
+            echo "${generated_files}"
+            exit 1
+          fi
+
+          backup_files="$(git ls-files '*.bak' '*.ttk')"
+
+          if [[ -n "${backup_files}" ]]; then
+            echo "*.bak and *.ttk files must not be committed:"
+            echo "${backup_files}"
+            exit 1
+          fi
+
+      - name: Check unresolved merge markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          conflict_markers="$(git grep -n -E '^(<<<<<<<|>>>>>>>)' -- . || true)"
+
+          if [[ -n "${conflict_markers}" ]]; then
+            echo "Unresolved merge markers found:"
+            echo "${conflict_markers}"
+            exit 1
+          fi
+
+      - name: Check Python syntax
+        shell: bash
+        env:
+          PYTHONPYCACHEPREFIX: /tmp/linkerhand-ci-pycache
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.py' | xargs -0 -r python3 -m py_compile
+
+      - name: Check shell syntax
+        shell: bash
+        run: git ls-files -z '*.sh' | xargs -0 -r -n 1 bash -n
+
+      - name: Install check tools
+        run: >-
+          python3 -m pip install --disable-pip-version-check
+          ruff==0.12.11 PyYAML==6.0.2
+
+      - name: Check configuration syntax
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import tomllib
+          import xml.etree.ElementTree as ET
+
+          import yaml
+
+
+          def tracked_files(*patterns: str) -> list[Path]:
+              output = subprocess.check_output(
+                  ["git", "ls-files", "-z", *patterns]
+              ).decode()
+              return [Path(name) for name in output.split("\0") if name]
+
+
+          for path in tracked_files("*.yaml", "*.yml"):
+              with path.open(encoding="utf-8") as stream:
+                  list(yaml.safe_load_all(stream))
+
+          for path in tracked_files("*.toml"):
+              with path.open("rb") as stream:
+                  tomllib.load(stream)
+
+          for path in tracked_files("*.xml"):
+              ET.parse(path)
+          PY
+
+      - name: Check Python lint
+        run: ruff check .

@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="Content_Type" content="text/html" charset="UTF-8">
+    <link rel="SHORTCUT ICON" href="./picture/icon.png">
+    <title>HandMotion</title>
+
+    <script src="./js/config.js"></script>
+    <script src="./js/nav.js"></script>
+    <script src="./js/hand_presets.js"></script>
+    <script type="text/javascript" src="./js/roslib/eventemitter2.min.js"></script>
+    <script type="text/javascript" src="./js/roslib/roslib.min.js"></script>
+
+    <link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/style.css">
+    <link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/InterfaceTable.css">
+
+    <style>
+        /* 版面與 MotionControlInterface 一致，只有欄數從 27 變 12。
+           .box / .smallbox / .inthesmallbox / .textbox / #leftbox / #CheckSumBox
+           全部沿用 InterfaceTable.css，不自己重新定義。 */
+
+        /* InterfaceTable.css 的 .box(670px) / .smallbox(1200px) / .inthesmallbox4(2550px)
+           都是 27 欄時代的尺寸。12 欄只用到 700px，沿用原尺寸右邊會空一大片，
+           所以這裡把三層（外框、表頭、資料區）全部對齊成同一個寬度。 */
+        /* 12 欄：ID 50 + Name 50 + Stop 100 + 12 x 50 = 800 */
+        .row12 { width: 800px; }
+        /* MotionList：ID 50 + Name 50 + Stop 100 + (A,D) x 20 x 50 = 2200 */
+        .rowlist { width: 2200px; }
+        /* 外框比內容寬一點點，留給垂直捲軸；12 欄時剛好不會有水平捲軸 */
+        #tablebox { width: 822px; height: 360px; }
+        /* 停止條件自己一欄（唯讀，用「停止條件」那一列的下拉去改）。
+           原本是塞在 Name 後面當 |stop=... 後綴，但那樣名字就不能打字了。
+           #headercolumn 是 id 選擇器，權重比 class 高，所以要 !important */
+        .stopbox { width: 100px !important; }
+        input.textbox.stopbox { width: 100px !important; cursor: pointer; }
+        input.textbox.stopbox.has-stop { background-color: #4a2a00; color: #ffc46b; }
+
+        .strategy-box {
+            display: inline-block; background-color: #222; border: 1px solid #444;
+            border-radius: 5px; padding: 8px 20px; box-shadow: inset 0 0 10px #000;
+            text-align: center; min-width: 120px;
+        }
+        .strategy-label {
+            color: #888; font-size: 12px; text-transform: uppercase;
+            display: block; margin-bottom: 3px;
+        }
+        #current-strategy-name {
+            color: #00D600; font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 22px; font-weight: bold;
+        }
+
+        /* History 面板：與 MotionControlInterface 同一份樣式 */
+        #history-panel {
+            width: 160px; height: 110px; flex-shrink: 0;
+            background: rgba(20, 30, 33, 0.95); border: 1px solid #444;
+            border-radius: 5px; padding: 6px 8px;
+            font-family: 'Consolas', 'Monaco', monospace; font-size: 12px;
+        }
+        #history-panel .hp-title {
+            color: #888; font-size: 10px; text-transform: uppercase;
+            letter-spacing: 2px; text-align: center;
+            border-bottom: 1px solid #333; padding-bottom: 4px; margin-bottom: 4px;
+        }
+        #history-list { max-height: 80px; overflow-y: auto; }
+        #history-list .hp-item        { color: #555;    padding: 1px 4px; }
+        #history-list .hp-item-undo   { color: #03e9f4; padding: 1px 4px; }
+        #history-list .hp-now         { color: #00D600; text-align: center;
+                                        border-top: 1px solid #00D600;
+                                        border-bottom: 1px solid #00D600;
+                                        margin: 3px 0; padding: 1px 0;
+                                        font-size: 10px; letter-spacing: 2px; }
+        #history-list .hp-item-redo   { color: #ffaa00; padding: 1px 4px; }
+        #history-list .hp-item-future { color: #554400; padding: 1px 4px; }
+        #history-list .hp-empty       { color: #444; text-align: center; padding: 4px; }
+
+        /* 左右兩欄。
+           疊在一起的真正原因是 #container 寬度不夠裝表格，內容直接溢出到
+           右邊去（溢出的部分不佔 box，所以 float 或 flex 都救不了）：
+             #leftbox 30+130=160，再加 .box 的 margin 20 + 邊框 5 + 822 + 5
+             = 1012，但 InterfaceTable.css 的 #container 只有 900。
+           27 欄時代的 .box 是 670px（160+700=860）才塞得進去，所以全身那頁沒事。
+           這裡把 #container 加寬到真的裝得下，右欄縮窄一點讓兩欄在
+           1366 寬的螢幕上還能並排；真的不夠寬就換行，不會再疊。 */
+        #hm-cols { display: flex; align-items: flex-start; gap: 16px;
+                   flex-wrap: wrap; }
+        #hm-cols > #container { float: none; flex: 0 0 auto; width: 1020px; }
+        #rightarea { float: none; flex: 0 0 340px; width: 340px; margin-top: 0; }
+        #rightarea div { box-sizing: border-box; max-width: 100%; }
+        #rightarea > div { width: 100%; }
+        /* 「目前刻度」照抄 MotionControlInterface 的 #motor_area。
+           那邊的 .motor-group / .header 完全沒有 CSS —— 就是灰底框裡幾個
+           預設樣式的表，配白底的 readonly input。所以這裡也只設版面不改外觀，
+           唯一加的是 input 寬度（全身那頁是瀏覽器預設寬度，兩隻手排不下）。 */
+        #hm-motor-area { display: flex; justify-content: center; gap: 20px;
+                         flex-wrap: wrap; width: 100%; }
+        .motor-group { text-align: center; }
+        .motor-group input[type=text] { width: 64px; text-align: center; }
+        /* 離線就灰掉，不要顯示 0 —— 0 看起來像握到底 */
+        .motor-group input[type=text].off { color: #999; }
+        /* 只是給 getElementsByClassName 當標記用（同 motion 的 copy_motor_cb） */
+        .hm-live-cb { cursor: pointer; }
+        /* InterfaceTable.css 的 #CheckSumBox 是 position:absolute; top:450px —— 那是
+           以整頁為基準的絕對座標。全身那頁上方內容比較高，剛好落在 ID 輸入框下面；
+           這一頁比較短，450px 正好壓在「CheckSum ID」那一格上，輸入框就被蓋住了。
+           改成跟著 #leftbox 自然排下來，就不會再跟任何東西重疊。 */
+        #CheckSumBox { position: static; top: auto; left: auto; }
+        /* #hm-nomsgs 用的。原本只寫了 class 卻沒有這段 CSS，
+           所以「nstc_msgs 沒編」的提示是深底上的深字，等於看不到 */
+        .warnbox {
+            background: rgba(74, 42, 0, 0.95); border: 1px solid #ffc46b;
+            border-radius: 5px; padding: 8px 12px; color: #ffc46b;
+            font-size: 14px; line-height: 1.6;
+        }
+        /* 播放狀態（onStatus 每次 /hand/status 都會寫這裡） */
+        #hm-playstat {
+            margin-top: 6px; padding: 4px 6px;
+            background: rgba(20, 30, 33, 0.95); border: 1px solid #444;
+            border-radius: 4px; color: #ffd24d;
+            font-family: 'Consolas', 'Monaco', monospace; font-size: 12px;
+            min-height: 1.4em;
+        }
+        .state-on  { color: #00D600; font-weight: bold; }
+        .state-off { color: #ff6b6b; font-weight: bold; }
+        .ok { color: #00D600; }
+        .err { color: #ff6b6b; }
+        .info { color: #ffd24d; }
+    </style>
+</head>
+
+<body>
+    <ul id="mainnav"></ul>
+
+    <div style="padding-left: 30px; height: 100px; width: 1010px;">
+        <div style="height: 30px;">
+            <p id="connected" style="color:#00D600; display:none; font-size: 20px; margin: 0;">
+                Connected
+            </p>
+        </div>
+        <div class="strategy-box" style="margin-top: 10px;">
+            <span class="strategy-label">Strategy</span>
+            <span id="current-strategy-name">---</span>
+        </div>
+    </div>
+
+    <form id="childform" name="childform">
+      <div id="hm-cols">
+        <div id="container">
+
+            <div style="margin-left: 180px;">
+                <input type="text" id="hm-filename" name="filename" value="Your_File_Name"
+                       style="width: 179px;">
+                <input type="button" id="SaveButton" value="Save" style="width:80px;">
+                <input type="button" id="ReadButton" value="Read" onclick="doRead();"
+                       style="width:80px;">
+                <input type="button" id="resetButton" value="reset" onclick="resetButtons();"
+                       style="width:80px;" title="把執行中鎖住的按鈕解開（與全身那頁相同）">
+            </div>
+
+            <div style="display: flex; align-items: flex-start; margin-left: 10px; margin-top: 8px;">
+                <div id="history-panel">
+                    <div class="hp-title">History</div>
+                    <div id="history-list"><div class="hp-empty">empty</div></div>
+                </div>
+
+                <div style="margin-left: 12px;">
+                    <div style="width: 800px; margin-top: 8px; margin-bottom: 16px;">
+                        ID: <input type="text" id="hm-sendid" value="-1" style="width:50px;">
+                        Sector: <input type="text" id="hm-sector" value="-1" style="width:50px;">
+                        <input type="button" id="SendButton" value="Send" onclick="doSend();"
+                               style="width:80px;">
+                        <input type="button" id="executeButton" value="execute"
+                               onclick="doExecute();" style="width:80px; margin-left:5px;">
+                        <input type="button" id="OpenBothButton" value="張開(雙)" onclick="doOpen('both');"
+                               style="width:80px; margin-left:15px;">
+                        <input type="button" id="OpenLeftButton" value="張開(左)" onclick="doOpen('left');"
+                               style="width:80px;">
+                        <input type="button" id="OpenRightButton" value="張開(右)" onclick="doOpen('right');"
+                               style="width:80px;">
+                    </div>
+
+                    <div style="width: 800px; margin-bottom: 16px;">
+                        <input type="button" id="undoButton" value="↩ Undo" onclick="doUndo();"
+                               style="width:80px" disabled="disabled">
+                        <input type="button" id="redoButton" value="↪ Redo" onclick="doRedo();"
+                               style="width:80px" disabled="disabled">
+                        <input type="button" id="clearHistoryButton" value="Clear History"
+                               onclick="doClearHistory();" style="width:100px; margin-left:10px;"
+                               disabled="disabled">
+                    </div>
+
+                    <div style="width: 800px; margin-bottom: 16px;">
+                        ID:&nbsp;<input type="text" id="hm-mulid" value="-1" style="width:50px">
+                        multipy&nbsp;<input type="text" id="hm-multimes" value="1" style="width:50px">
+                        times&nbsp;<input type="button" id="MultipleButton" value="Multiple" onclick="opMultiple();"
+                                   style="width:80px; margin-right:23px;">
+                        ID1:&nbsp;<input type="text" id="hm-m1" value="-1" style="width:50px;">
+                        &nbsp;merge&nbsp;to&nbsp;ID2:&nbsp;<input type="text" id="hm-m2"
+                               value="-1" style="width:50px;">
+                        <input type="button" id="MergeButton" value="Merge" onclick="opMerge();" style="width:80px;">
+                    </div>
+
+                    <div style="width: 800px; margin-bottom: 16px;">
+                        左右互複製&nbsp;ID:&nbsp;<input type="text" id="hm-mirid" value="-1"
+                               style="width:50px;">
+                        <select id="hm-mirsrc" style="height:25px; width:130px;">
+                            <option value="L">左手 → 右手</option>
+                            <option value="R">右手 → 左手</option>
+                        </select>
+                        <input type="button" id="MirrorButton" value="Copy L/R"
+                               onclick="opMirrorHand();" style="width:80px;">
+                    </div>
+
+                    <div style="width: 800px; margin-bottom: 16px;">
+                        停止條件&nbsp;ID:&nbsp;<input type="text" id="hm-stopid" value="-1"
+                               style="width:50px;">
+                        <select id="hm-stopmode" style="height:25px; width:230px;">
+                            <option value="">無（一般姿態）</option>
+                            <option value="each">each － 每指各自到門檻各自停</option>
+                            <option value="any">any － 任一指到就整手停</option>
+                            <option value="anyhand">anyhand － 任一手到就兩手停</option>
+                            <option value="hold">hold － 到門檻後維持</option>
+                        </select>
+                        門檻&nbsp;<input type="text" id="hm-stopth" value="250"
+                               style="width:50px;"
+                               title="0~10200（五指矩陣 40 格的總和）。空載實測是 0。
+輕觸 50~150／輕握 200~400／紮實 600~1000">
+                        步長&nbsp;<input type="text" id="hm-stopstep" value="4"
+                               style="width:40px;"
+                               title="每個控制週期（1/30 秒）往內收幾刻度，3 ~ 60。越小越輕柔">
+                        <input type="button" value="套用" onclick="applyStop();"
+                               style="width:80px;"
+                               title="套用到目前這一頁（Relative 或 Absolute）的那個 ID。點表格裡的 Stop 格可以把該列帶進來">
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-left: 120px;">
+                <div id="head">
+                    <table>
+                        <tr>
+                            <td>
+                                <select style="height:25px; margin-right: 5px;" id="addressSelect">
+                                    <option value="localhost">localhost</option>
+                                </select>
+                            </td>
+                            <td>
+                                <button type="button" style="width:110px ;height:25px;"
+                                        onclick="enterAddress()">Enter Address</button>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+
+            <div id="label" style="width: 820px; margin-left:180px; margin-top:10px;"></div>
+            <div id="hm-nomsgs" class="warnbox" style="display:none; width:820px;
+                 margin-left:180px;"></div>
+
+            <div style="float: left; width: 1010px;">
+                <div id="leftbox" style="margin-left: 30px; margin-top:50px;">
+                    <input type="button" id="AddButton" value="Add" onclick="opAdd();" style="width: 65px;">
+                    <input type="button" id="DeleteButton" value="Delete" onclick="opDelete();" style="width:65px">
+                    : <input type="text" id="hm-del" value="-1" style="width:50px;">
+                    <input type="button" id="ReverseButton" value="Reverse" onclick="opReverse();" style="width:65px">
+                    : <input type="text" id="hm-rev" value="-1" style="width:50px;">
+                    <input type="button" id="CopyButton" value="Copy" onclick="opCopy();" style="width:65px">
+                    : <input type="text" id="hm-copy" value="-1" style="width:50px;">
+                    <input type="button" id="CheckSumButton" value="CheckSum" onclick="doCheckSum();"
+                           style=" margin-top:20px;"><br>
+                    ID: <input type="text" id="hm-sumid" value="-1"
+                               style="width:50px; margin-top:5px;">
+                    <div id="CheckSumBox" style="height: 240px; margin-top:8px;">
+                        <div class="checksumsmallbox">L1: <span id="hm-sum-0">--</span></div>
+                        <div class="checksumsmallbox">L2: <span id="hm-sum-1">--</span></div>
+                        <div class="checksumsmallbox">L3: <span id="hm-sum-2">--</span></div>
+                        <div class="checksumsmallbox">L4: <span id="hm-sum-3">--</span></div>
+                        <div class="checksumsmallbox">L5: <span id="hm-sum-4">--</span></div>
+                        <div class="checksumsmallbox">L6: <span id="hm-sum-5">--</span></div>
+                        <div class="checksumsmallbox">R1: <span id="hm-sum-6">--</span></div>
+                        <div class="checksumsmallbox">R2: <span id="hm-sum-7">--</span></div>
+                        <div class="checksumsmallbox">R3: <span id="hm-sum-8">--</span></div>
+                        <div class="checksumsmallbox">R4: <span id="hm-sum-9">--</span></div>
+                        <div class="checksumsmallbox">R5: <span id="hm-sum-10">--</span></div>
+                        <div class="checksumsmallbox">R6: <span id="hm-sum-11">--</span></div>
+                    </div>
+                </div>
+
+                <section style=" float: left; margin-left: 20px; margin-top: 10px;">
+                    <input type="radio" name="List" value="list" onclick="switchTab(this.value);"
+                           checked> MotionList
+                    <input type="radio" name="List" value="relpos"
+                           onclick="switchTab(this.value);"> RelativePosition
+                    <input type="radio" name="List" value="relspd"
+                           onclick="switchTab(this.value);"> RelativeSpeed
+                    <input type="radio" name="List" value="abspos"
+                           onclick="switchTab(this.value);"> AbsolutePosition
+                    <input type="radio" name="List" value="absspd"
+                           onclick="switchTab(this.value);"> AbsoluteSpeed
+                </section>
+
+                <div class="box" id="tablebox"
+                     style="display: initial; overflow-x: scroll; overflow-y: hidden">
+                    <div class="smallbox" id="tablehead" style="position: relative;"></div>
+                    <div class="smallbox" id="tablebody-wrap"
+                         style="margin-top: 2px; height: 305px; overflow-y: auto;
+                                overflow-x: hidden;">
+                        <div id="hm-table"></div>
+                    </div>
+                </div>
+
+                <div style="margin-left: 180px; margin-top: 405px; margin-bottom: 4px;">
+                    <input type="button" id="MoveUpButton" value="Move Up" onclick="opMove(-1);" style="width:80px">
+                    <input type="button" id="MoveDownButton" value="Move Down" onclick="opMove(1);" style="width:90px">
+                    : <input type="text" id="hm-move" value="-1" style="width:50px;">
+                </div>
+
+                <div style="margin-left: 180px; margin-bottom: 4px;">
+                    Strategy:&nbsp;<select id="hm-impstrategy" style="height:25px; margin-right:5px;">
+                        <option value="ar">ar</option><option value="bb">bb</option>
+                        <option value="mar">mar</option><option value="obs">obs</option>
+                        <option value="wl">wl</option><option value="sr">sr</option>
+                        <option value="sp">sp</option><option value="pk">pk</option>
+                        <option value="rc">rc</option>
+                    </select>
+                    Sector:&nbsp;<input type="text" id="hm-impsector" value="-1"
+                           style="width:50px;">
+                    <input type="button" value="Import Sector" onclick="doImport();"
+                           style="width:100px; margin-left:5px;">
+                </div>
+            </div>
+        </div>
+
+        <div id="rightarea">
+            <div style="background-color: rgba(46, 58, 61, 0.637); padding: 8px;
+                        border-radius: 5px; margin-bottom: 10px;">
+                <div align="center" style="font-weight:bold; margin-bottom:6px;">
+                    目前刻度</div>
+                <div id="hm-motor-area"></div>
+                <div align="center" style="margin-top:8px;">
+                    <input type="button" value="Copy To Absolute" onclick="copyLive(-1);"
+                           style="width:140px; font-weight:bold; background-color:#03e9f4;
+                                  color:#050505; border-radius:5px; cursor:pointer;
+                                  padding:5px;">
+                    <input type="button" value="Copy Selected →"
+                           onclick="toggleCopyPanel();"
+                           style="width:140px; font-weight:bold; background-color:#ff8c00;
+                                  color:#fff; border-radius:5px; cursor:pointer;
+                                  padding:5px; margin-left:8px;">
+                </div>
+                <div id="hm-copypanel" style="display:none; background:rgba(30,40,44,0.97);
+                     border:1px solid #ff8c00; border-radius:7px; padding:10px;
+                     margin:8px 0 0 0; box-sizing:border-box;">
+                    <div style="margin-bottom:8px;">
+                        寫入 ID <input type="text" id="hm-liveid" value="-1"
+                               style="width:50px;">
+                        <input type="button" value="全選" onclick="toggleAllLive(true);"
+                               style="width:50px; margin-left:6px;">
+                        <input type="button" value="全不選" onclick="toggleAllLive(false);"
+                               style="width:60px;">
+                        <input type="button" value="Execute" onclick="copyLive(1);"
+                               style="width:70px; font-weight:bold; background:#ff8c00;
+                                      color:#fff; border-radius:3px; cursor:pointer;">
+                    </div>
+                    <div id="hm-copyboxes" style="display:flex; flex-wrap:wrap;
+                         gap:10px; font-size:12px;"></div>
+                </div>
+            </div>
+            <div style="background-color: rgba(46, 58, 61, 0.637); padding: 8px;
+                        border-radius: 5px;">
+                <b><h align="center" style="font-size: 20px; margin: 4px;">Play MotionList</h></b>
+                <table style="text-align: left;">
+                    <tr>
+                        <td>左手序列:</td>
+                        <td><input type="text" id="hm-playl" value="-1" style="width:50px;"></td>
+                        <td>右手序列:</td>
+                        <td><input type="text" id="hm-playr" value="-1" style="width:50px;"></td>
+                    </tr>
+                    <tr>
+                        <td>同步:</td>
+                        <td><input type="checkbox" id="hm-playsync" onchange="syncPlayIds()"
+                                   checked></td>
+                        <td>loop:</td>
+                        <td><input type="text" id="hm-playloop" value="1" style="width:50px;"></td>
+                    </tr>
+                </table>
+                <input type="button" value="播放" onclick="doPlay();"
+                       style="width:100px; height:32px; margin-top:6px;">
+                <input type="button" value="停止播放" onclick="doPlayStop();"
+                       style="width:100px; height:32px; margin-top:6px;">
+                <div id="hm-playstat">待機</div>
+            </div>
+        </div>
+      </div>
+    </form>
+
+    <!-- 存檔確認，與 MotionControlInterface 的 infoModal2 同一套 -->
+    <dialog id="saveModal">
+        <p>確認是否儲存!!!!!</p>
+        <input type="button" id="saveYes" value="Yes" style="width:80px;">
+        <input type="button" id="saveNo" value="no" style="width:80px;">
+    </dialog>
+
+    <script type="text/javascript">
+
+
+        // ===================================================================
+        // 連線
+        // ===================================================================
+        var myAddress = window.ROBOT_CONFIG.ip;
+        var ros = new ROSLIB.Ros({ url: 'ws://' + window.ROBOT_CONFIG.ip + ':9090' });
+        var tSend = null, tSave = null, tSector = null, tCmd = null;
+        var sRead = null, sCheck = null;
+        var motionAvailable = null;
+
+        ros.on('connection', function () {
+            setConn(true);
+            document.body.style.backgroundImage = 'url(./picture/Background.jpg)';
+            createTopics();
+        });
+        ros.on('error', function () { setConn(false); });
+        ros.on('close', function () { setConn(false); });
+
+        function setConn(ok) {
+            el('connected').style.display = ok ? 'inline' : 'none';
+            if (!ok) {
+                document.body.style.backgroundImage = 'url(./picture/Gray_Background.jpg)';
+            }
+        }
+
+        function enterAddress() {
+            myAddress = el('addressSelect').value;
+            var st = ros.socket ? ros.socket.readyState : WebSocket.CLOSED;
+            if (st === WebSocket.OPEN || st === WebSocket.CONNECTING || st === WebSocket.CLOSING) {
+                ros.close();
+                ros.once('close', function () { ros.connect('ws://' + myAddress + ':9090'); });
+            } else {
+                ros.connect('ws://' + myAddress + ':9090');
+            }
+        }
+
+        function createTopics() {
+            // 動作檔那組刻意沿用全身現成的 nstc_msgs 型別，不新增任何 msg/srv
+            tSend = new ROSLIB.Topic({
+                ros: ros, name: '/hand/InterfaceSend2Sector',
+                messageType: 'nstc_msgs/InterfaceSend2Sector'
+            });
+            tSave = new ROSLIB.Topic({
+                ros: ros, name: '/hand/InterfaceSaveMotion',
+                messageType: 'nstc_msgs/SaveMotion'
+            });
+            tSector = new ROSLIB.Topic({
+                ros: ros, name: '/hand/Sector', messageType: 'std_msgs/Int16'
+            });
+            tCmd = new ROSLIB.Topic({
+                ros: ros, name: '/hand/cmd', messageType: 'std_msgs/String'
+            });
+            sRead = new ROSLIB.Service({
+                ros: ros, name: '/hand/InterfaceReadSaveMotion',
+                serviceType: 'nstc_msgs/ReadMotion'
+            });
+            sCheck = new ROSLIB.Service({
+                ros: ros, name: '/hand/InterfaceCheckSector',
+                serviceType: 'nstc_msgs/CheckSector'
+            });
+            new ROSLIB.Topic({
+                ros: ros, name: '/hand/status', messageType: 'std_msgs/String'
+            }).subscribe(function (m) {
+                try { onStatus(JSON.parse(m.data)); } catch (e) { }
+            });
+            new ROSLIB.Topic({
+                ros: ros, name: '/hand/config', messageType: 'std_msgs/String'
+            }).subscribe(function (m) {
+                try { onConfig(JSON.parse(m.data)); } catch (e) { }
+            });
+            new ROSLIB.Topic({
+                ros: ros, name: '/hand/Callback', messageType: 'std_msgs/Bool'
+            }).subscribe(function (m) {
+                // 與全身那頁一樣：execute 期間按鈕是鎖著的，收到這一筆才解開。
+                // data=false 代表節點那邊沒跑起來（例如 sector 不存在）
+                resetButtons();
+                msg(m.data ? '執行完畢' : '執行失敗，請再試一次',
+                    m.data ? 'ok' : 'err');
+            });
+        }
+
+        // ===================================================================
+        // 資料模型
+        // ===================================================================
+        var NJ = 12;              // L1..L6, R1..R6
+        var PAIRS = 20;           // MotionList 的 (ID, delay) 對數
+        var MS = { LIST: 0, RELPOS: 1, RELSPD: 2, ABSPOS: 3, ABSSPD: 4 };
+        var OPCODE = { ABS: 241, REL: 243, LIST: 244 };
+        var HEAD = [83, 84], TAIL = [78, 69];
+
+        // Position 與 Speed 刻意合成同一列（{pos, spd}），兩個分頁只是同一批列的
+        // 兩種檢視。全身那頁是兩張各自獨立的表、靠列的順序對應，很容易失去同步。
+        var model = { list: [], rel: [], abs: [] };
+        var TAB = 'list';
+        // key 要和 HTML 裡 radio 的 value 一致
+        var TABS = [
+            { key: 'list' },
+            { key: 'relpos', group: 'rel', field: 'pos' },
+            { key: 'relspd', group: 'rel', field: 'spd' },
+            { key: 'abspos', group: 'abs', field: 'pos' },
+            { key: 'absspd', group: 'abs', field: 'spd' }
+        ];
+
+        function el(id) { return document.getElementById(id); }
+
+        // ===================================================================
+        // 執行歷史（Undo / Redo / Clear）
+        // ===================================================================
+        // 與 MotionControlInterface 完全相同的語意：記的是「執行過哪些 sector」，
+        // 每一筆存的是執行前兩手的目標位置與速度，所以 **Undo 會讓手真的動回去**，
+        // 不是編輯層的復原。狀態由 handpackage 維護，網頁只負責顯示與下指令。
+        function doUndo() { sendCmd({ cmd: 'undo' }); }
+        function doRedo() { sendCmd({ cmd: 'redo' }); }
+        function doClearHistory() { sendCmd({ cmd: 'clear_history' }); }
+
+        function renderHistory(h) {
+            var past = (h && h.past) || [], future = (h && h.future) || [];
+            el('undoButton').disabled = !past.length;
+            el('redoButton').disabled = !future.length;
+            el('clearHistoryButton').disabled = !(past.length || future.length);
+            var out = '';
+            if (!past.length && !future.length) {
+                out = '<div class="hp-empty">empty</div>';
+            } else {
+                for (var i = 0; i < past.length; i++) {
+                    var isNextUndo = (i === past.length - 1);
+                    out += '<div class="' + (isNextUndo ? 'hp-item-undo' : 'hp-item') + '">'
+                         + (isNextUndo ? '\u2190 ' : '&nbsp;&nbsp;') + past[i] + '</div>';
+                }
+                out += '<div class="hp-now">\u25b6 NOW</div>';
+                for (var j = future.length - 1; j >= 0; j--) {
+                    var isNextRedo = (j === future.length - 1);
+                    out += '<div class="' + (isNextRedo ? 'hp-item-redo' : 'hp-item-future')
+                         + '">' + (isNextRedo ? '\u2192 ' : '&nbsp;&nbsp;')
+                         + future[j] + '</div>';
+                }
+            }
+            el('history-list').innerHTML = out;
+        }
+        function tabInfo(key) {
+            for (var i = 0; i < TABS.length; i++) if (TABS[i].key === key) return TABS[i];
+            return TABS[0];
+        }
+        function curGroup() { return tabInfo(TAB).group || null; }
+        function curField() { return tabInfo(TAB).field || null; }
+        function rows() {
+            var g = curGroup();
+            return g ? model[g] : model.list;
+        }
+        function num(v, dflt) {
+            var n = parseInt(v, 10);
+            return isNaN(n) ? (dflt === undefined ? 0 : dflt) : n;
+        }
+        function msg(text, kind) {
+            var m = el('label');
+            m.textContent = text;
+            m.className = kind || 'info';
+        }
+        function findRow(list, id) {
+            for (var i = 0; i < list.length; i++) if (list[i].id === id) return i;
+            return -1;
+        }
+        // 新列的預設值要安全又好改：
+        //   絕對位置預設 250（張開）—— 預設 0 等於「全部握緊」，按 Add 之後
+        //   不小心 Send/execute 會直接把手夾死
+        //   相對位置預設 0（不動）
+        //   速度預設 200（SDK 自己的初始值附近，而不是 0=不改速度）
+        var DEF_ABS_POS = 250, DEF_REL_POS = 0, DEF_SPD = 200, DEF_DELAY = 500;
+
+        // ID 一律預設 -1，讓人自己填（與全身那頁相同）。自動累加看起來方便，
+        // 但會讓「MotionList 的 Sector 編號」跟「它引用到的動作編號」很容易撞號
+        function newListRow(list) {
+            var p = [];
+            for (var i = 0; i < PAIRS; i++) p.push([0, 0]);
+            return { id: -1, name: '', pairs: p };
+        }
+        function newPoseRow(group, list) {
+            var dpos = (group === 'abs') ? DEF_ABS_POS : DEF_REL_POS;
+            var pos = [], spd = [];
+            for (var i = 0; i < NJ; i++) { pos.push(dpos); spd.push(DEF_SPD); }
+            // stop 是獨立欄位（null 或 {mode, th, step}），不碰 name
+            return { id: -1, name: '', pos: pos, spd: spd, stop: null };
+        }
+
+        // ===================================================================
+        // 畫表
+        // ===================================================================
+        // 分頁用 HTML 裡的 radio 切（與 MotionControlInterface 的
+        // MotionList / Relative / Absolute 同一套做法）
+        function switchTab(key) {
+            TAB = key;
+            // 程式自己切頁（例如 Copy To Absolute 會跳到 AbsolutePosition）時，
+            // radio 不會自己跟著動 —— 畫面上就會停在 MotionList 那一格
+            var rs = document.getElementsByName('List');
+            for (var i = 0; i < rs.length; i++) rs[i].checked = (rs[i].value === key);
+            render();
+        }
+
+        // 每一列是兩個 div，與 MotionControlInterface 完全相同：
+        //   .inthesmallbox2  紅色 ID 格（position:absolute，浮在左側 50px）
+        //   .inthesmallbox4  其餘欄位（position:relative; left:50px，負責列高）
+        function headLabels() {
+            var out = ['Name', 'Stop'];
+            if (TAB === 'list') {
+                for (var i = 0; i < PAIRS; i++) {
+                    out.push('A' + (i + 1), 'D' + (i + 1));
+                }
+            } else {
+                for (var a = 0; a < 6; a++) out.push('L' + (a + 1));
+                for (var b = 0; b < 6; b++) out.push('R' + (b + 1));
+            }
+            return out;
+        }
+
+        function render() {
+            var wide = (TAB === 'list') ? 'rowlist' : 'row12';
+
+            var head = '<div class="inthesmallbox2" id="headercolumn2" align="center">ID</div>';
+            headLabels().forEach(function (t) {
+                var extra = (t === 'Stop') ? ' stopbox' : '';
+                head += '<div class="inthesmallbox' + extra
+                      + '" id="headercolumn" align="center">' + t + '</div>';
+            });
+            // 表頭、資料區、外層都要同寬，否則往右捲會出現一大片空白
+            var he = el('tablehead');
+            he.className = 'smallbox ' + wide;
+            he.innerHTML = head;
+            el('tablebody-wrap').className = 'smallbox ' + wide;
+
+            var list = rows();
+            var host = el('hm-table');
+            host.className = wide;
+            if (!list.length) {
+                // 一定要清掉舊內容再 return —— 少了這一行，切到空的分頁時
+                // 上一個分頁的列會留在畫面上（例如先點 AbsolutePosition 有資料、
+                // 再點空的 RelativePosition，會以為相對表裡有絕對位置的資料）
+                host.innerHTML = '';
+                checkDupIds();
+                return;
+            }
+
+            var h = '';
+            list.forEach(function (r, ri) {
+                h += '<div class="inthesmallbox2">'
+                   + '<input type="text" class="textbox" style="background-color:darkred"'
+                   + ' data-r="' + ri + '" data-k="id" value="' + r.id + '"></div>'
+                   + '<div class="inthesmallbox4 ' + wide + '">'
+                   + '<input type="text" class="textbox" data-r="' + ri
+                   + '" data-k="name" value="' + escAttr(r.name) + '">'
+                   + '<input type="text" readonly class="textbox stopbox'
+                   + (r.stop ? ' has-stop' : '') + '" data-r="' + ri
+                   + '" data-k="stop" value="' + escAttr(stopText(r.stop))
+                   + '" title="' + (r.stop
+                       ? '夾持步驟：' + STOP_DESC[r.stop.mode]
+                         + '，門檻 ' + r.stop.th + '，步長 ' + r.stop.step
+                       : '一般姿態（直接下位置）。要改用下方的「停止條件」那一列')
+                   + '" onclick="pickStop(' + ri + ');">';
+                if (TAB === 'list') {
+                    for (var i = 0; i < PAIRS; i++) {
+                        h += '<input type="text" class="textbox" data-r="' + ri
+                           + '" data-k="a" data-i="' + i + '" value="' + r.pairs[i][0] + '">'
+                           + '<input type="text" class="textbox" data-r="' + ri
+                           + '" data-k="d" data-i="' + i + '" value="' + r.pairs[i][1] + '">';
+                    }
+                } else {
+                    var f = curField();
+                    for (var k = 0; k < NJ; k++) {
+                        h += '<input type="text" class="textbox" data-r="' + ri
+                           + '" data-k="v" data-i="' + k + '" value="' + r[f][k] + '">';
+                    }
+                }
+                h += '</div>';
+            });
+            host.innerHTML = h;
+            checkDupIds();
+        }
+
+        function escAttr(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        }
+
+        // 用事件委派，不要每格掛一個 handler；而且輸入時只寫回模型、不重畫，
+        // 否則每打一個字焦點就會被抽走
+        document.addEventListener('input', function (ev) {
+            var t = ev.target;
+            if (!t || !t.hasAttribute || !t.hasAttribute('data-r')) return;
+            var list = rows();
+            var r = list[num(t.getAttribute('data-r'), -1)];
+            if (!r) return;
+            var k = t.getAttribute('data-k');
+            var i = num(t.getAttribute('data-i'), 0);
+            if (k === 'id') { r.id = num(t.value, 0); checkDupIds(); }
+            else if (k === 'name') r.name = t.value;
+            else if (k === 'a') r.pairs[i][0] = num(t.value, 0);
+            else if (k === 'd') r.pairs[i][1] = num(t.value, 0);
+            else if (k === 'v') r[curField()][i] = num(t.value, 0);
+        });
+
+        // 存檔是以 id_motionstate 當 key，重複的 ID 會被靜默覆蓋掉，所以要提醒
+        function checkDupIds() {
+            var seen = {}, dup = [];
+            rows().forEach(function (r) {
+                if (seen[r.id]) { if (dup.indexOf(r.id) < 0) dup.push(r.id); }
+                seen[r.id] = true;
+            });
+            if (dup.length) {
+                msg('ID ' + dup.join(', ') + ' 重複', 'err');
+            }
+        }
+
+        // ===================================================================
+        // 編輯操作
+        // ===================================================================
+        function opAdd() {
+            var list = rows();
+            list.push(TAB === 'list' ? newListRow(list) : newPoseRow(curGroup(), list));
+            render();
+            msg('已新增一列', 'ok');
+        }
+
+        function opDelete() {
+            var id = num(el('hm-del').value, -1);
+            var list = rows(), i = findRow(list, id);
+            if (i < 0) return msg('Delete 失敗：找不到 ID ' + id, 'err');
+            list.splice(i, 1);
+            render();
+            msg('已刪除 ID ' + id, 'ok');
+        }
+
+        function opCopy() {
+            var id = num(el('hm-copy').value, -1);
+            var list = rows(), i = findRow(list, id);
+            if (i < 0) return msg('Copy 失敗：找不到 ID ' + id, 'err');
+            // 與全身相同：Copy 連 ID 一起複製，重複的 ID 由 checkDupIds 提醒
+            list.splice(i + 1, 0, JSON.parse(JSON.stringify(list[i])));
+            render();
+            msg('已複製 ID ' + id, 'ok');
+        }
+
+        function opMove(dir) {
+            var id = num(el('hm-move').value, -1);
+            var list = rows(), i = findRow(list, id);
+            if (i < 0) return msg('Move 失敗：找不到 ID ' + id, 'err');
+            var j = i + dir;
+            if (j < 0 || j >= list.length) return msg('已經在邊界了', 'err');
+            var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+            render();
+            msg('已移動 ID ' + id, 'ok');
+        }
+
+        // 下面三個與全身一致，只對相對量有效
+        function opReverse() {
+            if (TAB !== 'relpos') {
+                return msg('Reverse 只能在 RelativePosition 分頁使用（與全身相同）', 'err');
+            }
+            var id = num(el('hm-rev').value, -1);
+            var i = findRow(model.rel, id);
+            if (i < 0) return msg('Reverse 失敗：找不到 ID ' + id, 'err');
+            model.rel[i].pos = model.rel[i].pos.map(function (v) { return -v; });
+            render();
+            msg('ID ' + id + ' 已整列變號', 'ok');
+        }
+
+        function opMultiple() {
+            if (TAB !== 'relpos' && TAB !== 'relspd') {
+                return msg('Multiple 只能在 Relative 分頁使用（與全身相同）', 'err');
+            }
+            var id = num(el('hm-mulid').value, -1);
+            var times = parseFloat(el('hm-multimes').value);
+            if (isNaN(times)) return msg('倍數不是數字', 'err');
+            var i = findRow(model.rel, id);
+            if (i < 0) return msg('Multiple 失敗：找不到 ID ' + id, 'err');
+            var f = curField();
+            model.rel[i][f] = model.rel[i][f].map(function (v) {
+                return Math.round(v * times);
+            });
+            render();
+            msg('ID ' + id + ' 已乘 ' + times, 'ok');
+        }
+
+        // 左右手互複製。L1~L6 是 pos / spd 的 index 0~5、R1~R6 是 6~11，
+        // 所以整段搬過去就好 —— O6 的刻度是「每指各自的彎曲量」，左右手機構的
+        // 鏡像已經在手自己的座標系裡處理掉了，數值不用變號（這點與全身的
+        // Reverse 不同，全身那邊是對同一個世界座標變號）。
+        // 只動目前分頁的那一欄（位置或速度），與 Multiple 同一套語意。
+        function opMirrorHand() {
+            var g = curGroup();
+            if (!g) {
+                return msg('左右互複製只能在 Relative / Absolute 分頁使用', 'err');
+            }
+            var id = num(el('hm-mirid').value, -1);
+            var list = model[g], i = findRow(list, id);
+            if (i < 0) return msg('左右互複製失敗：找不到 ID ' + id, 'err');
+            var src = el('hm-mirsrc').value;
+            var f = curField();
+            var from = (src === 'L') ? 0 : 6;
+            var to   = (src === 'L') ? 6 : 0;
+            for (var j = 0; j < 6; j++) list[i][f][to + j] = list[i][f][from + j];
+            render();
+            msg('ID ' + id + '：已把'
+                + (src === 'L' ? '左手複製到右手' : '右手複製到左手'), 'ok');
+        }
+
+        function opMerge() {
+            if (TAB !== 'relpos' && TAB !== 'relspd') {
+                return msg('Merge 只能在 Relative 分頁使用（與全身相同）', 'err');
+            }
+            var id1 = num(el('hm-m1').value, -1), id2 = num(el('hm-m2').value, -2);
+            if (id1 === id2) return msg('ID1 不能跟 ID2 一樣', 'err');
+            var i1 = findRow(model.rel, id1), i2 = findRow(model.rel, id2);
+            if (i1 < 0) return msg('Merge 失敗：找不到 ID1 ' + id1, 'err');
+            if (i2 < 0) return msg('Merge 失敗：找不到 ID2 ' + id2, 'err');
+            var p1 = model.rel[i1].pos.slice(), p2 = model.rel[i2].pos.slice();
+            for (var j = 0; j < NJ; j++) {
+                // 與全身相同：位置相加、速度取較大者
+                model.rel[i2].pos[j] += model.rel[i1].pos[j];
+                model.rel[i2].spd[j] = Math.max(model.rel[i2].spd[j],
+                                                model.rel[i1].spd[j]);
+            }
+            var after = model.rel[i2].pos.slice();
+            model.rel.splice(i1, 1);
+            render();
+            // 兩列都沒填過時結果當然是 0，看起來很像「被清 0」，所以這一種
+            // 情形還是要提一句，其他就只報做了什麼
+            var allZero = after.every(function (v) { return v === 0; });
+            msg(allZero ? ('Merge ' + id1 + ' -> ' + id2 + '（兩列本來都是 0）')
+                        : ('Merge ' + id1 + ' -> ' + id2), allZero ? 'info' : 'ok');
+        }
+
+        // ===================================================================
+        // 按鈕鎖定（與全身那頁相同的行為）
+        // ===================================================================
+        // 全身那頁在 Send / execute 期間會把操作鈕全部 disable，等節點回 Callback
+        // 才解開；reset 鈕是「手動解開」的逃生口（例如 Callback 沒回來）。
+        // 與全身那頁鎖的是同一批：存讀、送出、執行，加上所有會改到資料的編輯鈕
+        var LOCK_IDS = ['SaveButton', 'ReadButton', 'SendButton', 'executeButton',
+                        'AddButton', 'DeleteButton', 'ReverseButton', 'CopyButton',
+                        'MultipleButton', 'MergeButton', 'MirrorButton',
+                        'CheckSumButton',
+                        'MoveUpButton', 'MoveDownButton',
+                        'OpenBothButton', 'OpenLeftButton', 'OpenRightButton'];
+        var lockTimer = null;
+
+        function lockButtons() {
+            LOCK_IDS.forEach(function (id) {
+                var e = el(id);
+                if (e) e.disabled = true;
+            });
+            // 安全網：Callback 沒回來也不要永遠卡住
+            if (lockTimer) clearTimeout(lockTimer);
+            lockTimer = setTimeout(function () {
+                resetButtons();
+                msg('等不到節點回報，按鈕已解開', 'info');
+            }, 6000);
+        }
+
+        function resetButtons() {
+            if (lockTimer) { clearTimeout(lockTimer); lockTimer = null; }
+            LOCK_IDS.forEach(function (id) {
+                var e = el(id);
+                if (e) e.disabled = false;
+            });
+        }
+
+        // ===================================================================
+        // 目前刻度
+        // ===================================================================
+        var livePos = { left: null, right: null };
+        // 欄位編號與表格一致：L1..L6 = 0..5，R1..R6 = 6..11
+        var LIVE_SIDES = [
+            { side: 'left',  title: 'LEFT HAND',  base: 0, tag: 'L' },
+            { side: 'right', title: 'RIGHT HAND', base: 6, tag: 'R' }
+        ];
+
+        function buildLive() {
+            var h = '', boxes = '';
+            LIVE_SIDES.forEach(function (d) {
+                h += '<div class="motor-group"><div class="header">' + d.title
+                   + '</div><table><thead><tr><th>ID</th><th>Position</th></tr>'
+                   + '</thead><tbody>';
+                boxes += '<div><span style="color:#7ecfff; font-weight:bold;'
+                       + ' cursor:pointer;" onclick="toggleGroupLive(\'' + d.side
+                       + '\')">' + d.title + '</span><br>';
+                for (var j = 0; j < 6; j++) {
+                    var n = d.base + j;
+                    h += '<tr><td>' + d.tag + (j + 1) + '</td>'
+                       + '<td><input type="text" readonly value="--" class="off"'
+                       + ' id="hm-lv-' + n + '"></td></tr>';
+                    boxes += '<label><input type="checkbox" class="hm-live-cb"'
+                           + ' data-side="' + d.side + '" value="' + n + '"> '
+                           + d.tag + (j + 1) + '</label>'
+                           + (j === 2 ? '<br>' : ' ');
+                }
+                h += '</tbody></table></div>';
+                boxes += '</div>';
+            });
+            el('hm-motor-area').innerHTML = h;
+            el('hm-copyboxes').innerHTML = boxes;
+        }
+
+        // 離線的手就留 '--' 並且變灰，不要顯示 0 —— 0 看起來像「握到底」
+        function renderLive(st) {
+            LIVE_SIDES.forEach(function (d) {
+                var hh = (st.hands || {})[d.side] || {};
+                livePos[d.side] = (hh.online && hh.position) ? hh.position : null;
+                for (var j = 0; j < 6; j++) {
+                    var box = el('hm-lv-' + (d.base + j));
+                    if (!box) continue;
+                    var on = !!livePos[d.side];
+                    box.value = on ? livePos[d.side][j] : '--';
+                    box.className = on ? '' : 'off';
+                }
+            });
+        }
+
+        function toggleCopyPanel() {
+            var pn = el('hm-copypanel');
+            pn.style.display = (pn.style.display === 'none') ? '' : 'none';
+        }
+        function toggleAllLive(on) {
+            var cbs = document.getElementsByClassName('hm-live-cb');
+            for (var i = 0; i < cbs.length; i++) cbs[i].checked = on;
+        }
+        function toggleGroupLive(side) {
+            var cbs = document.getElementsByClassName('hm-live-cb');
+            // 整組一起切換：同一組只要有沒勾的就全勾，否則全取消
+            var any = false, i;
+            for (i = 0; i < cbs.length; i++) {
+                if (cbs[i].getAttribute('data-side') === side && !cbs[i].checked) any = true;
+            }
+            for (i = 0; i < cbs.length; i++) {
+                if (cbs[i].getAttribute('data-side') === side) cbs[i].checked = any;
+            }
+        }
+
+        // mode -1 = 開新的一列，12 軸全寫；1 = 只把勾選的軸寫進指定 ID 的那一列
+        function copyLive(mode) {
+            var l = livePos.left, r = livePos.right;
+            if (!l && !r) return msg('兩隻手都沒有回讀值（離線？）', 'err');
+            // 沒接的那隻手就填 -1（這軸不動），不要寫 0 把它夾死
+            var vals = [], j;
+            for (j = 0; j < 6; j++) vals.push(l ? l[j] : -1);
+            for (j = 0; j < 6; j++) vals.push(r ? r[j] : -1);
+
+            if (mode < 0) {
+                var row = newPoseRow('abs', model.abs);
+                row.name = '現在刻度';
+                row.pos = vals;
+                model.abs.push(row);
+                if (TAB !== 'abspos' && TAB !== 'absspd') switchTab('abspos');
+                else render();
+                // 哪隻手離線要講，因為那半邊會是 -1 而不是刻度
+                var off = (l ? '' : ' L離線') + (r ? '' : ' R離線');
+                return msg('已複製目前刻度' + off, 'ok');
+            }
+
+            var id = num(el('hm-liveid').value, -1);
+            var i = findRow(model.abs, id);
+            if (i < 0) return msg('找不到 AbsolutePosition 的 ID ' + id, 'err');
+            var cbs = document.getElementsByClassName('hm-live-cb');
+            var done = [];
+            for (var c = 0; c < cbs.length; c++) {
+                if (!cbs[c].checked) continue;
+                var n = num(cbs[c].value, -1);
+                if (n < 0 || n > 11) continue;
+                model.abs[i].pos[n] = vals[n];
+                done.push((n < 6 ? 'L' : 'R') + ((n % 6) + 1));
+            }
+            if (!done.length) return msg('Copy Selected：一軸都沒勾', 'err');
+            if (TAB !== 'abspos') switchTab('abspos');
+            else render();
+            msg('已寫入 ID ' + id + '（' + done.length + ' 軸）', 'ok');
+        }
+
+        // ===================================================================
+        // 停止條件
+        // ===================================================================
+        // 停止條件是「這一列不是單純下位置，而是夾到壓力門檻才停」。
+        // 它存在 row.stop = {mode, th, step}，是獨立欄位：
+        //   - 不佔用 Name（之前塞成 |stop=... 後綴，結果名字就不能打了）
+        //   - 存檔時寫進姿態列的 motionlist 欄（那一欄對姿態列本來就是空的），
+        //     固定三個值 [模式編號, 門檻, 步長]，沒有條件就是 0,0,0
+        //   - Send 時走 InterfaceSend2Sector 的 delay/cnt
+        // 絕對列與相對列都可以用：相對列由節點先把位移解成絕對目標再交給夾持。
+        var STOP_MODE_NUM = { each: 1, any: 2, anyhand: 3, hold: 4 };
+        var STOP_NUM_MODE = { 1: 'each', 2: 'any', 3: 'anyhand', 4: 'hold' };
+        var STOP_DESC = {
+            each:    '每指各自到門檻各自停',
+            any:     '任一指到就整手停',
+            anyhand: '任一手到就兩手停',
+            hold:    '到門檻後持續維持'
+        };
+        // 空載實測是 0（40 格全零），所以門檻不用為雜訊留餘裕。
+        // 800 等於平均每格 20，是紮實的一握；預設取 250（輕握）
+        var DEF_STOP_TH = 250, DEF_STOP_STEP = 4;
+
+        function stopText(st) {
+            return st ? (st.mode + ':' + st.th + ':' + st.step) : '';
+        }
+        // 存檔用：姿態列的 motionlist 欄固定三個值
+        function stopTriple(st) {
+            return st ? [STOP_MODE_NUM[st.mode], st.th, st.step] : [0, 0, 0];
+        }
+        function tripleToStop(a, off) {
+            if (!a) return null;
+            var m = STOP_NUM_MODE[a[off] | 0];
+            if (!m) return null;
+            return {
+                mode: m,
+                th: clampInt(a[off + 1], 1, 10200, DEF_STOP_TH),
+                step: clampInt(a[off + 2], 3, 60, DEF_STOP_STEP)
+            };
+        }
+
+        // 點表格裡的 Stop 格 -> 把這一列帶進下方的編輯列
+        function pickStop(ri) {
+            if (TAB === 'list') {
+                return msg('停止條件要設在姿態列上，不是 MotionList', 'info');
+            }
+            var r = rows()[ri];
+            if (!r) return;
+            el('hm-stopid').value = r.id;
+            el('hm-stopmode').value = r.stop ? r.stop.mode : '';
+            el('hm-stopth').value = r.stop ? r.stop.th : DEF_STOP_TH;
+            el('hm-stopstep').value = r.stop ? r.stop.step : DEF_STOP_STEP;
+            msg('ID ' + r.id + ' 已帶入停止條件', 'info');
+        }
+
+        function applyStop() {
+            if (TAB === 'list') {
+                return msg('停止條件要設在姿態列上', 'err');
+            }
+            var g = curGroup();                       // 'rel' 或 'abs'，看現在哪一頁
+            var id = num(el('hm-stopid').value, -1);
+            var mode = el('hm-stopmode').value;
+            var th = clampInt(el('hm-stopth').value, 1, 10200, DEF_STOP_TH);
+            var step = clampInt(el('hm-stopstep').value, 3, 60, DEF_STOP_STEP);
+            el('hm-stopth').value = th;
+            el('hm-stopstep').value = step;
+            var i = findRow(model[g], id);
+            if (i < 0) {
+                return msg('找不到 ID ' + id, 'err');
+            }
+            model[g][i].stop = mode ? { mode: mode, th: th, step: step } : null;
+            render();
+            msg('ID ' + id + (mode ? ' 停止條件 ' + stopText(model[g][i].stop)
+                                    : ' 停止條件已清除'), 'ok');
+        }
+
+        function clampInt(v, lo, hi, dflt) {
+            var n = parseInt(v, 10);
+            if (isNaN(n)) return dflt;
+            return n < lo ? lo : (n > hi ? hi : n);
+        }
+
+        // ===================================================================
+        // 存 / 讀
+        // ===================================================================
+        function saveRow(filename, motionstate, id, name, motionlist, motordata, flag) {
+            tSave.publish(new ROSLIB.Message({
+                layout: { dim: [], data_offset: 0 },
+                name: filename, item_name: name || '',
+                motionstate: motionstate, id: id, savestate: 0, saveflag: !!flag,
+                motionlist: motionlist || [], motordata: motordata || []
+            }));
+        }
+
+        function doSave() {
+            if (!tSave) return msg('還沒連上線', 'err');
+            if (motionAvailable === false) return msg(nomsgText(), 'err');
+            var fn = el('hm-filename').value.trim();
+            if (!fn) return msg('檔名不能是空的', 'err');
+            var n = 0;
+            model.list.forEach(function (r) {
+                var flat = [];
+                r.pairs.forEach(function (p) { flat.push(p[0], p[1]); });
+                saveRow(fn, MS.LIST, r.id, r.name, flat, []); n++;
+            });
+            // 姿態列的 motionlist 欄平常是空的，拿來放停止條件三元組。
+            // 兩列（pos / spd）都寫同一份，讀回來時 stride 才永遠是 3
+            model.rel.forEach(function (r) {
+                var t = stopTriple(r.stop);
+                saveRow(fn, MS.RELPOS, r.id, r.name, t, r.pos);
+                saveRow(fn, MS.RELSPD, r.id, r.name, t, r.spd); n += 2;
+            });
+            model.abs.forEach(function (r) {
+                var t = stopTriple(r.stop);
+                saveRow(fn, MS.ABSPOS, r.id, r.name, t, r.pos);
+                saveRow(fn, MS.ABSSPD, r.id, r.name, t, r.spd); n += 2;
+            });
+            saveRow(fn, 0, 0, '', [], [], true);     // saveflag：這之前的才真的寫檔
+            msg('已送出 ' + n + ' 筆到 ' + fn + '.ini', 'ok');
+        }
+
+        function doRead() { readInto(el('hm-filename').value.trim(), ''); }
+        // 與全身的 ImportSector 相同：從別的策略借「一個 sector」進來，
+        // 不是讀整個編輯檔。sector 檔的 motordata 是 speed/pos 交錯 12 對
+        function doImport() {
+            if (!sRead) return msg('還沒連上線', 'err');
+            if (motionAvailable === false) return msg(nomsgText(), 'err');
+            var strategy = el('hm-impstrategy').value;
+            var n = el('hm-impsector').value.trim();
+            if (!n || Number(n) < 1) return msg('請填要匯入的 sector 編號', 'err');
+            msg('讀取中…', 'info');
+            sRead.callService(new ROSLIB.ServiceRequest({
+                read: true, name: 'sector/' + n, readstate: 0, strategy: strategy
+            }), function (res) {
+                if (!res.readcheck || !res.vectorcnt) {
+                    return msg('匯入失敗：[' + strategy + '] 裡沒有 sector/' + n, 'err');
+                }
+                var what = importSectorRows(res, n);
+                render();
+                msg(what ? ('已匯入 ' + strategy + ' 的 sector ' + n)
+                         : ('匯入失敗：sector ' + n + ' 內容看不懂'), what ? 'ok' : 'err');
+            }, function (err) { msg('服務呼叫失敗：' + err, 'err'); });
+        }
+
+        function importSectorRows(res, sectorNum) {
+            var oRel = 0, oAbs = 0, what = '';
+            for (var k = 0; k < res.vectorcnt; k++) {
+                var ms = res.motionstate[k];
+                if (ms === MS.LIST) continue;        // 清單型的 sector 不匯入成姿態
+                var isRel = (ms === MS.RELPOS || ms === MS.RELSPD);
+                var src = isRel ? res.relativedata : res.absolutedata;
+                var off = isRel ? oRel : oAbs;
+                if (isRel) { oRel += NJ * 2; } else { oAbs += NJ * 2; }
+                var grp = isRel ? 'rel' : 'abs';
+                var row = newPoseRow(grp, model[grp]);
+                row.name = 'sector' + sectorNum;
+                for (var j = 0; j < NJ; j++) {
+                    row.spd[j] = src[off + j * 2] || 0;
+                    row.pos[j] = src[off + j * 2 + 1] || 0;
+                }
+                model[grp].push(row);
+                what = isRel ? 'RelativePosition / RelativeSpeed'
+                             : 'AbsolutePosition / AbsoluteSpeed';
+            }
+            return what;
+        }
+
+        // 張開：等同全身那頁的 stand。位置與速度來自 js/hand_presets.js，
+        // 跟 HandControl 的預設動作按鈕、以及策略的 API 同一份定義
+        function doOpen(hand) {
+            if (!tCmd) return msg('還沒連上線', 'err');
+            var e = (window.HAND_PRESETS || {})[window.HAND_PRESET_OPEN];
+            if (!e) return msg('js/hand_presets.js 沒有載入', 'err');
+            var p = { cmd: 'manual', hand: hand, position: e.pos };
+            if (e.spd) p.speed = e.spd;
+            tCmd.publish(new ROSLIB.Message({ data: JSON.stringify(p) }));
+            msg('張開 ' + (hand === 'both' ? '雙手'
+                : hand === 'left' ? '左手' : '右手'), 'ok');
+        }
+
+        function readInto(filename, strategy) {
+            if (!sRead) return msg('還沒連上線', 'err');
+            if (motionAvailable === false) return msg(nomsgText(), 'err');
+            if (!filename) return msg('檔名不能是空的', 'err');
+            msg('讀取中…', 'info');
+            sRead.callService(new ROSLIB.ServiceRequest({
+                read: true, name: filename, readstate: 0, strategy: strategy || ''
+            }), function (res) {
+                if (!res.readcheck || !res.vectorcnt) {
+                    return msg('找不到 ' + filename + '.ini', 'err');
+                }
+                parseRead(res);
+                render();
+                msg('已讀入 ' + res.vectorcnt + ' 筆', 'ok');
+            }, function (err) { msg('服務呼叫失敗：' + err, 'err'); });
+        }
+
+        // 三個平行陣列各自依檔案順序攤平，所以用各自的 offset 往前走；
+        // pos 與 spd 靠同一個 ID 合回同一列
+        function parseRead(res) {
+            model = { list: [], rel: [], abs: [] };
+            var oList = 0, oRel = 0, oAbs = 0;
+            function pick(group, id, name) {
+                var i = findRow(model[group], id);
+                if (i < 0) {
+                    var r = newPoseRow(group, model[group]);
+                    r.id = id; r.name = name;
+                    model[group].push(r);
+                    return r;
+                }
+                if (name) model[group][i].name = name;
+                return model[group][i];
+            }
+            for (var k = 0; k < res.vectorcnt; k++) {
+                var ms = res.motionstate[k];
+                var id = res.id[k];
+                var nm = (res.item_names && res.item_names[k]) || '';
+                if (nm === '-1') nm = '';          // 舊檔用 -1 代表沒有名稱
+                if (ms === MS.LIST) {
+                    var r = newListRow(model.list);
+                    r.id = id; r.name = nm;
+                    for (var i = 0; i < PAIRS; i++) {
+                        r.pairs[i] = [res.motionlist[oList + i * 2] || 0,
+                                      res.motionlist[oList + i * 2 + 1] || 0];
+                    }
+                    oList += PAIRS * 2;
+                    model.list.push(r);
+                } else if (ms === MS.RELPOS || ms === MS.RELSPD) {
+                    var row = pick('rel', id, nm);
+                    var f = (ms === MS.RELPOS) ? 'pos' : 'spd';
+                    for (var j = 0; j < NJ; j++) row[f][j] = res.relativedata[oRel + j] || 0;
+                    oRel += NJ;
+                    // 姿態列的 motionlist 固定 3 個值（節點會把舊檔補成 0,0,0），
+                    // 所以這裡的 stride 一定是 3，不用猜
+                    var s1 = tripleToStop(res.motionlist, oList);
+                    if (s1) row.stop = s1;
+                    oList += 3;
+                } else {
+                    var row2 = pick('abs', id, nm);
+                    var f2 = (ms === MS.ABSPOS) ? 'pos' : 'spd';
+                    for (var j2 = 0; j2 < NJ; j2++) {
+                        row2[f2][j2] = res.absolutedata[oAbs + j2] || 0;
+                    }
+                    oAbs += NJ;
+                    var s2 = tripleToStop(res.motionlist, oList);
+                    if (s2) row2.stop = s2;
+                    oList += 3;
+                }
+            }
+        }
+
+        // ===================================================================
+        // Send / execute / CheckSum
+        // ===================================================================
+        function poseRowById(id) {
+            var i = findRow(model.abs, id);
+            if (i >= 0) return { row: model.abs[i], opcode: OPCODE.ABS };
+            i = findRow(model.rel, id);
+            if (i >= 0) return { row: model.rel[i], opcode: OPCODE.REL };
+            return null;
+        }
+
+        function sendPose(sectorName, hit) {
+            // payload 是 speed/pos 交錯 12 對 = 24 個值，與全身同協定但長度不同
+            var pkt = HEAD.concat([hit.opcode]);
+            for (var j = 0; j < NJ; j++) pkt.push(hit.row.spd[j], hit.row.pos[j]);
+            pkt = pkt.concat(TAIL);
+            // 停止條件沒有字串欄位可放（封包是 int32[]），借用
+            // InterfaceSend2Sector 本來沒在用的 delay / cnt 一起送：
+            //   cnt = 1 代表帶了停止條件，delay = [模式編號, 門檻, 步長]
+            var st = hit.row.stop || null;
+            tSend.publish(new ROSLIB.Message({
+                package: pkt, sectorname: String(sectorName),
+                delay: st ? [STOP_MODE_NUM[st.mode], st.th, st.step] : [],
+                cnt: st ? 1 : 0
+            }));
+            return st;
+        }
+
+        function doSend() {
+            if (!tSend) return msg('還沒連上線', 'err');
+            if (motionAvailable === false) return msg(nomsgText(), 'err');
+            var id = num(el('hm-sendid').value, -1);
+            var sector = num(el('hm-sector').value, -1);
+            if (sector < 1) return msg('Sector 要填 1 以上的數字', 'err');
+
+            if (TAB === 'list') {
+                var i = findRow(model.list, id);
+                if (i < 0) return msg('Send 失敗：MotionList 裡找不到 ID ' + id, 'err');
+                var r = model.list[i];
+                // 先把清單引用到的每個子動作各自存成 sector，否則播放時找不到
+                var sent = [], missing = [], stops = [];
+                r.pairs.forEach(function (p) {
+                    if (!p[0]) return;
+                    var hit = poseRowById(p[0]);
+                    if (!hit) { if (missing.indexOf(p[0]) < 0) missing.push(p[0]); return; }
+                    if (sent.indexOf(p[0]) < 0) {
+                        var st = sendPose(p[0], hit);
+                        if (st) stops.push(p[0] + '(' + stopText(st) + ')');
+                        sent.push(p[0]);
+                    }
+                });
+                // Sector 編號不能跟它引用到的動作編號重複 —— 兩者共用同一個
+                // sector 空間，撞到的話後送的會蓋掉先送的，播放時那一步就變成
+                // 「引用到 MotionList」而被跳過，現象就是「execute 內容怪怪的」
+                if (sent.indexOf(sector) >= 0) {
+                    // 撞號的現象（execute 跑到奇怪的內容）很難從結果看出原因，
+                    // 所以這一句要把可用的編號講出來
+                    return msg('Sector ' + sector + ' 跟子動作撞號，改用 '
+                        + (Math.max.apply(null, sent) + 10), 'err');
+                }
+                var flat = [];
+                r.pairs.forEach(function (p) { flat.push(p[0], p[1]); });
+                tSend.publish(new ROSLIB.Message({
+                    package: HEAD.concat([OPCODE.LIST], flat, TAIL),
+                    sectorname: String(sector), delay: [], cnt: 0
+                }));
+                msg(missing.length
+                    ? ('已送到 sector ' + sector + '，但找不到 ' + missing.join(','))
+                    : ('ID ' + id + ' 已送到 sector ' + sector),
+                    missing.length ? 'err' : 'ok');
+            } else {
+                var g = curGroup();
+                var k = findRow(model[g], id);
+                if (k < 0) return msg('Send 失敗：找不到 ID ' + id, 'err');
+                var st1 = sendPose(sector, {
+                    row: model[g][k],
+                    opcode: (g === 'abs') ? OPCODE.ABS : OPCODE.REL
+                });
+                msg('ID ' + id + ' 已送到 sector ' + sector, 'ok');
+            }
+        }
+
+        // 鎖著的時候中途退出，要順手解鎖，不然按鈕要等 15 秒的安全網才回來
+        function sendFail(text) {
+            resetButtons();
+            msg(text, 'err');
+        }
+
+        function doExecute() {
+            if (!sCheck) return msg('還沒連上線', 'err');
+            if (motionAvailable === false) return msg(nomsgText(), 'err');
+            var sector = num(el('hm-sector').value, -1);
+            if (sector < 1) return msg('Sector 要填 1 以上的數字', 'err');
+            lockButtons();
+            sCheck.callService(new ROSLIB.ServiceRequest({ data: sector }),
+                function (res) {
+                    if (!res.checkflag) {
+                        return sendFail('sector ' + sector + ' 還沒存進節點，先按 Send');
+                    }
+                    tSector.publish(new ROSLIB.Message({ data: sector }));
+                    msg('已執行 sector ' + sector, 'ok');
+                }, function (err) { sendFail('服務呼叫失敗：' + err); });
+        }
+
+        function doCheckSum() {
+            var id = num(el('hm-sumid').value, -1);
+            var i = findRow(model.list, id);
+            if (i < 0) {
+                for (var z = 0; z < NJ; z++) el('hm-sum-' + z).textContent = '--';
+                return msg('CheckSum 失敗：MotionList 裡找不到 ID ' + id, 'err');
+            }
+            var sum = [], j;
+            for (j = 0; j < NJ; j++) sum.push(0);
+            var missing = [];
+            model.list[i].pairs.forEach(function (p) {
+                if (!p[0]) return;
+                var k = findRow(model.rel, p[0]);
+                if (k < 0) { if (missing.indexOf(p[0]) < 0) missing.push(p[0]); return; }
+                for (var q = 0; q < NJ; q++) sum[q] += model.rel[k].pos[q];
+            });
+            for (j = 0; j < NJ; j++) {
+                var sp = el('hm-sum-' + j);
+                sp.textContent = sum[j];
+                sp.style.color = sum[j] === 0 ? '#fff' : (sum[j] > 0 ? '#7ecfff' : '#ffb37e');
+            }
+            msg(missing.length ? ('CheckSum：找不到 ' + missing.join(','))
+                               : ('CheckSum ID ' + id), missing.length ? 'err' : 'ok');
+        }
+
+        // ===================================================================
+        // 播放
+        // ===================================================================
+        function sendCmd(obj) {
+            if (!tCmd) { msg('還沒連上 rosbridge，指令沒有送出', 'err'); return; }
+            tCmd.publish(new ROSLIB.Message({ data: JSON.stringify(obj) }));
+        }
+
+        function syncPlayIds() {
+            if (el('hm-playsync').checked) el('hm-playr').value = el('hm-playl').value;
+        }
+
+        function doPlay() {
+            if (!tCmd) return msg('還沒連上線', 'err');
+            if (motionAvailable === false) return msg(nomsgText(), 'err');
+            if (el('hm-playsync').checked) syncPlayIds();
+            var l = num(el('hm-playl').value, -1), r = num(el('hm-playr').value, -1);
+            var p = { cmd: 'play', action: 'start', loop: num(el('hm-playloop').value, 1) };
+            p.left = l > 0 ? l : null;
+            p.right = r > 0 ? r : null;
+            if (p.left === null && p.right === null) {
+                return msg('左右手至少要指定一個序列 ID', 'err');
+            }
+            tCmd.publish(new ROSLIB.Message({ data: JSON.stringify(p) }));
+            msg('已送出播放：左 ' + (p.left || '-') + ' 右 ' + (p.right || '-'), 'ok');
+        }
+
+        function doPlayStop() {
+            if (!tCmd) return;
+            tCmd.publish(new ROSLIB.Message({
+                data: JSON.stringify({ cmd: 'play', action: 'stop' })
+            }));
+            msg('已停止播放', 'ok');
+        }
+
+        // ===================================================================
+        // 狀態
+        // ===================================================================
+        function nomsgText() {
+            // 沒有 nstc_msgs 只影響「存 / 讀 / Send / execute」這組 topic 與 service；
+            // 節點還是能播磁碟上已經存在的 sector（load_all 只是讀 .ini）
+            return '節點回報沒有 nstc_msgs：Save / Read / Send / execute 都不會有反應'
+                 + '（播放磁碟上已存在的 sector 仍可用）。';
+        }
+
+        function onConfig(c) {
+            if (c.motion_available === motionAvailable) return;
+            motionAvailable = !!c.motion_available;
+            var box = el('hm-nomsgs');
+            if (motionAvailable) {
+                box.style.display = 'none';
+            } else {
+                box.style.display = '';
+                box.textContent = nomsgText() + ' 節點的原因：' + (c.motion_error || '未知')
+                    + '。在機器人上編一次 nstc_msgs 就會好：'
+                    + 'colcon build --symlink-install --packages-select nstc_msgs';
+            }
+        }
+
+        function onStatus(st) {
+            el('current-strategy-name').textContent = st.strategy || '---';
+            renderLive(st);
+            renderHistory(st.history);
+            var p = st.play || {};
+            if (!p.active) {
+                el('hm-playstat').textContent = '待機';
+            } else {
+                var parts = [];
+                ['left', 'right'].forEach(function (s) {
+                    var q = p[s] || {};
+                    if (!q.active) return;
+                    parts.push((s === 'left' ? '左' : '右') + ' 序列 ' + q.name
+                        + '：第 ' + q.step + '/' + q.total + ' 步'
+                        + '　第 ' + (q.done_loops + 1) + ' 圈'
+                        + (q.loop <= 0 ? '（無限）' : '/' + q.loop));
+                });
+                el('hm-playstat').textContent = parts.length ? parts.join('　｜　') : '播放中';
+            }
+        }
+
+        // 存檔確認的接線，與全身那頁的 Interface2.js 一樣：
+        // Save 鈕只負責開 dialog，真的存檔是按 Yes 才做
+        function wireSaveModal() {
+            var dlg = el('saveModal');
+            el('SaveButton').addEventListener('click', function () { dlg.showModal(); });
+            el('saveYes').addEventListener('click', function () {
+                dlg.close();
+                doSave();
+            });
+            el('saveNo').addEventListener('click', function () { dlg.close(); });
+        }
+
+        window.addEventListener('DOMContentLoaded', function () {
+            render();
+            buildLive();
+            wireSaveModal();
+            renderHistory(null);
+        });
+    </script>
+</body>
+
+</html>

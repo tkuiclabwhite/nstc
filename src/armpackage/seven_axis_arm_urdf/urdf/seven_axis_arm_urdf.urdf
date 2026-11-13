@@ -1,0 +1,2317 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dual 7-axis arm + 2x Linker Hand O6 on the stand (7-axis arm assembly with stand). -->
+<robot
+  name="seven_axis_arm_urdf">
+  <!-- base_link = the stand.  Origin at the midpoint between the two
+       arm mounts, axes REP-103: X forward, Y left, Z up.  The stand mesh
+       keeps its SolidWorks frame; the visual/collision origin below places
+       it.  Floor is at z = -1.202000019369 m. -->
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.030092731198 6.335e-09 -0.704152911999"
+        rpy="0 0 0" />
+      <mass
+        value="7.911" />
+      <inertia
+        ixx="2.608038831697"
+        ixy="3.35e-10"
+        ixz="0.009058161652"
+        iyy="2.23398890312"
+        iyz="-2.4671e-08"
+        izz="0.507645384131" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="-1.0285 0.021020174026 -0.4024896"
+        rpy="0 0 1.570796326795" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/stand.STL" />
+      </geometry>
+      <material
+        name="stand">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="-1.0285 0.021020174026 -0.4024896"
+        rpy="0 0 1.570796326795" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/stand.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <!-- Arm mounts.  Right arm registered onto the shoulder XM540 in the
+       SW2URDF export of the stand assembly dated 2026-10-29 (residual 0.06 um),
+       35 mm further forward than the earlier reference motor; left arm is its
+       mirror across the stand centre plane.  base_link stays midway between the
+       two mounts, so these joints are unchanged and the stand moved instead.
+       Same joint values on both arms give mirror-symmetric poses. -->
+  <joint
+    name="stand_to_Rarm"
+    type="fixed">
+    <origin
+      xyz="0 -0.145400025974 0"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Rarm_base_link" />
+  </joint>
+  <joint
+    name="stand_to_Larm"
+    type="fixed">
+    <origin
+      xyz="0 0.145400025974 0"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Larm_base_link" />
+  </joint>
+  <link
+    name="Rarm_base_link">
+    <inertial>
+      <origin
+        xyz="-0.033626023 -0.0222784640000001 0.015153715049999999"
+        rpy="0 0 0" />
+      <mass
+        value="0.165" />
+      <inertia
+        ixx="3.9197242e-05"
+        ixy="8.5799754e-06"
+        ixz="1.8361818000000001e-07"
+        iyy="6.0843342e-05"
+        iyz="-2.0185774000000002e-07"
+        izz="7.322596600000001e-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rarm_base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rarm_base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="Rshoulder_Link">
+    <inertial>
+      <origin
+        xyz="-0.0022146021674919955 -0.030709851833780156 -0.004466374689086014"
+        rpy="0 0 0" />
+      <mass
+        value="0.0891650453885711" />
+      <inertia
+        ixx="3.986394511359544e-05"
+        ixy="-2.3163628810084164e-06"
+        ixz="6.107164647193619e-07"
+        iyy="0.00011202394073431167"
+        iyz="-3.946749510634224e-06"
+        izz="0.00012944989102722855" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rshoulder_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rshoulder_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RshoulderJoint"
+    type="revolute">
+    <origin
+      xyz="-0.01375 -0.0436000000000001 0.01475"
+      rpy="0 0 0" />
+    <parent
+      link="Rarm_base_link" />
+    <child
+      link="Rshoulder_Link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Rarm_Link">
+    <inertial>
+      <origin
+        xyz="-0.021347428585073887 -0.0006257093386752267 -0.028886497142799585"
+        rpy="0 0 0" />
+      <mass
+        value="0.24325341049182303" />
+      <inertia
+        ixx="0.00015665870015734942"
+        ixy="4.415054940068503e-07"
+        ixz="-9.145070931141621e-06"
+        iyy="0.00018803784075473146"
+        iyz="3.1813157612821452e-06"
+        izz="0.00011587112737674736" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rarm_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rarm_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RarmJoint"
+    type="revolute">
+    <origin
+      xyz="0.0219000000001108 -0.0375000000000185 0"
+      rpy="0 0 0" />
+    <parent
+      link="Rshoulder_Link" />
+    <child
+      link="Rarm_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-3.3"
+      upper="0.5"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Rarm1_Link">
+    <inertial>
+      <origin
+        xyz="-0.0068598174989526455 0.0005869570508235495 -0.037065047669781276"
+        rpy="0 0 0" />
+      <mass
+        value="0.42312453053409704" />
+      <inertia
+        ixx="0.000492480044430158"
+        ixy="-1.0563998450486968e-07"
+        ixz="3.77538212607207e-05"
+        iyy="0.0005915465930859777"
+        iyz="-9.643824438175985e-07"
+        izz="0.00045505426741971906" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rarm1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rarm1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Rarm1Joint"
+    type="revolute">
+    <origin
+      xyz="-0.0219999999999173 4.99999999881151E-05 -0.0637500000000199"
+      rpy="0 0 0" />
+    <parent
+      link="Rarm_Link" />
+    <child
+      link="Rarm1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Rforarm_Link">
+    <inertial>
+      <origin
+        xyz="-0.009929276471181265 0.021935631797527097 -0.012094498549872098"
+        rpy="0 0 0" />
+      <mass
+        value="0.29185910879237187" />
+      <inertia
+        ixx="0.00017419622893728406"
+        ixy="6.815816803050856e-06"
+        ixz="4.845537722628062e-05"
+        iyy="0.0002786135532653989"
+        iyz="2.2128531621948148e-06"
+        izz="0.0002672224070638421" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rforarm_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rforarm_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RforarmJoint"
+    type="revolute">
+    <origin
+      xyz="0 -0.0220999999999977 -0.130999999999979"
+      rpy="0 0 0" />
+    <parent
+      link="Rarm1_Link" />
+    <child
+      link="Rforarm_Link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.4"
+      upper="1.4"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Rforarm1_Link">
+    <inertial>
+      <origin
+        xyz="-0.007947680975915817 0.0005449269808192428 -0.030362151331996386"
+        rpy="0 0 0" />
+      <mass
+        value="0.350240326631741" />
+      <inertia
+        ixx="0.0003185506977336476"
+        ixy="-6.127822675163893e-08"
+        ixz="1.9334464606022513e-05"
+        iyy="0.00039097787493787376"
+        iyz="-1.0784166254465577e-06"
+        izz="0.00035411155434057534" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rforarm1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rforarm1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Rforarm1Joint"
+    type="revolute">
+    <origin
+      xyz="1.91280417445733E-05 0.0213515785030964 -0.0462499999397459"
+      rpy="0 0 0.0589816426454888" />
+    <parent
+      link="Rforarm_Link" />
+    <child
+      link="Rforarm1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Rwrist_Link">
+    <inertial>
+      <origin
+        xyz="-0.010514322813216287 0.021935589884704492 -0.012090498615073986"
+        rpy="0 0 0" />
+      <mass
+        value="0.2936486594743311" />
+      <inertia
+        ixx="0.0001769233161745237"
+        ixy="6.823754493620473e-06"
+        ixz="4.524049460444757e-05"
+        iyy="0.0002835743177085682"
+        iyz="2.2114031068595205e-06"
+        izz="0.0002694039838114428" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rwrist_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rwrist_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RwristJoint"
+    type="revolute">
+    <origin
+      xyz="0.000746486651926365 -0.0220990860692467 -0.111000113440368"
+      rpy="0 0.000319395286232121 0" />
+    <parent
+      link="Rforarm1_Link" />
+    <child
+      link="Rwrist_Link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.4"
+      upper="1.4"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Rwrist1_Link">
+    <inertial>
+      <origin
+        xyz="-0.021278356087632906 -0.0002065037397467975 -0.024638867475190063"
+        rpy="0 0 0" />
+      <mass
+        value="0.2518656097538891" />
+      <inertia
+        ixx="0.0001252018858748428"
+        ixy="-2.6066484168544838e-08"
+        ixz="-9.10467872694688e-06"
+        iyy="0.0001620082674107602"
+        iyz="3.143675039248057e-07"
+        izz="0.00011919631213511175" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rwrist1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Rwrist1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Rwrist1Joint"
+    type="revolute">
+    <origin
+      xyz="0.022049999999986 0.0218809044167402 -0.0587493552649147"
+      rpy="-0.0108270827432787 0 0" />
+    <parent
+      link="Rwrist_Link" />
+    <child
+      link="Rwrist1_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.1"
+      upper="1.1"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <!-- ===== Linker Hand O6 (right) mounted on the wrist =====
+       xyz = centre of the Rwrist1_Link distal flange (local z = -65.6 mm)
+       rpy = (pi, 0, gamma): turns the hand to point along the wrist -Z.
+       gamma (the 3rd value) swings the palm about the mounting axis:
+         0        palm faces  +X of Rwrist1_Link
+         1.5708   palm faces  +Y
+         3.1416   palm faces  -X
+        -1.5708   palm faces  -Y
+       Adjust xyz/rpy here if the real bracket differs. -->
+  <joint
+    name="Rwrist1_to_hand"
+    type="fixed">
+    <origin
+      xyz="-0.02132 5e-05 -0.0656"
+      rpy="3.141592653589793 0.0 1.5707963267948966" />
+    <parent
+      link="Rwrist1_Link" />
+    <child
+      link="rh_hand_base_link" />
+  </joint>
+  <material name="silver">
+    <color rgba="0.5 0.5 0.52 1.0"/>
+  </material>
+  
+  <material name="BlackAccent">
+    <color rgba="0.15 0.15 0.15 1.0"/>
+  </material>
+  <link
+    name="rh_hand_base_link">
+    <inertial>
+      <origin
+        xyz="-0.00160320773490556 0.000358462699237561 0.0538002704027215"
+        rpy="0 0 0" />
+      <mass
+        value="0.29344404048369876" />
+      <inertia
+        ixx="0.00022742082891802888"
+        ixy="1.3231620062483246e-06"
+        ixz="1.6906457246885328e-06"
+        iyy="0.00014518478546885424"
+        iyz="-3.385257034359253e-06"
+        izz="9.941398046928171e-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/hand_base_link.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/hand_base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="rh_thumb_metacarpals_base2">
+    <inertial>
+      <origin
+        xyz="0.00162795738393507 0.00276671978336815 -0.00184227725602707"
+        rpy="0 0 0" />
+      <mass
+        value="0.00138591070212997" />
+      <inertia
+        ixx="5.26294625624223E-08"
+        ixy="-3.9288013799604E-09"
+        ixz="2.43766268199571E-09"
+        iyy="4.82623724532942E-08"
+        iyz="3.71867754115443E-09"
+        izz="2.88555522060562E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/thumb_metacarpals_base2.STL" />
+      </geometry>
+      <material name="BlackAccent"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/thumb_metacarpals_base2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_thumb_cmc_yaw"
+    type="revolute">
+    <origin
+      xyz="0.011508 0.022975 0.032794"
+      rpy="0 0 0" />
+    <parent
+      link="rh_hand_base_link" />
+    <child
+      link="rh_thumb_metacarpals_base2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="rh_thumb_metacarpals">
+    <inertial>
+      <origin
+        xyz="4.24920612856275E-05 -1.67885666835232E-05 0.0228341522590467"
+        rpy="0 0 0" />
+      <mass
+        value="0.0123381607727595" />
+      <inertia
+        ixx="1.10292488693766E-06"
+        ixy="-6.14241939151719E-10"
+        ixz="1.14233108676795E-07"
+        iyy="1.76757658485787E-06"
+        iyz="-4.24576599367025E-10"
+        izz="9.36348143657406E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/thumb_metacarpals.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/thumb_metacarpals.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_thumb_cmc_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0061649 0.010678 -0.004891"
+      rpy="0 -1.1529 -2.0944" />
+    <parent
+      link="rh_thumb_metacarpals_base2" />
+    <child
+      link="rh_thumb_metacarpals" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="0.58"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="rh_thumb_distal">
+    <inertial>
+      <origin
+        xyz="-0.00413690727496815 -4.54842793429222E-07 0.0230097179163771"
+        rpy="0 0 0" />
+      <mass
+        value="0.00763302603723749" />
+      <inertia
+        ixx="1.30546842791578E-06"
+        ixy="-2.61617511029467E-12"
+        ixz="7.19030685242407E-08"
+        iyy="1.22457212713176E-06"
+        iyz="1.66931068485225E-11"
+        izz="2.7729897944409E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/thumb_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/thumb_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_thumb_ip"
+    type="revolute">
+    <origin
+      xyz="0.0037776 0 0.045368"
+      rpy="0 0 0" />
+    <parent
+      link="rh_thumb_metacarpals" />
+    <child
+      link="rh_thumb_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.08"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="rh_thumb_cmc_pitch"
+      multiplier="1.86"
+      offset="0" />
+  </joint>
+  <link
+    name="rh_index_proximal">
+    <inertial>
+      <origin
+        xyz="-0.00208665596033792 -4.8964990644329E-06 0.0172736718900068"
+        rpy="0 0 0" />
+      <mass
+        value="0.00253178529301663" />
+      <inertia
+        ixx="2.65990159539482E-07"
+        ixy="-3.55165625722842E-11"
+        ixz="4.31046335852167E-08"
+        iyy="2.72915460277804E-07"
+        iyz="1.75935978708959E-10"
+        izz="8.56026306687528E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/index_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/index_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_index_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0024758 0.02419 0.098779"
+      rpy="-0.05236 0 0" />
+    <parent
+      link="rh_hand_base_link" />
+    <child
+      link="rh_index_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="rh_index_distal">
+    <inertial>
+      <origin
+        xyz="0.00658940011630532 -4.59976557022623E-06 0.0194434136420913"
+        rpy="0 0 0" />
+      <mass
+        value="0.00376787129082313" />
+      <inertia
+        ixx="3.22116619426455E-07"
+        ixy="1.03152735699049E-11"
+        ixz="-1.14363506430985E-07"
+        iyy="3.65131844686317E-07"
+        iyz="-1.97263639269362E-10"
+        izz="1.24256890612907E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/index_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/index_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_index_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0 0.036625"
+      rpy="0 0 0" />
+    <parent
+      link="rh_index_proximal" />
+    <child
+      link="rh_index_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="rh_index_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="rh_middle_proximal">
+    <inertial>
+      <origin
+        xyz="-0.00208661081773556 -4.93451838476378E-06 0.0172736805321904"
+        rpy="0 0 0" />
+      <mass
+        value="0.00253175497594429" />
+      <inertia
+        ixx="2.65989683690695E-07"
+        ixy="-3.58343951791586E-11"
+        ixz="4.31048601085216E-08"
+        iyy="2.72915006047006E-07"
+        iyz="1.75718024412593E-10"
+        izz="8.56020467202518E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/middle_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/middle_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_middle_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.00052576 0.00634 0.1027"
+      rpy="0 0 0" />
+    <parent
+      link="rh_hand_base_link" />
+    <child
+      link="rh_middle_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="rh_middle_distal">
+    <inertial>
+      <origin
+        xyz="0.00658940304809306 -4.5885743593238E-06 0.0194434523296449"
+        rpy="0 0 0" />
+      <mass
+        value="0.00376786259758948" />
+      <inertia
+        ixx="3.221153658306E-07"
+        ixy="1.02639617308432E-11"
+        ixz="-1.14363547272711E-07"
+        iyy="3.65130723083104E-07"
+        iyz="-1.96904618797577E-10"
+        izz="1.24256787913797E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/middle_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/middle_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_middle_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0 0.036625"
+      rpy="0 0 0" />
+    <parent
+      link="rh_middle_proximal" />
+    <child
+      link="rh_middle_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="rh_middle_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="rh_ring_proximal">
+    <inertial>
+      <origin
+        xyz="-0.00208654311325356 -4.98538564003281E-06 0.0172736743497407"
+        rpy="0 0 0" />
+      <mass
+        value="0.00253170963529411" />
+      <inertia
+        ixx="2.6598913795678E-07"
+        ixy="-3.62757108675266E-11"
+        ixz="4.31050611555507E-08"
+        iyy="2.72914417061517E-07"
+        iyz="1.75554984053478E-10"
+        izz="8.56012458677515E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/ring_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/ring_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_ring_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0010258 -0.011135 0.098767"
+      rpy="0.05236 0 0" />
+    <parent
+      link="rh_hand_base_link" />
+    <child
+      link="rh_ring_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="rh_ring_distal">
+    <inertial>
+      <origin
+        xyz="0.00658940273069729 -4.56628863591824E-06 0.0194435005686854"
+        rpy="0 0 0" />
+      <mass
+        value="0.0037678395356105" />
+      <inertia
+        ixx="3.22112632437858E-07"
+        ixy="1.01848408913558E-11"
+        ixz="-1.1436348915342E-07"
+        iyy="3.65128262095686E-07"
+        iyz="-1.96145632992445E-10"
+        izz="1.24256284608064E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/ring_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/ring_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_ring_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0 0.036625"
+      rpy="0 0 0" />
+    <parent
+      link="rh_ring_proximal" />
+    <child
+      link="rh_ring_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="rh_ring_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="rh_pinky_proximal">
+    <inertial>
+      <origin
+        xyz="-0.00208649034130813 -5.02314582560837E-06 0.0172736680793697"
+        rpy="0 0 0" />
+      <mass
+        value="0.00253167400540778" />
+      <inertia
+        ixx="2.65988718820404E-07"
+        ixy="-3.66012295280295E-11"
+        ixz="4.31052220484445E-08"
+        iyy="2.72913936904813E-07"
+        iyz="1.75447396222308E-10"
+        izz="8.56006424720129E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/pinky_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/pinky_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_pinky_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0024758 -0.028372 0.092741"
+      rpy="0.087266 0 0" />
+    <parent
+      link="rh_hand_base_link" />
+    <child
+      link="rh_pinky_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="rh_pinky_distal">
+    <inertial>
+      <origin
+        xyz="0.00658940431519205 -4.55268314210333E-06 0.0194435341098305"
+        rpy="0 0 0" />
+      <mass
+        value="0.00376782669873412" />
+      <inertia
+        ixx="3.22111112339498E-07"
+        ixy="1.01707985908333E-11"
+        ixz="-1.14363524419061E-07"
+        iyy="3.65126916899176E-07"
+        iyz="-1.95589215866356E-10"
+        izz="1.24256004854426E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/pinky_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_r/pinky_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rh_pinky_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0 0.036625"
+      rpy="0 0 0" />
+    <parent
+      link="rh_pinky_proximal" />
+    <child
+      link="rh_pinky_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="rh_pinky_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="Larm_base_link">
+    <inertial>
+      <origin
+      xyz="-0.033626023 0.0222784640000001 0.015153715049999999"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.165" />
+      <inertia
+        ixx="3.9197242e-05"
+        ixy="-8.5799754e-06"
+        ixz="1.8361818000000001e-07"
+        iyy="6.0843342e-05"
+        iyz="2.0185774000000002e-07"
+        izz="7.322596600000001e-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Larm_base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Larm_base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="Lshoulder_Link">
+    <inertial>
+      <origin
+      xyz="-0.0022146021674919955 0.030709851833780156 -0.004466374689086014"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.0891650453885711" />
+      <inertia
+        ixx="3.986394511359544e-05"
+        ixy="2.3163628810084164e-06"
+        ixz="6.107164647193619e-07"
+        iyy="0.00011202394073431167"
+        iyz="3.946749510634224e-06"
+        izz="0.00012944989102722855" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lshoulder_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lshoulder_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LshoulderJoint"
+    type="revolute">
+    <origin
+      xyz="-0.01375 0.0436000000000001 0.01475"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="Larm_base_link" />
+    <child
+      link="Lshoulder_Link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Larm_Link">
+    <inertial>
+      <origin
+      xyz="-0.021347428585073887 0.0006257093386752267 -0.028886497142799585"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.24325341049182303" />
+      <inertia
+        ixx="0.00015665870015734942"
+        ixy="-4.415054940068503e-07"
+        ixz="-9.145070931141621e-06"
+        iyy="0.00018803784075473146"
+        iyz="-3.1813157612821452e-06"
+        izz="0.00011587112737674736" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Larm_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Larm_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LarmJoint"
+    type="revolute">
+    <origin
+      xyz="0.0219000000001108 0.0375000000000185 0.0"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="Lshoulder_Link" />
+    <child
+      link="Larm_Link" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-3.3"
+      upper="0.5"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Larm1_Link">
+    <inertial>
+      <origin
+      xyz="-0.0068598174989526455 -0.0005869570508235495 -0.037065047669781276"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.42312453053409704" />
+      <inertia
+        ixx="0.000492480044430158"
+        ixy="1.0563998450486968e-07"
+        ixz="3.77538212607207e-05"
+        iyy="0.0005915465930859777"
+        iyz="9.643824438175985e-07"
+        izz="0.00045505426741971906" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Larm1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Larm1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Larm1Joint"
+    type="revolute">
+    <origin
+      xyz="-0.0219999999999173 -4.99999999881151e-05 -0.0637500000000199"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="Larm_Link" />
+    <child
+      link="Larm1_Link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Lforarm_Link">
+    <inertial>
+      <origin
+      xyz="-0.009929276471181265 -0.021935631797527097 -0.012094498549872098"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.29185910879237187" />
+      <inertia
+        ixx="0.00017419622893728406"
+        ixy="-6.815816803050856e-06"
+        ixz="4.845537722628062e-05"
+        iyy="0.0002786135532653989"
+        iyz="-2.2128531621948148e-06"
+        izz="0.0002672224070638421" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lforarm_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lforarm_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LforarmJoint"
+    type="revolute">
+    <origin
+      xyz="0.0 0.0220999999999977 -0.130999999999979"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="Larm1_Link" />
+    <child
+      link="Lforarm_Link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.4"
+      upper="1.4"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Lforarm1_Link">
+    <inertial>
+      <origin
+      xyz="-0.007947680975915817 -0.0005449269808192428 -0.030362151331996386"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.350240326631741" />
+      <inertia
+        ixx="0.0003185506977336476"
+        ixy="6.127822675163893e-08"
+        ixz="1.9334464606022513e-05"
+        iyy="0.00039097787493787376"
+        iyz="1.0784166254465577e-06"
+        izz="0.00035411155434057534" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lforarm1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lforarm1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Lforarm1Joint"
+    type="revolute">
+    <origin
+      xyz="1.91280417445733e-05 -0.0213515785030964 -0.0462499999397459"
+      rpy="0.0 -0.0 -0.0589816426454888" />
+    <parent
+      link="Lforarm_Link" />
+    <child
+      link="Lforarm1_Link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Lwrist_Link">
+    <inertial>
+      <origin
+      xyz="-0.010514322813216287 -0.021935589884704492 -0.012090498615073986"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.2936486594743311" />
+      <inertia
+        ixx="0.0001769233161745237"
+        ixy="-6.823754493620473e-06"
+        ixz="4.524049460444757e-05"
+        iyy="0.0002835743177085682"
+        iyz="-2.2114031068595205e-06"
+        izz="0.0002694039838114428" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lwrist_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lwrist_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LwristJoint"
+    type="revolute">
+    <origin
+      xyz="0.000746486651926365 0.0220990860692467 -0.111000113440368"
+      rpy="0.0 0.000319395286232121 0.0" />
+    <parent
+      link="Lforarm1_Link" />
+    <child
+      link="Lwrist_Link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-1.4"
+      upper="1.4"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <link
+    name="Lwrist1_Link">
+    <inertial>
+      <origin
+      xyz="-0.021278356087632906 0.0002065037397467975 -0.024638867475190063"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.2518656097538891" />
+      <inertia
+        ixx="0.0001252018858748428"
+        ixy="2.6066484168544838e-08"
+        ixz="-9.10467872694688e-06"
+        iyy="0.0001620082674107602"
+        iyz="-3.143675039248057e-07"
+        izz="0.00011919631213511175" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lwrist1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/Lwrist1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Lwrist1Joint"
+    type="revolute">
+    <origin
+      xyz="0.022049999999986 -0.0218809044167402 -0.0587493552649147"
+      rpy="0.0108270827432787 -0.0 0.0" />
+    <parent
+      link="Lwrist_Link" />
+    <child
+      link="Lwrist1_Link" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-1.1"
+      upper="1.1"
+      effort="6.85"
+      velocity="2.3824" />
+  </joint>
+  <!-- ===== Linker Hand O6, MIRRORED to left, mounted on the wrist =====
+       xyz = centre of the Lwrist1_Link distal flange (local z = -65.6 mm)
+       rpy = (pi, 0, gamma): turns the hand to point along the wrist -Z.
+       gamma (the 3rd value) swings the palm about the mounting axis:
+         0        palm faces  +X of Lwrist1_Link
+         1.5708   palm faces  +Y
+         3.1416   palm faces  -X
+        -1.5708   palm faces  -Y
+       Adjust xyz/rpy here if the real bracket differs. -->
+  <joint
+    name="Lwrist1_to_hand"
+    type="fixed">
+    <origin
+      xyz="-0.02132 -5e-05 -0.0656"
+      rpy="-3.141592653589793 -0.0 -1.5707963267948966" />
+    <parent
+      link="Lwrist1_Link" />
+    <child
+      link="lh_hand_base_link" />
+  </joint>
+  
+  <link
+    name="lh_hand_base_link">
+    <inertial>
+      <origin
+      xyz="-0.00160320773490556 -0.000358462699237561 0.0538002704027215"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.29344404048369876" />
+      <inertia
+        ixx="0.00022742082891802888"
+        ixy="-1.3231620062483246e-06"
+        ixz="1.6906457246885328e-06"
+        iyy="0.00014518478546885424"
+        iyz="3.385257034359253e-06"
+        izz="9.941398046928171e-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/hand_base_link.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/hand_base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="lh_thumb_metacarpals_base2">
+    <inertial>
+      <origin
+      xyz="0.00162795738393507 -0.00276671978336815 -0.00184227725602707"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00138591070212997" />
+      <inertia
+        ixx="5.26294625624223E-08"
+        ixy="3.9288013799604e-09"
+        ixz="2.43766268199571E-09"
+        iyy="4.82623724532942E-08"
+        iyz="-3.71867754115443e-09"
+        izz="2.88555522060562E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/thumb_metacarpals_base2.STL" />
+      </geometry>
+      <material name="BlackAccent"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/thumb_metacarpals_base2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_thumb_cmc_yaw"
+    type="revolute">
+    <origin
+      xyz="0.011508 -0.022975 0.032794"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_hand_base_link" />
+    <child
+      link="lh_thumb_metacarpals_base2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="lh_thumb_metacarpals">
+    <inertial>
+      <origin
+      xyz="4.24920612856275e-05 1.67885666835232e-05 0.0228341522590467"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.0123381607727595" />
+      <inertia
+        ixx="1.10292488693766E-06"
+        ixy="6.14241939151719e-10"
+        ixz="1.14233108676795E-07"
+        iyy="1.76757658485787E-06"
+        iyz="4.24576599367025e-10"
+        izz="9.36348143657406E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/thumb_metacarpals.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/thumb_metacarpals.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_thumb_cmc_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0061649 -0.010678 -0.004891"
+      rpy="0.0 -1.1529 2.0944" />
+    <parent
+      link="lh_thumb_metacarpals_base2" />
+    <child
+      link="lh_thumb_metacarpals" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="0.58"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="lh_thumb_distal">
+    <inertial>
+      <origin
+      xyz="-0.00413690727496815 4.54842793429222e-07 0.0230097179163771"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00763302603723749" />
+      <inertia
+        ixx="1.30546842791578E-06"
+        ixy="2.61617511029467e-12"
+        ixz="7.19030685242407E-08"
+        iyy="1.22457212713176E-06"
+        iyz="-1.66931068485225e-11"
+        izz="2.7729897944409E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/thumb_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/thumb_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_thumb_ip"
+    type="revolute">
+    <origin
+      xyz="0.0037776 0.0 0.045368"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_thumb_metacarpals" />
+    <child
+      link="lh_thumb_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.08"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="lh_thumb_cmc_pitch"
+      multiplier="1.86"
+      offset="0" />
+  </joint>
+  <link
+    name="lh_index_proximal">
+    <inertial>
+      <origin
+      xyz="-0.00208665596033792 4.8964990644329e-06 0.0172736718900068"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00253178529301663" />
+      <inertia
+        ixx="2.65990159539482E-07"
+        ixy="3.55165625722842e-11"
+        ixz="4.31046335852167E-08"
+        iyy="2.72915460277804E-07"
+        iyz="-1.75935978708959e-10"
+        izz="8.56026306687528E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/index_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/index_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_index_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0024758 -0.02419 0.098779"
+      rpy="0.05236 -0.0 0.0" />
+    <parent
+      link="lh_hand_base_link" />
+    <child
+      link="lh_index_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="lh_index_distal">
+    <inertial>
+      <origin
+      xyz="0.00658940011630532 4.59976557022623e-06 0.0194434136420913"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00376787129082313" />
+      <inertia
+        ixx="3.22116619426455E-07"
+        ixy="-1.03152735699049e-11"
+        ixz="-1.14363506430985E-07"
+        iyy="3.65131844686317E-07"
+        iyz="1.97263639269362e-10"
+        izz="1.24256890612907E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/index_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/index_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_index_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0.0 0.036625"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_index_proximal" />
+    <child
+      link="lh_index_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="lh_index_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="lh_middle_proximal">
+    <inertial>
+      <origin
+      xyz="-0.00208661081773556 4.93451838476378e-06 0.0172736805321904"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00253175497594429" />
+      <inertia
+        ixx="2.65989683690695E-07"
+        ixy="3.58343951791586e-11"
+        ixz="4.31048601085216E-08"
+        iyy="2.72915006047006E-07"
+        iyz="-1.75718024412593e-10"
+        izz="8.56020467202518E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/middle_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/middle_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_middle_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.00052576 -0.00634 0.1027"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_hand_base_link" />
+    <child
+      link="lh_middle_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="lh_middle_distal">
+    <inertial>
+      <origin
+      xyz="0.00658940304809306 4.5885743593238e-06 0.0194434523296449"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00376786259758948" />
+      <inertia
+        ixx="3.221153658306E-07"
+        ixy="-1.02639617308432e-11"
+        ixz="-1.14363547272711E-07"
+        iyy="3.65130723083104E-07"
+        iyz="1.96904618797577e-10"
+        izz="1.24256787913797E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/middle_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/middle_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_middle_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0.0 0.036625"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_middle_proximal" />
+    <child
+      link="lh_middle_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="lh_middle_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="lh_ring_proximal">
+    <inertial>
+      <origin
+      xyz="-0.00208654311325356 4.98538564003281e-06 0.0172736743497407"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00253170963529411" />
+      <inertia
+        ixx="2.6598913795678E-07"
+        ixy="3.62757108675266e-11"
+        ixz="4.31050611555507E-08"
+        iyy="2.72914417061517E-07"
+        iyz="-1.75554984053478e-10"
+        izz="8.56012458677515E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/ring_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/ring_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_ring_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0010258 0.011135 0.098767"
+      rpy="-0.05236 -0.0 0.0" />
+    <parent
+      link="lh_hand_base_link" />
+    <child
+      link="lh_ring_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="lh_ring_distal">
+    <inertial>
+      <origin
+      xyz="0.00658940273069729 4.56628863591824e-06 0.0194435005686854"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.0037678395356105" />
+      <inertia
+        ixx="3.22112632437858E-07"
+        ixy="-1.01848408913558e-11"
+        ixz="-1.1436348915342E-07"
+        iyy="3.65128262095686E-07"
+        iyz="1.96145632992445e-10"
+        izz="1.24256284608064E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/ring_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/ring_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_ring_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0.0 0.036625"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_ring_proximal" />
+    <child
+      link="lh_ring_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="lh_ring_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+  <link
+    name="lh_pinky_proximal">
+    <inertial>
+      <origin
+      xyz="-0.00208649034130813 5.02314582560837e-06 0.0172736680793697"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00253167400540778" />
+      <inertia
+        ixx="2.65988718820404E-07"
+        ixy="3.66012295280295e-11"
+        ixz="4.31052220484445E-08"
+        iyy="2.72913936904813E-07"
+        iyz="-1.75447396222308e-10"
+        izz="8.56006424720129E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/pinky_proximal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/pinky_proximal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_pinky_mcp_pitch"
+    type="revolute">
+    <origin
+      xyz="0.0024758 0.028372 0.092741"
+      rpy="-0.087266 -0.0 0.0" />
+    <parent
+      link="lh_hand_base_link" />
+    <child
+      link="lh_pinky_proximal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.60"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="lh_pinky_distal">
+    <inertial>
+      <origin
+      xyz="0.00658940431519205 4.55268314210333e-06 0.0194435341098305"
+      rpy="0.0 0.0 0.0" />
+      <mass
+        value="0.00376782669873412" />
+      <inertia
+        ixx="3.22111112339498E-07"
+        ixy="-1.01707985908333e-11"
+        ixz="-1.14363524419061E-07"
+        iyy="3.65126916899176E-07"
+        iyz="1.95589215866356e-10"
+        izz="1.24256004854426E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/pinky_distal.STL" />
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://seven_axis_arm_urdf/meshes/hand_l/pinky_distal.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lh_pinky_dip"
+    type="revolute">
+    <origin
+      xyz="-0.0052516 0.0 0.036625"
+      rpy="0.0 -0.0 0.0" />
+    <parent
+      link="lh_pinky_proximal" />
+    <child
+      link="lh_pinky_distal" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.43"
+      effort="100"
+      velocity="1" />
+    <mimic
+      joint="lh_pinky_mcp_pitch"
+      multiplier="0.89"
+      offset="0" />
+  </joint>
+</robot>

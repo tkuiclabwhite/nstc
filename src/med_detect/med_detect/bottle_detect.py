@@ -41,7 +41,7 @@ from std_msgs.msg import String
 from sensor_msgs.msg import Image as RosImage
 from cv_bridge import CvBridge
 
-from tku_msgs.msg import Zoom
+from nstc_msgs.msg import Zoom
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

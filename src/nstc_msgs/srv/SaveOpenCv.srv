@@ -1,0 +1,4 @@
+bool save
+string location
+---
+bool already

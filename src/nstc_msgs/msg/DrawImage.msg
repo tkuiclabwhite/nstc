@@ -1,0 +1,10 @@
+int16 cnt
+int16 mode
+int16 xmin
+int16 xmax
+int16 ymin
+int16 ymax
+int32 rvalue
+int32 gvalue
+int32 bvalue
+int32 thickness

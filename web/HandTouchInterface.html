@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8" />
+	<link rel="SHORTCUT ICON" href="./picture/icon.png">
+	<title>HandTouch</title>
+
+	<!-- CSS References -->
+	<link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/style.css">
+
+	<!-- JavaScript References -->
+	<script src="./js/config.js"></script>
+	<script src="./js/nav.js"></script>
+	<script type="text/javascript" src="./js/roslib/eventemitter2.min.js"></script>
+	<script type="text/javascript" src="./js/roslib/roslib.min.js"></script>
+
+	<style type="text/css">
+		body {
+			width: 1520px;
+			overflow: visible;
+			background-image: url(./picture/Gray_Background.jpg);
+			background-size: cover;
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+		}
+
+		#container {
+			background-color: #333;
+			border: 2px black solid;
+			width: 1440px;
+			margin: 10px auto 30px auto;
+			padding-bottom: 10px;
+			overflow: visible;
+			color: white;
+		}
+
+		section.wide {
+			float: left;
+			width: 1416px;
+			margin: 10px 8px 0 8px;
+			border: 1px #FFF solid;
+			padding-bottom: 8px;
+		}
+
+		table.control { border-collapse: collapse; width: auto; margin: 0 auto; }
+		table.control td, table.control th { padding: 3px 5px; vertical-align: middle; }
+		td.label { width: 96px; white-space: nowrap; text-align: left; }
+		.Button { height: 26px; margin-left: 6px; }
+		.Button.on { background-color: #4CAF50; color: white; border: none; }
+		.TxtS { width: 56px; }
+
+		/* 波形 / 熱力圖的表格 */
+		table.grid { border-collapse: collapse; margin: 4px auto; }
+		table.grid td, table.grid th { padding: 2px 4px; text-align: center; }
+		table.grid th { background-color: #000080; border: 1px white solid; height: 24px; }
+		td.fname { width: 70px; font-weight: bold; text-align: right; white-space: nowrap; }
+
+		canvas.wave {
+			display: block;
+			background-color: #000;
+			border: 1px #FFF solid;
+			width: 620px;
+			height: 56px;
+		}
+		canvas.heat {
+			display: block;
+			background-color: #000;
+			border: 1px #FFF solid;
+			margin: 0 auto;
+		}
+		canvas.curve {
+			display: block;
+			background-color: #000;
+			border: 1px #FFF solid;
+			width: 330px;
+			height: 110px;
+		}
+		#ht-colorbar { border: 1px #FFF solid; vertical-align: middle; }
+
+		#connected { color: #00D600; display: none; font-size: 20px; margin: 0; }
+		.state-on { color: #00D600; font-weight: bold; }
+		.state-off { color: #f44336; font-weight: bold; }
+		.peak { font-size: 12px; color: #ffd24d; }
+	</style>
+</head>
+
+<body>
+	<ul id="mainnav"></ul>
+	<br>
+
+	<div style="padding-left: 20px; height: 30px;">
+		<p id="connected">Connected</p>
+	</div>
+
+	<div id="head" align="center">
+		<h1 align="center" id="header" style="color: white; margin: 4px;">Hand Touch Interface</h1>
+		<table>
+			<tr>
+				<td>
+					<select style="height:25px; margin-right: 5px;" id="addressSelect">
+						<option value="localhost">localhost</option>
+					</select>
+				</td>
+				<td>
+					<button type="button" style="width:110px ;height:25px;" onclick="enterAddress()">Enter Address</button>
+				</td>
+				<td style="padding-left:20px;">Rate:&nbsp;<span id="ht-rate" class="state-on">-- / -- Hz</span></td>
+				<td style="padding-left:20px;">時間窗:&nbsp;<input type="text" id="ht-win" class="TxtS" value="10">&nbsp;s</td>
+				<td><input type="button" id="ht-pause" class="Button" value="暫停" onclick="togglePause()"></td>
+			</tr>
+		</table>
+	</div>
+
+	<div id="container">
+
+		<!-- ================= 波形 ================= -->
+		<section class="wide" align="center">
+			<b><h align="center" style="font-size: 23px">壓感波形</h></b>
+			<table class="control">
+				<tr>
+					<td class="label">來源:</td>
+					<td align="left">/cb_*_hand_matrix_touch_mass</td>
+					<td class="label">Y 軸上限:</td>
+					<td align="left">
+						<input type="button" id="ht-wauto" class="Button on" value="自動"
+						       onclick="toggleWaveAuto()">
+						<input type="text" id="ht-wmax" class="TxtS" value="2000">
+					</td>
+					<td align="left" style="font-size:12px; color:#bbb;">
+						單位是矩陣 40 格數值的總和，0～10200，不是公克
+					</td>
+				</tr>
+			</table>
+			<table class="grid" id="ht-waves"></table>
+		</section>
+
+		<div style="clear: both;"></div>
+
+		<!-- ================= 熱力圖 ================= -->
+		<section class="wide" align="center">
+			<b><h align="center" style="font-size: 23px">壓感分佈熱力圖</h></b>
+			<table class="control">
+				<tr>
+					<td class="label">來源:</td>
+					<td align="left">/cb_*_hand_matrix_touch</td>
+					<td class="label">矩陣尺寸:</td>
+					<td align="left"><span id="ht-dim">--</span></td>
+					<td class="label">色階上限:</td>
+					<td align="left">
+						<input type="button" id="ht-hauto" class="Button on" value="自動"
+						       onclick="toggleHeatAuto()">
+						<input type="text" id="ht-hmax" class="TxtS" value="255">
+						<canvas id="ht-colorbar" width="160" height="14"></canvas>
+						<span id="ht-hmaxshow">--</span>
+					</td>
+				</tr>
+			</table>
+			<table class="grid" id="ht-heats"></table>
+		</section>
+
+		<div style="clear: both;"></div>
+
+		<!-- ================= 溫度 / 扭矩 ================= -->
+		<section class="wide" align="center">
+			<b><h align="center" style="font-size: 23px">馬達溫度與扭矩</h></b>
+			<table class="control">
+				<tr>
+					<td class="label">來源:</td>
+					<td align="left">/cb_*_hand_info</td>
+					<td class="label">Y 軸:</td>
+					<td align="left">
+						<input type="button" id="ht-cauto" class="Button" value="自動"
+						       onclick="toggleCurveAuto()"
+						       title="自動會把 Y 軸縮到資料範圍，靜止時的小幅跳動看起來會很大">
+						<span style="font-size:12px; color:#bbb;">
+							固定：溫度 20~80 °C、扭矩 0~255
+						</span>
+					</td>
+				</tr>
+			</table>
+			<table class="grid" id="ht-curves"></table>
+		</section>
+
+		<div style="clear: both;"></div>
+	</div>
+
+	<script type="text/javascript">
+
+        // ===================================================================
+        // 連線
+        // ===================================================================
+        var myAddress = window.ROBOT_CONFIG.ip;
+        var ros = new ROSLIB.Ros({ url: 'ws://' + window.ROBOT_CONFIG.ip + ':9090' });
+
+        ros.on('connection', function () {
+            setConn(true);
+            document.body.style.backgroundImage = 'url(./picture/Background.jpg)';
+            createTopics();
+        });
+        ros.on('error', function () { setConn(false); });
+        ros.on('close', function () { setConn(false); });
+
+        function setConn(ok) {
+            document.getElementById('connected').style.display = ok ? 'inline' : 'none';
+            if (!ok) document.body.style.backgroundImage = 'url(./picture/Gray_Background.jpg)';
+        }
+
+        function enterAddress() {
+            myAddress = document.getElementById('addressSelect').value;
+            var st = ros.socket ? ros.socket.readyState : WebSocket.CLOSED;
+            if (st === WebSocket.OPEN || st === WebSocket.CONNECTING || st === WebSocket.CLOSING) {
+                ros.close();
+                ros.once('close', function () { ros.connect('ws://' + myAddress + ':9090'); });
+            } else {
+                ros.connect('ws://' + myAddress + ':9090');
+            }
+        }
+
+        // ===================================================================
+        // 狀態
+        // ===================================================================
+        var SIDES = ['left', 'right'];
+        var FINGERS = ['thumb', 'index', 'middle', 'ring', 'little'];
+        var MASS_KEYS = ['thumb_mass', 'index_mass', 'middle_mass', 'ring_mass', 'little_mass'];
+        var MATRIX_KEYS = ['thumb_matrix', 'index_matrix', 'middle_matrix',
+                           'ring_matrix', 'little_matrix'];
+        var COLORS = ['#ff7b7b', '#7bff7b', '#7bb0ff', '#ffd24d', '#ff7bff'];
+        var NJ = 6;
+        var MASS_MAX = 10200;      // 40 格 x 255
+
+        var paused = false;
+        var waveAuto = true, heatAuto = true;
+        // 曲線 Y 軸預設「固定」。自動縮放會把 Y 軸貼著資料範圍，
+        // 結果是空載時 0~19 的扭矩抖動填滿整張圖，看起來像出大事
+        var curveAuto = false;
+        var CURVE_FIXED = { temp: [20, 80], torque: [0, 255] };
+
+        // mass[side][finger] = [{t, v}, ...]
+        var mass = {}, matrix = {}, info = {};
+        var rate = {};             // 收訊計數，用來算 Hz
+        SIDES.forEach(function (s) {
+            mass[s] = FINGERS.map(function () { return []; });
+            matrix[s] = null;
+            info[s] = { temp: [], torque: [], t: 0 };
+            rate[s] = { n: 0, hz: 0, last: Date.now() };
+        });
+        // 溫度 / 扭矩的時間序列
+        var curves = {};
+        SIDES.forEach(function (s) {
+            curves[s] = { temp: [], torque: [] };
+            for (var j = 0; j < NJ; j++) { curves[s].temp.push([]); curves[s].torque.push([]); }
+        });
+
+        function el(id) { return document.getElementById(id); }
+        function winMs() {
+            var v = parseFloat(el('ht-win').value);
+            return (isNaN(v) || v < 1 ? 10 : Math.min(120, v)) * 1000;
+        }
+        function trim(buf, tStart) {
+            while (buf.length && buf[0].t < tStart) buf.shift();
+        }
+
+        // ===================================================================
+        // Topics
+        // ===================================================================
+        function createTopics() {
+            SIDES.forEach(function (side) {
+                new ROSLIB.Topic({
+                    ros: ros, name: '/cb_' + side + '_hand_matrix_touch_mass',
+                    messageType: 'std_msgs/String'
+                }).subscribe(function (m) { onMass(side, m); });
+
+                new ROSLIB.Topic({
+                    ros: ros, name: '/cb_' + side + '_hand_matrix_touch',
+                    messageType: 'std_msgs/String'
+                }).subscribe(function (m) { onMatrix(side, m); });
+
+                new ROSLIB.Topic({
+                    ros: ros, name: '/cb_' + side + '_hand_info',
+                    messageType: 'std_msgs/String'
+                }).subscribe(function (m) { onInfo(side, m); });
+            });
+        }
+
+        function onMass(side, msg) {
+            rate[side].n++;
+            if (paused) return;
+            var d;
+            try { d = JSON.parse(msg.data); } catch (e) { return; }
+            var now = Date.now();
+            for (var i = 0; i < MASS_KEYS.length; i++) {
+                var v = d[MASS_KEYS[i]];
+                // 沒有的感測器會回 list（palm_mass 就是 [-1]），不是數字就跳過
+                if (typeof v !== 'number') continue;
+                mass[side][i].push({ t: now, v: v });
+            }
+        }
+
+        function onMatrix(side, msg) {
+            if (paused) return;
+            try { matrix[side] = JSON.parse(msg.data); } catch (e) { }
+        }
+
+        function onInfo(side, msg) {
+            if (paused) return;
+            var d;
+            try { d = JSON.parse(msg.data); } catch (e) { return; }
+            var now = Date.now();
+            info[side] = { temp: d.motor_temperature || [], torque: d.torque || [], t: now };
+            for (var j = 0; j < NJ; j++) {
+                if (typeof (d.motor_temperature || [])[j] === 'number') {
+                    curves[side].temp[j].push({ t: now, v: d.motor_temperature[j] });
+                }
+                if (typeof (d.torque || [])[j] === 'number') {
+                    curves[side].torque[j].push({ t: now, v: d.torque[j] });
+                }
+            }
+        }
+
+        // ===================================================================
+        // 建畫面
+        // ===================================================================
+        function buildWaves() {
+            var host = el('ht-waves');
+            var h = '<tr><th>Finger</th><th>LEFT</th><th>RIGHT</th></tr>';
+            FINGERS.forEach(function (f, i) {
+                h += '<tr><td class="fname" style="color:' + COLORS[i] + '">'
+                   + f.toUpperCase() + '</td>';
+                SIDES.forEach(function (side) {
+                    h += '<td><canvas class="wave" id="ht-wc-' + side + '-' + i
+                       + '"></canvas>'
+                       + '<div class="peak" id="ht-wv-' + side + '-' + i + '">--</div></td>';
+                });
+                h += '</tr>';
+            });
+            host.innerHTML = h;
+        }
+
+        function buildHeats() {
+            var host = el('ht-heats');
+            var h = '<tr><th>Hand</th>';
+            FINGERS.forEach(function (f, i) {
+                h += '<th style="color:' + COLORS[i] + '">' + f.toUpperCase() + '</th>';
+            });
+            h += '</tr>';
+            SIDES.forEach(function (side) {
+                h += '<tr><td class="fname">'
+                   + (side === 'left' ? 'LEFT' : 'RIGHT') + '</td>';
+                FINGERS.forEach(function (f, i) {
+                    h += '<td><canvas class="heat" id="ht-hc-' + side + '-' + i
+                       + '" width="132" height="200"></canvas>'
+                       + '<div class="peak" id="ht-hp-' + side + '-' + i + '">--</div></td>';
+                });
+                h += '</tr>';
+            });
+            host.innerHTML = h;
+        }
+
+        function buildCurves() {
+            var host = el('ht-curves');
+            var h = '<tr>';
+            SIDES.forEach(function (side) {
+                [['temp', '\u6e29\u5ea6 \u00b0C'], ['torque', '\u626d\u77e9']].forEach(
+                    function (kv) {
+                        h += '<th>' + (side === 'left' ? 'LEFT' : 'RIGHT')
+                           + ' ' + kv[1] + '</th>';
+                    });
+            });
+            h += '</tr><tr>';
+            SIDES.forEach(function (side) {
+                ['temp', 'torque'].forEach(function (k) {
+                    h += '<td><canvas class="curve" id="ht-cc-' + side + '-' + k
+                       + '"></canvas>'
+                       + '<div class="peak" id="ht-cv-' + side + '-' + k + '">--</div></td>';
+                });
+            });
+            h += '</tr>';
+            host.innerHTML = h;
+        }
+
+        // ===================================================================
+        // 畫圖
+        // ===================================================================
+        // 深色→紫→紅→橘→黃白，和官方 GUI 的色階方向一致
+        var HEAT_STOPS = [
+            [0, 10, 10, 30], [0.25, 90, 20, 140], [0.5, 220, 40, 80],
+            [0.75, 255, 150, 20], [1, 255, 255, 210]
+        ];
+        function heatColor(t) {
+            t = t < 0 ? 0 : (t > 1 ? 1 : t);
+            for (var i = 1; i < HEAT_STOPS.length; i++) {
+                if (t <= HEAT_STOPS[i][0]) {
+                    var a = HEAT_STOPS[i - 1], b = HEAT_STOPS[i];
+                    var k = (t - a[0]) / (b[0] - a[0]);
+                    return 'rgb(' + Math.round(a[1] + (b[1] - a[1]) * k) + ','
+                                  + Math.round(a[2] + (b[2] - a[2]) * k) + ','
+                                  + Math.round(a[3] + (b[3] - a[3]) * k) + ')';
+                }
+            }
+            return 'rgb(255,255,210)';
+        }
+
+        function drawColorbar() {
+            var c = el('ht-colorbar'), ctx = c.getContext('2d');
+            for (var x = 0; x < c.width; x++) {
+                ctx.fillStyle = heatColor(x / (c.width - 1));
+                ctx.fillRect(x, 0, 1, c.height);
+            }
+        }
+
+        function fitCanvas(c) {
+            var w = c.offsetWidth, h = c.offsetHeight;
+            if (w && c.width !== w) c.width = w;
+            if (h && c.height !== h) c.height = h;
+        }
+
+        // 單極波形（0 在底部），壓感不會是負的
+        function drawWave(canvasId, buf, color, yMax, tStart, tWin) {
+            var c = el(canvasId);
+            if (!c) return;
+            fitCanvas(c);
+            var ctx = c.getContext('2d'), W = c.width, H = c.height;
+            ctx.fillStyle = '#070710';
+            ctx.fillRect(0, 0, W, H);
+
+            ctx.strokeStyle = '#141420';
+            ctx.lineWidth = 1;
+            [0.25, 0.5, 0.75].forEach(function (f) {
+                var y = H - f * (H - 4) - 2;
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+            });
+            ctx.strokeStyle = '#2a2a44';
+            ctx.beginPath(); ctx.moveTo(0, H - 2); ctx.lineTo(W, H - 2); ctx.stroke();
+
+            if (buf.length < 2) {
+                ctx.fillStyle = '#445';
+                ctx.font = '11px Consolas';
+                ctx.fillText('no data', 4, 13);
+                return;
+            }
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            var first = true;
+            for (var i = 0; i < buf.length; i++) {
+                var p = buf[i];
+                var x = ((p.t - tStart) / tWin) * W;
+                var y = H - 2 - (p.v / yMax) * (H - 6);
+                if (y < 1) y = 1;
+                if (first) { ctx.moveTo(x, y); first = false; } else { ctx.lineTo(x, y); }
+            }
+            ctx.stroke();
+        }
+
+        function drawHeat(canvasId, peakId, m, hmax) {
+            var c = el(canvasId);
+            if (!c) return;
+            var ctx = c.getContext('2d'), W = c.width, H = c.height;
+            ctx.fillStyle = '#070710';
+            ctx.fillRect(0, 0, W, H);
+
+            if (!m || !m.length || !Array.isArray(m[0])) {
+                ctx.fillStyle = '#445';
+                ctx.font = '11px Consolas';
+                ctx.fillText('no data', 4, 14);
+                el(peakId).textContent = '--';
+                return;
+            }
+            var rows = m.length, cols = m[0].length;
+            var cw = W / cols, ch = H / rows;
+            var peak = -1;
+            var showText = (cw >= 22 && ch >= 14);
+            ctx.font = Math.floor(Math.min(cw * 0.42, ch * 0.62)) + 'px Consolas';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            for (var r = 0; r < rows; r++) {
+                for (var q = 0; q < cols; q++) {
+                    var v = m[r][q];
+                    if (typeof v !== 'number') v = -1;
+                    if (v > peak) peak = v;
+                    // -1 = 這格還沒有資料，畫深灰而不是色階最低
+                    ctx.fillStyle = (v < 0) ? '#20242c' : heatColor(v / hmax);
+                    ctx.fillRect(q * cw, r * ch, Math.ceil(cw), Math.ceil(ch));
+                    if (showText && v > 0) {
+                        ctx.fillStyle = (v / hmax > 0.6) ? '#201000' : '#cfd4e0';
+                        ctx.fillText(v, q * cw + cw / 2, r * ch + ch / 2);
+                    }
+                }
+            }
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.strokeStyle = '#1a1a2e';
+            ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+            el(peakId).textContent = 'peak ' + peak;
+        }
+
+        function drawCurves(side, kind, tStart, tWin) {
+            var c = el('ht-cc-' + side + '-' + kind);
+            if (!c) return;
+            fitCanvas(c);
+            var ctx = c.getContext('2d'), W = c.width, H = c.height;
+            ctx.fillStyle = '#070710';
+            ctx.fillRect(0, 0, W, H);
+
+            var series = curves[side][kind];
+            var lo = Infinity, hi = -Infinity, any = false;
+            series.forEach(function (b) {
+                trim(b, tStart);
+                b.forEach(function (p) {
+                    any = true;
+                    if (p.v < lo) lo = p.v;
+                    if (p.v > hi) hi = p.v;
+                });
+            });
+            if (!any) {
+                ctx.fillStyle = '#445';
+                ctx.font = '11px Consolas';
+                ctx.fillText('no data', 4, 14);
+                el('ht-cv-' + side + '-' + kind).textContent = '--';
+                return;
+            }
+            if (!curveAuto && CURVE_FIXED[kind]) {
+                lo = CURVE_FIXED[kind][0];
+                hi = CURVE_FIXED[kind][1];
+            } else {
+                if (hi - lo < 4) { hi = lo + 4; }
+                var pad = (hi - lo) * 0.12;
+                lo -= pad; hi += pad;
+            }
+
+            ctx.strokeStyle = '#141420';
+            [0.25, 0.5, 0.75].forEach(function (f) {
+                var y = H - f * H;
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+            });
+            ctx.fillStyle = '#556';
+            ctx.font = '10px Consolas';
+            ctx.fillText(hi.toFixed(0), 2, 10);
+            ctx.fillText(lo.toFixed(0), 2, H - 3);
+
+            for (var j = 0; j < NJ; j++) {
+                var b = series[j];
+                if (b.length < 2) continue;
+                ctx.strokeStyle = 'hsl(' + (j * 55) + ',70%,62%)';
+                ctx.lineWidth = 1.4;
+                ctx.beginPath();
+                for (var i = 0; i < b.length; i++) {
+                    var x = ((b[i].t - tStart) / tWin) * W;
+                    var y = H - ((b[i].v - lo) / (hi - lo)) * H;
+                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            }
+            var cur = (kind === 'temp' ? info[side].temp : info[side].torque) || [];
+            el('ht-cv-' + side + '-' + kind).textContent = cur.length ? cur.join(' ') : '--';
+        }
+
+        // ===================================================================
+        // 主迴圈
+        // ===================================================================
+        function redraw() {
+            var tWin = winMs();
+            var now = Date.now();
+            var tStart = now - tWin;
+
+            // 波形 Y 軸上限
+            var yMax;
+            if (waveAuto) {
+                yMax = 1;
+                SIDES.forEach(function (s) {
+                    mass[s].forEach(function (b) {
+                        trim(b, tStart);
+                        b.forEach(function (p) { if (p.v > yMax) yMax = p.v; });
+                    });
+                });
+                yMax = Math.max(100, yMax * 1.15);
+                el('ht-wmax').value = Math.round(yMax);
+            } else {
+                SIDES.forEach(function (s) {
+                    mass[s].forEach(function (b) { trim(b, tStart); });
+                });
+                yMax = parseFloat(el('ht-wmax').value);
+                if (isNaN(yMax) || yMax <= 0) yMax = 2000;
+                if (yMax > MASS_MAX) yMax = MASS_MAX;
+            }
+
+            SIDES.forEach(function (side) {
+                FINGERS.forEach(function (f, i) {
+                    var b = mass[side][i];
+                    drawWave('ht-wc-' + side + '-' + i, b, COLORS[i], yMax, tStart, tWin);
+                    var vEl = el('ht-wv-' + side + '-' + i);
+                    if (vEl) vEl.textContent = b.length ? b[b.length - 1].v : '--';
+                });
+            });
+
+            // 熱力圖色階上限
+            var hmax;
+            if (heatAuto) {
+                hmax = 1;
+                SIDES.forEach(function (side) {
+                    var d = matrix[side];
+                    if (!d) return;
+                    MATRIX_KEYS.forEach(function (k) {
+                        var m = d[k];
+                        if (!m || !Array.isArray(m[0])) return;
+                        m.forEach(function (row) {
+                            row.forEach(function (v) { if (v > hmax) hmax = v; });
+                        });
+                    });
+                });
+                hmax = Math.max(10, hmax);
+                el('ht-hmax').value = hmax;
+            } else {
+                hmax = parseFloat(el('ht-hmax').value);
+                if (isNaN(hmax) || hmax <= 0) hmax = 255;
+            }
+            el('ht-hmaxshow').textContent = '0 - ' + Math.round(hmax);
+
+            var dim = '--';
+            SIDES.forEach(function (side) {
+                var d = matrix[side];
+                MATRIX_KEYS.forEach(function (k, i) {
+                    var m = d ? d[k] : null;
+                    if (m && Array.isArray(m[0])) dim = m.length + ' x ' + m[0].length;
+                    drawHeat('ht-hc-' + side + '-' + i, 'ht-hp-' + side + '-' + i, m, hmax);
+                });
+            });
+            el('ht-dim').textContent = dim;
+
+            SIDES.forEach(function (side) {
+                drawCurves(side, 'temp', tStart, tWin);
+                drawCurves(side, 'torque', tStart, tWin);
+            });
+
+            // 收訊頻率
+            SIDES.forEach(function (s) {
+                var r = rate[s];
+                if (now - r.last >= 1000) {
+                    r.hz = Math.round(r.n * 1000 / (now - r.last));
+                    r.n = 0; r.last = now;
+                }
+            });
+            el('ht-rate').textContent = rate.left.hz + ' / ' + rate.right.hz + ' Hz';
+
+            requestAnimationFrame(redraw);
+        }
+
+        // ===================================================================
+        // 控制
+        // ===================================================================
+        function togglePause() {
+            paused = !paused;
+            var b = el('ht-pause');
+            b.textContent = paused ? '繼續' : '暫停';
+            b.className = 'Button' + (paused ? ' on' : '');
+        }
+        function toggleWaveAuto() {
+            waveAuto = !waveAuto;
+            el('ht-wauto').className = 'Button' + (waveAuto ? ' on' : '');
+        }
+        function toggleHeatAuto() {
+            heatAuto = !heatAuto;
+            el('ht-hauto').className = 'Button' + (heatAuto ? ' on' : '');
+        }
+
+        function toggleCurveAuto() {
+            curveAuto = !curveAuto;
+            var b = el('ht-cauto');
+            b.className = 'Button' + (curveAuto ? ' on' : '');
+            b.value = curveAuto ? '自動' : '固定';
+        }
+
+        window.addEventListener('DOMContentLoaded', function () {
+            buildWaves();
+            buildHeats();
+            buildCurves();
+            drawColorbar();
+            el('ht-cauto').value = curveAuto ? '自動' : '固定';
+            requestAnimationFrame(redraw);
+        });
+    	</script>
+</body>
+
+</html>

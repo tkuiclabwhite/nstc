@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>armpackage</name>
+  <version>0.1.0</version>
+  <description>雙手 7 軸手臂：MoveIt 橋接、實機跟隨（driver_node）、網頁操作介面（RobotViewer.html）、開機自我檢查、順應控制</description>
+  <maintainer email="keninhuang920517@gmail.com">iclab</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>shape_msgs</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>rosbridge_server</exec_depend>
+  <exec_depend>seven_axis_arm_urdf</exec_depend>
+  <exec_depend>seven_axis_arm_moveit_config</exec_depend>
+  <!-- 網頁透過 rosbridge 呼叫 motionpackage 的 /package/InterfaceReadSaveMotion（nstc_msgs/ReadMotion）讀 stand.ini -->
+  <exec_depend>nstc_msgs</exec_depend>
+  <!-- self_check.py、compliance.py 直接讀寫馬達暫存器（同 motor_control） -->
+  <exec_depend>dynamixel_sdk</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

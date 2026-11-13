@@ -1,0 +1,6 @@
+# 讀取指定 distance class 的門檻（單位：公分）
+# distancelabel: D1~D8
+string distancelabel
+---
+int16 dmin
+int16 dmax

@@ -1,0 +1,8 @@
+string colorlabel
+---
+int32 ymin
+int32 ymax
+int32 crmin
+int32 crmax
+int32 cbmin
+int32 cbmax

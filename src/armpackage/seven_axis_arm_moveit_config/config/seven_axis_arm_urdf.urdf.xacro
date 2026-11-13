@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="seven_axis_arm_urdf">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+    <!-- Import seven_axis_arm_urdf urdf file -->
+    <xacro:include filename="$(find seven_axis_arm_urdf)/urdf/seven_axis_arm_urdf.urdf" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="seven_axis_arm_urdf.ros2_control.xacro" />
+
+
+    <xacro:seven_axis_arm_urdf_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+
+</robot>

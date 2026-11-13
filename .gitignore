@@ -1,6 +1,22 @@
+# colcon
 build/
 install/
 log/
 
+# Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# macOS
+.DS_Store
+._*
+
+# 編輯器 / IDE、改檔前的備份
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.swp
+.vscode/

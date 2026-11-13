@@ -1,0 +1,20 @@
+# Default initial positions for seven_axis_arm_urdf's ros2_control fake system
+# 實機站姿（stand.ini 全 2048）= URDF 零位，所以全部 0（2026-10-21 理想站姿改全 2048）。
+# （2026-10-19 ~ 10-21 是第 3、5 軸 ±3.14、第 4 軸 -0.3927：那時的理想站姿是 10 號 0、11 號 1792、12 號 ±180°）
+# 左手的關節軸是右手的鏡像，同樣的角度 = 鏡像的姿勢，所以先用跟右手一樣的數字（左手實機還沒對過）
+# 改了的話 SRDF 的 *_stand、armpackage 的 arm_config.py（STAND）也要一起改
+initial_positions:
+  Larm1Joint: 0
+  LarmJoint: 0
+  Lforarm1Joint: 0
+  LforarmJoint: 0
+  LshoulderJoint: 0
+  Lwrist1Joint: 0
+  LwristJoint: 0
+  Rarm1Joint: 0
+  RarmJoint: 0
+  Rforarm1Joint: 0
+  RforarmJoint: 0
+  RshoulderJoint: 0
+  Rwrist1Joint: 0
+  RwristJoint: 0

@@ -1,0 +1,4 @@
+# 通用存檔服務（depth / overlap / zedcamera 共用，以 service 名稱區分）
+bool save
+---
+bool already

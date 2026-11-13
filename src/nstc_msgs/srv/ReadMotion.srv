@@ -1,0 +1,15 @@
+bool read
+string name
+int32 readstate
+# 指定要從哪個 strategy 的 Parameter 目錄讀取（例如 "sp"）。
+# 留空表示使用 motionpackage 目前的策略，行為與加此欄位之前完全相同。
+string strategy
+---
+bool readcheck
+int32 vectorcnt
+int32[] motionstate
+int32[] id
+int32[] motionlist
+int32[] relativedata
+int32[] absolutedata
+string[] item_names

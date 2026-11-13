@@ -1,0 +1,33 @@
+# MoveIt uses this configuration for controller management
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - right_arm_controller
+    - left_arm_controller
+
+  right_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory   # Setup Assistant 漏掉這兩行，沒有的話 MoveIt 找不到控制器、Execute 會失敗
+    default: true
+    joints:
+      - RshoulderJoint
+      - RarmJoint
+      - Rarm1Joint
+      - RforarmJoint
+      - Rforarm1Joint
+      - RwristJoint
+      - Rwrist1Joint
+  left_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory   # Setup Assistant 漏掉這兩行，沒有的話 MoveIt 找不到控制器、Execute 會失敗
+    default: true
+    joints:
+      - LshoulderJoint
+      - LarmJoint
+      - Larm1Joint
+      - LforarmJoint
+      - Lforarm1Joint
+      - LwristJoint
+      - Lwrist1Joint

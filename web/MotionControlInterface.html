@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="Content_Type" content="text/html" charset="UTF-8">
+    <link rel="SHORTCUT ICON" href="./picture/icon.png">
+    <title>MotionControl</title>
+
+    <script src="./js/config.js"></script>
+    <script src="./js/jquery.min.js"></script>
+    <script src="./js/jquery-ui.min.js"></script>
+    <script type="text/javascript" src="./js/roslib/eventemitter2.min.js"></script>
+    <script type="text/javascript" src="./js/roslib/roslib.min.js"></script>
+    <script type="text/javascript" src="./js/Interface.js"></script>
+    <script type="text/javascript" src="./js/InterfaceTable.js"></script>
+    
+    <link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/style.css">
+    <link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/InterfaceTable.css">
+
+    <style>
+        /* 六顆部位按鈕平分 460px 後每顆約 73px。維持預設字級，改為取消左右 padding
+           讓 right_hand 這種較長的標籤放得下；仍超出時由 overflow 裁掉而非撐破版面。
+           註：style.css 裡的是 #button_choose（id 選擇器），HTML 用的是 class，
+           那組樣式從來沒生效過，所以這裡才需要另外定義。 */
+        .button_choose {
+            padding: 3px 0;
+            text-align: center;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+
+        .button{
+            width: 1500px;
+        }
+        
+        /* --- 1. 初始狀態 (OFF - 待機模式) --- */
+        .neon-btn {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            width: 100%;
+            height: 60px;
+            font-size: 24px;
+            font-weight: bold;
+            text-transform: uppercase; /* 強制大寫 */
+            color: #03e9f4;            /* 霓虹青色文字 */
+            background: transparent;   /* 背景透明 */
+            border: 2px solid #03e9f4; /* 青色邊框 */
+            border-radius: 5px;        /* 輕微圓角 */
+            cursor: pointer;
+            letter-spacing: 4px;       /* 字距拉開，增加氣勢 */
+            
+            /* 製造文字和邊框的微弱光暈 */
+            text-shadow: 0 0 5px #03e9f4;
+            box-shadow: 0 0 5px #03e9f4;
+            
+            transition: 0.5s;          /* 過渡時間稍微拉長，更有呼吸感 */
+            overflow: hidden;          /* 隱藏溢出的光芒 */
+        }
+
+        /* 滑鼠移上去的特效 (Hover) - 增加互動感 */
+        .neon-btn:hover {
+            background: #03e9f4;
+            color: #050505;
+            box-shadow: 0 0 5px #03e9f4,
+                        0 0 25px #03e9f4,
+                        0 0 50px #03e9f4,
+                        0 0 200px #03e9f4;
+        }
+
+        /* --- 2. 啟動狀態 (ON - 激活模式) --- */
+        .neon-btn.active {
+            background-color: #03e9f4; /* 變實心 */
+            color: #050505;            /* 文字變黑 */
+            border-color: #03e9f4;
+            
+            /* 這裡是最帥的地方：四層陰影疊加，製造強烈光爆感 */
+            box-shadow: 0 0 10px #03e9f4, 
+                        0 0 40px #03e9f4, 
+                        0 0 80px #03e9f4;
+            
+            /* 讓按鈕稍微亮一點，並保持這個狀態 */
+            transform: scale(1.05);    /* 稍微放大，表示能量充滿 */
+        }
+        /* 單顆控制按鈕基礎樣式 */
+.btn-single-torque {
+    width: 80px;
+    font-weight: bold;
+    color: white;
+    border: 2px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    padding: 3px;
+    margin-right: 10px;
+    transition: 0.3s;
+    opacity: 0.6; /* 未按下時稍微透明 */
+}
+
+/* 開啟 (ON) 的顏色 */
+.btn-on {
+    background-color: #00D600;
+}
+
+/* 關閉 (OFF) 的顏色 */
+.btn-off {
+    background-color: #D60000;
+}
+
+/* 亮起狀態 (最後按下) */
+.btn-single-torque.active {
+    opacity: 1;
+    border-color: white;
+    box-shadow: 0 0 15px currentColor; /* 根據背景色產生對應光暈 */
+    transform: scale(1.05);
+}
+
+        .strategy-box {
+            display: inline-block;
+            background-color: #222;
+            border: 1px solid #444;
+            border-radius: 5px;
+            padding: 8px 20px;
+            box-shadow: inset 0 0 10px #000;
+            text-align: center;
+            min-width: 120px;
+        }
+
+        .strategy-label {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+            display: block;
+            margin-bottom: 3px;
+        }
+
+        #current-strategy-name {
+            color: #00D600;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 22px;
+            font-weight: bold;
+            text-shadow: 0 0 8px rgba(0, 214, 0, 0.5);
+        }
+
+        .robot-overlay-container {
+            position: relative;
+            display: inline-block;
+        }
+
+        .pos-motor-btn {
+            position: absolute;
+            width: 28px;
+            height: 28px;
+            background-color: rgba(255, 0, 0, 0.4);
+            border: 2px solid #ff4d4d;
+            border-radius: 50%;
+            color: black;
+            font-weight: bold;
+            font-size: 12px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            z-index: 10;
+            user-select: none;
+        }
+
+        .pos-motor-btn.torque-on {
+            background-color: rgba(0, 255, 0, 0.6);
+            border-color: #00ff00;
+            box-shadow: 0 0 15px #00ff00;
+            color: black;
+        }
+
+        .pos-motor-btn:hover {
+            transform: scale(1.2);
+            background-color: rgba(3, 233, 244, 0.5);
+        }
+
+        #history-panel {
+            width: 160px;
+            height: 110px;
+            flex-shrink: 0;
+            background: rgba(20, 30, 33, 0.95);
+            border: 1px solid #444;
+            border-radius: 5px;
+            padding: 6px 8px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+        }
+
+        #history-panel .hp-title {
+            color: #888;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-align: center;
+            border-bottom: 1px solid #333;
+            padding-bottom: 4px;
+            margin-bottom: 4px;
+        }
+
+        #history-list { max-height: 80px; overflow-y: auto; }
+        #history-list .hp-item        { color: #555;    padding: 1px 4px; }
+        #history-list .hp-item-undo   { color: #03e9f4; padding: 1px 4px; }
+        #history-list .hp-now         { color: #00D600; text-align: center; border-top: 1px solid #00D600; border-bottom: 1px solid #00D600; margin: 3px 0; padding: 1px 0; font-size: 10px; letter-spacing: 2px; }
+        #history-list .hp-item-redo   { color: #ffaa00; padding: 1px 4px; }
+        #history-list .hp-item-future { color: #554400; padding: 1px 4px; }
+        #history-list .hp-empty       { color: #444;    text-align: center; padding: 4px; }
+
+        /* ===== Calculator ===== */
+        #calc-panel {
+            clear: both; margin-top: 8px; padding: 6px;
+            background: rgba(8,16,18,0.97); border: 1px solid #03e9f4;
+            border-radius: 5px; width: 222px;
+        }
+        #calc-display {
+            width: 100%; box-sizing: border-box;
+            background: #000; color: #03e9f4;
+            font-size: 15px; font-family: monospace;
+            text-align: right; padding: 3px 6px;
+            border: 1px solid #03e9f4; margin-bottom: 4px;
+        }
+        .cb { height: 30px; margin: 0; font-size: 14px; cursor: pointer;
+              background: rgba(46,58,61,0.9); color: #ddd;
+              border: 1px solid #444; border-radius: 3px; }
+        .cb:hover { background: rgba(3,233,244,0.25); border-color: #03e9f4; }
+        .cb-op  { color: #03e9f4; }
+        .cb-clr { color: #ff5555; font-weight: bold; }
+        .cb-eq  { background: #03e9f4; color: #050505; font-weight: bold; }
+        .cb-eq:hover { background: #00b8c4; }
+        .cb-cnv { width: 108px; height: 26px; margin: 2px 1px; font-size: 11px; cursor: pointer;
+                  background: rgba(46,58,61,0.9); color: #ffaa00;
+                  border: 1px solid #664400; border-radius: 3px; }
+        .cb-cnv:hover { background: rgba(255,170,0,0.25); border-color: #ffaa00; }
+
+    </style>
+    <script src="../config/strategy.js"></script>
+    <script src="./js/nav.js"></script>
+</head>
+
+<body>
+    <ul id="mainnav"></ul>
+    <div style="padding-left: 30px; height: 100px; width: 1010px;">
+        <div style="height: 30px;">
+            <p id="connected" style="color:#00D600; display:none; font-size: 20px; margin: 0;">
+                Connected
+            </p>
+        </div>
+        <div class="strategy-box" style="margin-top: 10px;">
+            <span class="strategy-label">Strategy</span>
+            <span id="current-strategy-name">---</span>
+        </div>
+    </div>
+
+    <form id="childform" name="childform">
+        <div id="container">
+			<div style="margin-left: 180px;">
+				<input type="text" id="filename" name="filename" value="Your_File_Name" style="width: 179px;">
+				<input type="button" id="SaveButton" value="Save" style="width:80px;" disabled="disabled">
+				<input type="button" id="ReadButton" value="Read" onclick="Read();" style="width:80px;" disabled="disabled">
+				<input type="button" id="SaveStandButton" value="SaveStand" style="width:80px;" disabled="disabled">
+				<input type="button" id="ReadStandButton" value="ReadStand" onclick="ReadStand();" style="width:80px;" disabled="disabled">
+                <input type="button" id="resetButton" value="reset" onclick="resetfunction();" style="width:80px;" disabled="disabled">
+			</div>
+
+            <div style="display: flex; align-items: flex-start; margin-left: 10px; margin-top: 8px;">
+                <div id="history-panel">
+                    <div class="hp-title">History</div>
+                    <div id="history-list"><div class="hp-empty">empty</div></div>
+                </div>
+
+                <div style="margin-left: 12px;">
+                    <div style="width: 800px; margin-top: 8px; margin-bottom: 16px;">
+                        ID: <input type="text" id="SendID" value=-1 style="width:50px;">
+                        Sector: <input type="text" id="Sector" value=-1 style="width:50px;">
+                        <input type="button" id="SendButton" value="Send" onclick="Send();" style="width:80px;" disabled="disabled">
+                        <input type="checkbox" id="Locked29" value="Locked" onclick="Locked();" checked>Locked 29
+                        <input type="checkbox" id="Lockedstand" value="LockedStand" onclick="Locked2()" checked>Locked Stand
+                        <input type="button" id="executeButton" value="execute" onclick="execute();" style="width:80px; margin-left:5px;" disabled="disabled">
+                        <!-- stand 與 Head 2048 上下疊，Head 2048 不依賴 Sector，所以一開始就可按 -->
+                        <span style="display: inline-flex; flex-direction: column; gap: 4px; vertical-align: top;">
+                            <input type="button" id="standButton" value="stand" onclick="stand();" style="width:80px;" disabled="disabled">
+                            <input type="button" id="headCenterButton" value="Head 2048" onclick="HeadCenter();" style="width:80px;" title="頭部三顆 (ID 28, 29, 30) 回到 2048">
+                        </span>
+                    </div>
+
+                    <div style="width: 800px; margin-bottom: 16px;">
+                        <input type="button" id="undoButton" value="↩ Undo" onclick="undoAction();" style="width:80px;" disabled="disabled">
+                        <input type="button" id="redoButton" value="↪ Redo" onclick="redoAction();" style="width:80px;" disabled="disabled">
+                        <input type="button" id="clearHistoryButton" value="Clear History" onclick="clearHistoryAction();" style="width:100px; margin-left:10px;" disabled="disabled">
+                    </div>
+
+                    <div style="width: 800px; margin-bottom: 16px;">
+                        ID:&nbsp;<input type="text" id="chose_multiple" value= "-1" style="width:50px">
+                        multipy&nbsp;<input type="text" id="times" value= "-1" style="width:50px">
+                        times&nbsp;<input type="button" id="MultipleButton" value="Multiple" onclick="Multiple();" style="width:80px; margin-right:23px;" disabled="disabled">
+                        ID1:&nbsp;<input type="text" id="Merge1" value="-1" style="width:50px;">&nbsp;merge&nbsp;to&nbsp;ID2:&nbsp;<input type="text" id="Merge2" value="-1" style="width:50px;">
+                        <input type="button" id="MergeButton" value="Merge" onclick="Merge();" style="width:80px;" disabled="disabled">
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-left: 120px;">
+                <div id="head">
+                    <table>
+                        <tr>
+                            <td>
+                                <select style="height:25px; margin-right: 5px;" id="addressSelect">
+                                    <option value="localhost">localhost</option>
+                                </select>
+                            </td>
+                            <td>
+                                <button type="button" style="width:110px ;height:25px;" id="changeAddressButton" onclick="enterAddress()">Enter Address</button>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+
+			<div id="label" style="width: 900px; margin-left:180px; margin-top:10px;"></div>
+			<div id="stand_label" style="width: 900px; margin-left:180px; margin-top:10px;"></div>
+            
+            <div style="float: left; width: 1010px;">
+				<div id="leftbox" style="margin-left: 30px; margin-top:50px;">
+                    <input type="button" id="AddButton" value="Add" onclick="Add();" style="width: 65px;" disabled="disabled">
+                    <input type="button" id="DeleteButton" value="Delete" onclick="Delete();" style="width:65px" disabled="disabled"></input> : <input type="text" id="chose_delete" value="-1" style="width:50px;">
+                    <input type="button" id="ReverseButton" value="Reverse" onclick="Reverse();" style="width:65px" disabled="disabled"> : <input type="text" id="chose_reverse" value="-1" style="width:50px;">
+                    <input type="button" id="CopyButton" value="Copy" onclick="Copy();" style="width:65px" disabled="disabled"> : <input type="text" id="chose_copy" value="-1" style="width:50px;">
+                	<input type="button" id="CheckSumButton" value="CheckSum" onclick="CheckSum();" style=" margin-top:20px;" disabled="disabled"><br>
+					ID: <input type="text" id="CheckSumID" value=-1 style="width:50px; margin-top:5px;">
+					<div id="CheckSumBox" style="height: 240px; margin-top:135px;">
+                        <div class="checksumsmallbox">M1: </div>
+                        <div class="checksumsmallbox">M2: </div>
+                        <div class="checksumsmallbox">M3: </div>
+                        <div class="checksumsmallbox">M4: </div>
+                        <div class="checksumsmallbox">M5: </div>
+                        <div class="checksumsmallbox">M6: </div>
+                        <div class="checksumsmallbox">M7: </div>
+                        <div class="checksumsmallbox">M8: </div>
+                        <div class="checksumsmallbox">M9: </div>
+                        <div class="checksumsmallbox">M10:</div>
+                        <div class="checksumsmallbox">M11:</div>
+                        <div class="checksumsmallbox">M12:</div>
+                        <div class="checksumsmallbox">M13:</div>
+                        <div class="checksumsmallbox">M14:</div>
+                        <div class="checksumsmallbox">M15:</div>
+                        <div class="checksumsmallbox">M16:</div>
+                        <div class="checksumsmallbox">M17:</div>
+                        <div class="checksumsmallbox">M18:</div>
+                        <div class="checksumsmallbox">M19:</div>
+                        <div class="checksumsmallbox">M20:</div>
+                        <div class="checksumsmallbox">M21:</div>
+                        <div class="checksumsmallbox">M22:</div>
+                        <div class="checksumsmallbox">M23:</div>
+                        <div class="checksumsmallbox">M24:</div>
+                        <div class="checksumsmallbox">M25:</div>
+                        <div class="checksumsmallbox">M26:</div>
+                        <div class="checksumsmallbox">M27:</div>
+                    </div>
+                </div>
+
+                <section style=" float: left; margin-left: 20px; margin-top: 10px;">
+                    <input type="radio" name="List" value="0" onclick="MotionList(this.value);" checked> MotionList
+                    <input type="radio" name="List" value="1" onclick="MotionList(this.value);"> RelativePosition
+                    <input type="radio" name="List" value="2" onclick="MotionList(this.value);"> RelativeSpeed
+                    <input type="radio" name="List" value="3" onclick="MotionList(this.value);"> AbsolutePosition
+                    <input type="radio" name="List" value="4" onclick="MotionList(this.value);"> AbsoluteSpeed
+                </section>
+
+                <div class="box" id="MotionList" style="display: initial; overflow-x : scroll; overflow-y : hidden">
+                    <div class="smallbox" style=" width: 2300px; position: relative;">
+                        <div class="inthesmallbox2" id="headercolumn2" align="center">ID</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">Name</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A1</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D1</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A2</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D2</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A3</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D3</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A4</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D4</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A5</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D5</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A6</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D6</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A7</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D7</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A8</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D8</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A9</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D9</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A10</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D10</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A11</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D11</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A12</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D12</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A13</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D13</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A14</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D14</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A15</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D15</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A16</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D16</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A17</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D17</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A18</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D18</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A19</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D19</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A20</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D20</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A21</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D21</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">A22</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">D22</div>
+                    </div>
+                    <div class="smallbox" style="margin-top: 2px; width: 2300px; height: 305px; overflow-y: auto; overflow-x: hidden;">
+                        <div id="MotionTable"></div>
+                    </div>
+                </div>
+                <div class="box" id="RelativePosition" style="display: none; overflow-x: scroll; overflow-y: hidden">
+                    <div class="smallbox" style=" width: 1450px; position: relative;">
+                        <div class="inthesmallbox2" id="headercolumn2" align="center">ID</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">Name</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M1</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M2</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M3</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M4</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M5</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M6</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M7</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M8</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M9</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M10</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M11</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M12</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M13</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M14</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M15</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M16</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M17</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M18</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M19</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M20</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M21</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M22</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M23</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M24</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M25</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M26</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M27</div>
+                    </div>
+                    <div class="smallbox" style="margin-top: 2px; width: 1450px;height: 305px; overflow-y: auto; overflow-x: hidden;">
+                        <div id="RelativePositionTable" style="width: 1450px;"></div>
+                    </div>
+                </div>
+                <div class="box" id="RelativeSpeed" style="display: none; overflow-x: scroll; overflow-y: hidden">
+                    <div class="smallbox" style=" width: 1450px; position: relative;">
+                        <div class="inthesmallbox2" id="headercolumn2" align="center">ID</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">Name</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M1</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M2</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M3</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M4</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M5</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M6</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M7</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M8</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M9</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M10</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M11</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M12</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M13</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M14</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M15</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M16</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M17</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M18</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M19</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M20</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M21</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M22</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M23</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M24</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M25</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M26</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M27</div>
+                    </div>
+                    <div class="smallbox" style="margin-top: 2px; width: 1450px;height: 305px; overflow-y: auto; overflow-x: hidden;">
+                        <div id="RelativeSpeedTable" style=" width: 1450px;"></div>
+                    </div>
+                </div>
+                <div class="box" id="AbsolutePosition" style="display: none; overflow-x: scroll; overflow-y: hidden">
+                    <div class="smallbox" style=" width: 1450px; position: relative;">
+                        <div class="inthesmallbox2" id="headercolumn2" align="center">ID</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">Name</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M1</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M2</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M3</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M4</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M5</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M6</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M7</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M8</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M9</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M10</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M11</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M12</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M13</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M14</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M15</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M16</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M17</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M18</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M19</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M20</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M21</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M22</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M23</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M24</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M25</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M26</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M27</div>
+                    </div>
+                    <div class="smallbox" style="margin-top: 2px; width: 1450px;height: 305px; overflow-y: auto; overflow-x: hidden;">
+                        <div id="AbsolutePositionTable" style="width: 1450px;"></div>
+                    </div>
+                </div>
+                <div class="box" id="AbsoluteSpeed" style="display: none; overflow-x: scroll; overflow-y: hidden">
+                    <div class="smallbox" style=" width: 1450px; position: relative;">
+                        <div class="inthesmallbox2" id="headercolumn2" align="center">ID</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">Name</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M1</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M2</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M3</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M4</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M5</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M6</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M7</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M8</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M9</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M10</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M11</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M12</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M13</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M14</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M15</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M16</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M17</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M18</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M19</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M20</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M21</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M22</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M23</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M24</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M25</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M26</div>
+                        <div class="inthesmallbox" id="headercolumn" align="center">M27</div>
+                    </div>
+                    <div class="smallbox" style="margin-top: 2px; width: 1450px;height: 305px; overflow-y: auto; overflow-x: hidden;">
+                        <div id="AbsoluteSpeedTable" style="width: 1450px;"></div>
+                    </div>
+                </div>
+                                <div style="margin-left: 180px; margin-top: 405px; margin-bottom: 4px;">
+                    <input type="button" id="MoveUpButton" value="Move Up" onclick="MoveRow(-1);" style="width:80px" disabled="disabled">
+                    <input type="button" id="MoveDownButton" value="Move Down" onclick="MoveRow(1);" style="width:90px" disabled="disabled"> : <input type="text" id="chose_move" value="-1" style="width:50px;">
+                </div>
+                <div style="margin-left: 180px; margin-bottom: 4px;">
+                    Strategy:&nbsp;<select id="import_strategy" style="height:25px; margin-right:5px;">
+                        <option value="nstc">nstc</option>
+                    </select>
+                    Sector:&nbsp;<input type="text" id="import_sector" value="-1" style="width:50px;">
+                    <input type="button" id="importSectorButton" value="Import Sector" onclick="ImportSector();" style="width:110px; margin-left:5px;" disabled="disabled">
+                    <span id="import_status"></span>
+                </div>
+            </div>
+        </div> 
+        <div id="rightarea">
+            <div id="robotpic">
+                <div style="float: left; height: 470px; width: 300px;">
+                    <button type="button" id="TorqueButton" onclick="TorqueSwitch();" class="neon-btn">扭力狀態</button>
+                    <div id="robot-container" class="robot-overlay-container">
+                        <img src="./picture/towen.webp" style="width: 300px; height: 470px; border: solid black 2px;">
+                        <!-- 左手 -->
+                        <div id="pos-btn-1"  class="pos-motor-btn" style="top:8%; left:67%;" onclick="toggleTorqueAtPosition(1)">1</div>
+                        <div id="pos-btn-2"  class="pos-motor-btn" style="top:16%; left:86%;" onclick="toggleTorqueAtPosition(2)">2</div>
+                        <div id="pos-btn-3"  class="pos-motor-btn" style="top:25%; left:86%;" onclick="toggleTorqueAtPosition(3)">3</div>
+                        <div id="pos-btn-4"  class="pos-motor-btn" style="top:33%; left:86%;" onclick="toggleTorqueAtPosition(4)">4</div>
+                        <div id="pos-btn-5"  class="pos-motor-btn" style="top:38%; left:86%;" onclick="toggleTorqueAtPosition(5)">5</div>
+                        <div id="pos-btn-6"  class="pos-motor-btn" style="top:43%; left:86%;" onclick="toggleTorqueAtPosition(6)">6</div>
+                        <div id="pos-btn-7"  class="pos-motor-btn" style="top:48%; left:86%;" onclick="toggleTorqueAtPosition(7)">7</div>
+                        <!-- 右手 -->
+                        <div id="pos-btn-8"  class="pos-motor-btn" style="top:8%; left:26%;" onclick="toggleTorqueAtPosition(8)">8</div>
+                        <div id="pos-btn-9"  class="pos-motor-btn" style="top:16%; left:7%;" onclick="toggleTorqueAtPosition(9)">9</div>
+                        <div id="pos-btn-10" class="pos-motor-btn" style="top:25%; left:7%;" onclick="toggleTorqueAtPosition(10)">10</div>
+                        <div id="pos-btn-11" class="pos-motor-btn" style="top:33%; left:7%;" onclick="toggleTorqueAtPosition(11)">11</div>
+                        <div id="pos-btn-12" class="pos-motor-btn" style="top:38%; left:7%;"  onclick="toggleTorqueAtPosition(12)">12</div>
+                        <div id="pos-btn-13" class="pos-motor-btn" style="top:43%; left:7%;"  onclick="toggleTorqueAtPosition(13)">13</div>
+                        <div id="pos-btn-14" class="pos-motor-btn" style="top:48%; left:7%;"  onclick="toggleTorqueAtPosition(14)">14</div>
+                        <!-- 腰 -->
+                        <div id="pos-btn-15" class="pos-motor-btn" style="top:27%; left:47%;" onclick="toggleTorqueAtPosition(15)">15</div>
+                        <!-- 左腿 -->
+                        <div id="pos-btn-16" class="pos-motor-btn" style="top:43%; left:53%;" onclick="toggleTorqueAtPosition(16)">16</div>
+                        <div id="pos-btn-17" class="pos-motor-btn" style="top:43%; left:64%;" onclick="toggleTorqueAtPosition(17)">17</div>
+                        <div id="pos-btn-18" class="pos-motor-btn" style="top:52%; left:64%;" onclick="toggleTorqueAtPosition(18)">18</div>
+                        <div id="pos-btn-19" class="pos-motor-btn" style="top:67%; left:64%;" onclick="toggleTorqueAtPosition(19)">19</div>
+                        <div id="pos-btn-20" class="pos-motor-btn" style="top:77%; left:64%;" onclick="toggleTorqueAtPosition(20)">20</div>
+                        <div id="pos-btn-21" class="pos-motor-btn" style="top:84%; left:64%;" onclick="toggleTorqueAtPosition(21)">21</div>
+                        <!-- 右腿 -->
+                        <div id="pos-btn-22" class="pos-motor-btn" style="top:43%; left:42%;" onclick="toggleTorqueAtPosition(22)">22</div>
+                        <div id="pos-btn-23" class="pos-motor-btn" style="top:43%; left:30%;" onclick="toggleTorqueAtPosition(23)">23</div>
+                        <div id="pos-btn-24" class="pos-motor-btn" style="top:52%; left:30%;" onclick="toggleTorqueAtPosition(24)">24</div>
+                        <div id="pos-btn-25" class="pos-motor-btn" style="top:67%; left:30%;" onclick="toggleTorqueAtPosition(25)">25</div>
+                        <div id="pos-btn-26" class="pos-motor-btn" style="top:77%; left:30%;" onclick="toggleTorqueAtPosition(26)">26</div>
+                        <div id="pos-btn-27" class="pos-motor-btn" style="top:84%; left:30%;" onclick="toggleTorqueAtPosition(27)">27</div>
+                        <!-- 頭部 -->
+                        <div id="pos-btn-28" class="pos-motor-btn" style="top:9%; left:47%;" onclick="toggleTorqueAtPosition(28)">28</div>
+                        <div id="pos-btn-29" class="pos-motor-btn" style="top:3%; left:47%;" onclick="toggleTorqueAtPosition(29)">29</div>
+                        <div id="pos-btn-30" class="pos-motor-btn" style="top:3%; left:35%;" onclick="toggleTorqueAtPosition(30)">30</div>
+                    </div>
+                                    <div id="robotpic" style="margin-left: 0px; background-color: rgba(46, 58, 61, 0.637); padding: 8px; border-radius: 5px;">
+                <div style="float: left; margin-left: 70px;">
+                    X_Series&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Pro_Series
+                </div>
+                <div style="float: left;margin-top: 10px;">
+                    Position: &nbsp;<input type="text" id="X_series_position" value=10 style="width:50px;margin-left: 5px;" onclick="Position();" onkeydown="if (event.key === 'Enter') Position(this.value)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                    <input type="text" id="Pro_series_position" value=742 style="width:50px;margin-left: 12px;" onclick="PositionReverse();" onkeydown="if (event.key === 'Enter') PositionReverse();">
+                </div>
+                <div style="float: left;">
+                    Speed &nbsp;&nbsp;&nbsp;: &nbsp;<input type="text" id="X_series_speed" value=10 style="width:50px;margin-left: 4px;" onclick="Speed();" onkeydown="if (event.key === 'Enter') Speed(this.value)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                    <input type="text" id="Pro_series_speed" value=696 style="width:50px;margin-left: 12px" onclick="SpeedReverse();" onkeydown="if (event.key === 'Enter') SpeedReverse();">
+                </div>
+                <div style="clear:both; margin-top:6px;">
+                    <button type="button" onclick="toggleCalc();" style="font-size:11px; padding:2px 10px; background:rgba(3,233,244,0.1); color:#03e9f4; border:1px solid #03e9f4; border-radius:3px; cursor:pointer;">☰ Calc</button>
+                </div>
+                </div>
+                </div>
+            </div>
+        </div>
+        <div id="motor_area" style="width: 460px;">
+            <!-- 六顆部位按鈕用 flex 平分，與下方的「單顆控制」列同寬對齊。
+                 按鈕 id 必須是 btn_<partName>，refreshTorqueUI 依此對應 robotConfig。 -->
+            <div style="display: flex; gap: 4px; width: 100%; box-sizing: border-box;">
+                <input type="button" id="btn_left_hand" class="button_choose" onclick="Torque_Choose('left_hand');" value="left_hand" style="flex: 1; min-width: 0;">
+                <input type="button" id="btn_right_hand" class="button_choose" onclick="Torque_Choose('right_hand');" value="right_hand" style="flex: 1; min-width: 0;">
+                <input type="button" id="btn_waist" class="button_choose" onclick="Torque_Choose('waist');" value="waist" style="flex: 1; min-width: 0;">
+                <input type="button" id="btn_left_leg" class="button_choose" onclick="Torque_Choose('left_leg');" value="left_leg" style="flex: 1; min-width: 0;">
+                <input type="button" id="btn_right_leg" class="button_choose" onclick="Torque_Choose('right_leg');" value="right_leg" style="flex: 1; min-width: 0;">
+                <input type="button" id="btn_head" class="button_choose" onclick="Torque_Choose('head');" value="head" style="flex: 1; min-width: 0;">
+            </div>
+            <div style="margin-top: 8px; margin-bottom: 8px; padding: 5px; background-color: rgba(46, 58, 61, 0.8); border-radius: 5px; color: white; display: flex; align-items: center; justify-content: center; width: 100%; box-sizing: border-box;">
+                <span style="font-weight: bold; margin-right: 10px;">單顆控制 ID:</span>
+                <input type="text" id="single_motor_id" value="1" style="width: 40px; text-align: center; font-weight: bold; margin-right: 15px;">
+                
+                <input type="button" id="btn_single_on" value="開啟 (ON)" onclick="SetSingleTorque(1);" class="btn-single-torque btn-on">
+                <input type="button" id="btn_single_off" value="關閉 (OFF)" onclick="SetSingleTorque(0);" class="btn-single-torque btn-off">
+            </div>
+            <div style="background-color: rgba(46, 58, 61, 0.637); padding: 5px;">
+                <div style="display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; width: 450px;">
+                    <div id="div_wrapper_left_hand" class="motor-group">
+                        <div class="header" id="header_left_hand">LEFT HAND</div>
+                        <table>
+                            <thead><tr><th>ID</th><th>Position</th></tr></thead>
+                            <tbody>
+                                <tr><td>1</td><td><input type="text" id="motor_val_1" value="0" readonly></td></tr>
+                                <tr><td>2</td><td><input type="text" id="motor_val_2" value="0" readonly></td></tr>
+                                <tr><td>3</td><td><input type="text" id="motor_val_3" value="0" readonly></td></tr>
+                                <tr><td>4</td><td><input type="text" id="motor_val_4" value="0" readonly></td></tr>
+                                <tr><td>5</td><td><input type="text" id="motor_val_5" value="0" readonly></td></tr>
+                                <tr><td>6</td><td><input type="text" id="motor_val_6" value="0" readonly></td></tr>
+                                <tr><td>7</td><td><input type="text" id="motor_val_7" value="0" readonly></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div id="div_wrapper_right_hand" class="motor-group">
+                        <div class="header" id="header_right_hand">RIGHT HAND</div>
+                        <table>
+                            <thead><tr><th>ID</th><th>Position</th></tr></thead>
+                            <tbody>
+                                <tr><td>8</td><td><input type="text" id="motor_val_8" value="0" readonly></td></tr>
+                                <tr><td>9</td><td><input type="text" id="motor_val_9" value="0" readonly></td></tr>
+                                <tr><td>10</td><td><input type="text" id="motor_val_10" value="0" readonly></td></tr>
+                                <tr><td>11</td><td><input type="text" id="motor_val_11" value="0" readonly></td></tr>
+                                <tr><td>12</td><td><input type="text" id="motor_val_12" value="0" readonly></td></tr>
+                                <tr><td>13</td><td><input type="text" id="motor_val_13" value="0" readonly></td></tr>
+                                <tr><td>14</td><td><input type="text" id="motor_val_14" value="0" readonly></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div id="div_wrapper_waist" class="motor-group">
+                        <div class="header" id="header_waist">WAIST</div>
+                        <table>
+                            <thead><tr><th>ID</th><th>Position</th></tr></thead>
+                            <tbody>
+                                <tr><td>15</td><td><input type="text" id="motor_val_15" value="0" readonly></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div style="display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; width: 450px; margin-top: 20px;">
+                    
+                    <div id="div_wrapper_left_leg" class="motor-group">
+                        <div class="header" id="header_left_leg">LEFT LEG</div>
+                        <table>
+                            <thead><tr><th>ID</th><th>Position</th></tr></thead>
+                            <tbody>
+                                <tr><td>16</td><td><input type="text" id="motor_val_16" value="0" readonly></td></tr>
+                                <tr><td>17</td><td><input type="text" id="motor_val_17" value="0" readonly></td></tr>
+                                <tr><td>18</td><td><input type="text" id="motor_val_18" value="0" readonly></td></tr>
+                                <tr><td>19</td><td><input type="text" id="motor_val_19" value="0" readonly></td></tr>
+                                <tr><td>20</td><td><input type="text" id="motor_val_20" value="0" readonly></td></tr>
+                                <tr><td>21</td><td><input type="text" id="motor_val_21" value="0" readonly></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div id="div_wrapper_right_leg" class="motor-group">
+                        <div class="header" id="header_right_leg">RIGHT LEG</div>
+                        <table>
+                            <thead><tr><th>ID</th><th>Position</th></tr></thead>
+                            <tbody>
+                                <tr><td>22</td><td><input type="text" id="motor_val_22" value="0" readonly></td></tr>
+                                <tr><td>23</td><td><input type="text" id="motor_val_23" value="0" readonly></td></tr>
+                                <tr><td>24</td><td><input type="text" id="motor_val_24" value="0" readonly></td></tr>
+                                <tr><td>25</td><td><input type="text" id="motor_val_25" value="0" readonly></td></tr>
+                                <tr><td>26</td><td><input type="text" id="motor_val_26" value="0" readonly></td></tr>
+                                <tr><td>27</td><td><input type="text" id="motor_val_27" value="0" readonly></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div id="div_wrapper_head" class="motor-group">
+                        <div class="header" id="header_head">HEAD</div>
+                        <table>
+                            <thead><tr><th>ID</th><th>Position</th></tr></thead>
+                            <tbody>
+                                <tr><td>28</td><td><input type="text" id="motor_val_28" value="0" readonly></td></tr>
+                                <tr><td>29</td><td><input type="text" id="motor_val_29" value="0" readonly></td></tr>
+                                <tr><td>30</td><td><input type="text" id="motor_val_30" value="0" readonly></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="display: flex; justify-content: center; width: 100%; margin-top: 15px; margin-bottom: 10px;">
+                    <input type="button" id="btn_copy_to_abs" value="Copy To Absolute" onclick="CopyToAbsolute();" style="width: 140px; font-weight:bold; background-color:#03e9f4; color:#050505; border-radius:5px; cursor:pointer; padding: 5px;">
+                    <input type="button" id="btn_copy_selected" value="Copy Selected →" onclick="ShowCopySelectedPanel();" style="width: 140px; font-weight:bold; background-color:#ff8c00; color:#fff; border-radius:5px; cursor:pointer; padding: 5px; margin-left: 8px;">
+                </div>
+                <div id="copy_selected_panel" style="display:none; background:rgba(30,40,44,0.97); border:1px solid #ff8c00; border-radius:7px; padding:10px; margin: 4px 0 8px 0; width:100%; box-sizing:border-box;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                        <span style="color:#ff8c00; font-weight:bold;">Target Row ID:</span>
+                        <input type="text" id="copy_target_id" value="-1" style="width:50px; text-align:center; font-weight:bold;">
+                        <input type="button" value="全選" onclick="toggleAllCopyCheckboxes(true);" style="width:50px; background:#555; color:#fff; border-radius:3px; cursor:pointer;">
+                        <input type="button" value="全不選" onclick="toggleAllCopyCheckboxes(false);" style="width:55px; background:#555; color:#fff; border-radius:3px; cursor:pointer;">
+                        <input type="button" value="Execute" onclick="CopySelectedToRow();" style="width:65px; font-weight:bold; background:#ff8c00; color:#fff; border-radius:3px; cursor:pointer;">
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; gap:12px;">
+                        <div>
+                            <span style="color:#7ecfff; font-weight:bold; cursor:pointer;" onclick="toggleGroupCopy('left_hand')">LEFT HAND</span><br>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="1"> M1</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="2"> M2</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="3"> M3</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="4"> M4</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="5"> M5</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="6"> M6</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_hand" value="7"> M7</label>
+                        </div>
+                        <div>
+                            <span style="color:#7ecfff; font-weight:bold; cursor:pointer;" onclick="toggleGroupCopy('right_hand')">RIGHT HAND</span><br>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="8"> M8</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="9"> M9</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="10"> M10</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="11"> M11</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="12"> M12</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="13"> M13</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_hand" value="14"> M14</label>
+                        </div>
+                        <div>
+                            <span style="color:#7ecfff; font-weight:bold; cursor:pointer;" onclick="toggleGroupCopy('waist')">WAIST</span><br>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="waist" value="15"> M15</label>
+                        </div><br>
+                        <div>
+                            <span style="color:#7ecfff; font-weight:bold; cursor:pointer;" onclick="toggleGroupCopy('left_leg')">LEFT LEG</span><br>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_leg" value="16"> M16</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_leg" value="17"> M17</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_leg" value="18"> M18</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_leg" value="19"> M19</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_leg" value="20"> M20</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="left_leg" value="21"> M21</label>
+                        </div>
+                        <div>
+                            <span style="color:#7ecfff; font-weight:bold; cursor:pointer;" onclick="toggleGroupCopy('right_leg')">RIGHT LEG</span><br>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_leg" value="22"> M22</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_leg" value="23"> M23</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_leg" value="24"> M24</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_leg" value="25"> M25</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_leg" value="26"> M26</label>
+                            <label><input type="checkbox" class="copy_motor_cb" data-group="right_leg" value="27"> M27</label>
+                        </div>
+                    </div>
+                </div>
+
+                </div>
+
+            </div>
+            
+        </div>
+            
+
+    </form>
+
+    <!-- Floating draggable calculator (outside form to avoid submit) -->
+    <div id="calc-float" style="display:none; position:fixed; top:120px; right:20px; width:242px;
+         z-index:9999; background:rgba(8,16,18,0.97); border:1px solid #03e9f4; border-radius:5px;
+         box-shadow:0 0 20px rgba(3,233,244,0.3);">
+        <div id="calc-drag" style="background:rgba(3,233,244,0.12); color:#03e9f4; padding:5px 8px;
+             cursor:move; border-radius:5px 5px 0 0; display:flex; justify-content:space-between;
+             align-items:center; user-select:none; font-size:13px; letter-spacing:2px;">
+            <span>CALCULATOR</span>
+            <span onclick="toggleCalc()" style="cursor:pointer; padding:0 4px; font-size:16px;">✕</span>
+        </div>
+        <div style="padding:8px;">
+            <input type="text" id="calc-display" class="calc-display" value="0" readonly>
+            <!-- Row 1: C ⌫ ( ) -->
+            <div style="display:flex; gap:3px; margin-bottom:3px;">
+                <button type="button" class="cb cb-clr" style="flex:1" onclick="calcPress('C')">C</button>
+                <button type="button" class="cb cb-op"  style="flex:1" onclick="calcPress('⌫')">⌫</button>
+                <button type="button" class="cb cb-op"  style="flex:1" onclick="calcPress('(')">(</button>
+                <button type="button" class="cb cb-op"  style="flex:1" onclick="calcPress(')')">)</button>
+            </div>
+            <!-- Row 2: + − × ÷ -->
+            <div style="display:flex; gap:3px; margin-bottom:3px;">
+                <button type="button" class="cb cb-op" style="flex:1" onclick="calcPress('+')">+</button>
+                <button type="button" class="cb cb-op" style="flex:1" onclick="calcPress('-')">−</button>
+                <button type="button" class="cb cb-op" style="flex:1" onclick="calcPress('*')">×</button>
+                <button type="button" class="cb cb-op" style="flex:1" onclick="calcPress('/')">÷</button>
+            </div>
+            <!-- Row 3-5: 7-9, 4-6, 1-3 -->
+            <div style="display:flex; gap:3px; margin-bottom:3px;">
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('7')">7</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('8')">8</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('9')">9</button>
+            </div>
+            <div style="display:flex; gap:3px; margin-bottom:3px;">
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('4')">4</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('5')">5</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('6')">6</button>
+            </div>
+            <div style="display:flex; gap:3px; margin-bottom:3px;">
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('1')">1</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('2')">2</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('3')">3</button>
+            </div>
+            <!-- Row 6: 0(wide), ., = -->
+            <div style="display:flex; gap:3px; margin-bottom:4px;">
+                <button type="button" class="cb" style="flex:2" onclick="calcPress('0')">0</button>
+                <button type="button" class="cb" style="flex:1" onclick="calcPress('.')">.</button>
+                <button type="button" class="cb cb-eq" style="flex:1" onclick="calcPress('=')">=</button>
+            </div>
+            <!-- Conversion buttons -->
+            <div>
+                <button type="button" class="cb-cnv" onclick="calcToXPos()">→ X Position</button>
+                <button type="button" class="cb-cnv" onclick="calcToProPos()">→ Pro Position</button>
+            </div>
+            <div>
+                <button type="button" class="cb-cnv" onclick="calcToXSpd()">→ X Speed</button>
+                <button type="button" class="cb-cnv" onclick="calcToProSpd()">→ Pro Speed</button>
+            </div>
+        </div>
+    </div>
+
+    <dialog id="infoModal">
+        <p>確認是否儲存!!!!!</p>
+        <input type="button" id="savestanddata" value="Yes" onclick="SaveStand();" style="width:80px;">
+        <input type="button" id="nosavedata1" value="no" style="width:80px;">
+    </dialog>
+    <dialog id="infoModal2">
+        <p>確認是否儲存!!!!!</p>
+        <input type="button" id="savedata" value="Yes" onclick="Save();" style="width:80px;">
+        <input type="button" id="nosavedata2" value="no" style="width:80px;">
+    </dialog>
+    
+    <script type="text/javascript" src="./js/Interface2.js"></script>
+
+    <script>
+        // 全身扭力按鈕的文字與 active 樣式一律由 refreshTorqueUI() 依實際狀態決定。
+        // 這裡原本另有一個 click listener 自行 toggle，只看點擊次數不看真實狀態，
+        // 與單顆／部位操作的更新互相打架，已移除。
+
+        // --- Strategy Location ---
+        // 扭力狀態快取（motionpackage 維護）。開網頁時索取一次以還原介面，
+        // 否則 motorTorqueStates 是空的，畫面會全部顯示為關閉。
+        var TorqueStateClient = new ROSLIB.Service({
+            ros: ros,
+            name: '/package/GetTorqueState',
+            serviceType: 'nstc_msgs/TorqueState'
+        });
+
+        function LoadTorqueState() {
+            TorqueStateClient.callService(new ROSLIB.ServiceRequest({ query: true }), function (res) {
+                if (!res || !res.states) return;
+                for (var i = 0; i < res.states.length; i++) {
+                    motorTorqueStates[i + 1] = res.states[i];
+                }
+                if (typeof refreshTorqueUI === "function") refreshTorqueUI();
+                console.log("已載入扭力狀態", res.states);
+            });
+        }
+
+        var locationBack_Subscriber = new ROSLIB.Topic({
+            ros: ros,
+            name: '/locationBack',
+            messageType: 'nstc_msgs/msg/Location'
+        });
+
+        var location_strategy = new ROSLIB.Topic({
+            ros: ros,
+            name: '/location',
+            messageType: 'nstc_msgs/location'
+        });
+
+        var location_msg = new ROSLIB.Message({ data: "" });
+
+        function parseStrategyName(path) {
+            if (typeof path !== 'string' || path === "") return "---";
+            const parts = path.split('/').filter(p => p.length > 0);
+            const paramIndex = parts.indexOf("Parameter");
+            if (paramIndex > 0) return parts[paramIndex - 1];
+            return parts[parts.length - 1];
+        }
+
+        locationBack_Subscriber.subscribe(function (msg) {
+            console.log("收到完整路徑:", msg.data);
+            let strategyName = parseStrategyName(msg.data);
+            const displayElement = document.getElementById('current-strategy-name');
+            if (displayElement) displayElement.innerText = strategyName;
+            clearHistoryAction();
+        });
+
+        function strategylocation() {
+            var current_display = document.getElementById('current-strategy-name').innerText;
+            var target_strategy = (current_display === "---" || current_display === "WAITING...") ? "nstc" : current_display;
+            location_msg.data = "/home/iclab/nstc/config/" + target_strategy + "/Parameter";
+            console.log("連線後保持策略: " + target_strategy + ", 路徑: " + location_msg.data);
+            location_strategy.publish(location_msg);
+        }
+
+        window.addEventListener('DOMContentLoaded', function () {
+            let initialPath = window.currentStrategy || "";
+            let strategyName = parseStrategyName(initialPath);
+            if (strategyName !== "---") {
+                document.getElementById('current-strategy-name').innerText = strategyName;
+            }
+        });
+
+        // --- Undo / Redo ---
+        var undoTopic = new ROSLIB.Topic({
+            ros: ros,
+            name: '/package/Undo',
+            messageType: 'std_msgs/Bool'
+        });
+
+        var redoTopic = new ROSLIB.Topic({
+            ros: ros,
+            name: '/package/Redo',
+            messageType: 'std_msgs/Bool'
+        });
+
+        var clearHistoryTopic = new ROSLIB.Topic({
+            ros: ros,
+            name: '/package/ClearHistory',
+            messageType: 'std_msgs/Bool'
+        });
+
+        var historyStateSub = new ROSLIB.Topic({
+            ros: ros,
+            name: '/package/HistoryState',
+            messageType: 'std_msgs/Int16MultiArray'
+        });
+
+        historyStateSub.subscribe(function(msg) {
+            var hasHistory = msg.data[0] > 0;
+            var hasFuture  = msg.data[1] > 0;
+            document.getElementById('undoButton').disabled = !hasHistory;
+            document.getElementById('redoButton').disabled = !hasFuture;
+            document.getElementById('clearHistoryButton').disabled = !(hasHistory || hasFuture);
+        });
+
+        var undoRedoStatusSub = new ROSLIB.Topic({
+            ros: ros,
+            name: '/package/UndoRedoStatus',
+            messageType: 'std_msgs/String'
+        });
+
+        undoRedoStatusSub.subscribe(function(msg) {
+            document.getElementById('label').innerHTML = msg.data;
+        });
+
+        var historyInfoSub = new ROSLIB.Topic({
+            ros: ros,
+            name: '/package/HistoryInfo',
+            messageType: 'std_msgs/String'
+        });
+
+        historyInfoSub.subscribe(function(msg) {
+            var info = JSON.parse(msg.data);
+            renderHistoryPanel(info.history, info.future);
+        });
+
+        function renderHistoryPanel(history, future) {
+            var html = '';
+            if (history.length === 0 && future.length === 0) {
+                html = '<div class="hp-empty">empty</div>';
+            } else {
+                for (var i = 0; i < history.length; i++) {
+                    var isNextUndo = (i === history.length - 1);
+                    html += '<div class="' + (isNextUndo ? 'hp-item-undo' : 'hp-item') + '">'
+                          + (isNextUndo ? '← ' : '&nbsp;&nbsp;') + history[i] + '</div>';
+                }
+                html += '<div class="hp-now">▶ NOW</div>';
+                for (var j = future.length - 1; j >= 0; j--) {
+                    var isNextRedo = (j === future.length - 1);
+                    html += '<div class="' + (isNextRedo ? 'hp-item-redo' : 'hp-item-future') + '">'
+                          + (isNextRedo ? '→ ' : '&nbsp;&nbsp;') + future[j] + '</div>';
+                }
+            }
+            document.getElementById('history-list').innerHTML = html;
+        }
+
+        function undoAction() {
+            undoTopic.publish(new ROSLIB.Message({ data: true }));
+        }
+
+        function redoAction() {
+            redoTopic.publish(new ROSLIB.Message({ data: true }));
+        }
+
+        function clearHistoryAction() {
+            clearHistoryTopic.publish(new ROSLIB.Message({ data: true }));
+        }
+
+        ros.on('error', function() {
+            document.getElementById('undoButton').disabled = true;
+            document.getElementById('redoButton').disabled = true;
+            document.getElementById('clearHistoryButton').disabled = true;
+            document.getElementById('history-list').innerHTML = '<div class="hp-empty">empty</div>';
+        });
+
+        ros.on('close', function() {
+            document.getElementById('undoButton').disabled = true;
+            document.getElementById('redoButton').disabled = true;
+            document.getElementById('clearHistoryButton').disabled = true;
+            document.getElementById('history-list').innerHTML = '<div class="hp-empty">empty</div>';
+            document.getElementById('importSectorButton').disabled = true;
+        });
+
+        ros.on('error', function() {
+            document.getElementById('importSectorButton').disabled = true;
+        });
+
+        ros.on('connection', function() {
+            document.getElementById('importSectorButton').disabled = false;
+            // 連上後向 motionpackage 索取扭力狀態，還原介面顯示
+            try { LoadTorqueState(); } catch (e) { console.warn('LoadTorqueState 失敗:', e); }
+        });
+
+        // ===== Calculator =====
+        var _calcExpr = '';
+
+        function toggleCalc() {
+            var p = document.getElementById('calc-float');
+            p.style.display = p.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function calcPress(val) {
+            if (val === 'C') {
+                _calcExpr = '';
+            } else if (val === '⌫') {
+                _calcExpr = _calcExpr.slice(0, -1);
+            } else if (val === '=') {
+                try {
+                    _calcExpr = String(Function('"use strict"; return (' + _calcExpr + ')')());
+                } catch(e) {
+                    _calcExpr = 'Error';
+                }
+            } else {
+                if (_calcExpr === 'Error') _calcExpr = '';
+                _calcExpr += val;
+            }
+            document.getElementById('calc-display').value = _calcExpr || '0';
+        }
+
+        function calcToXPos() {
+            var val = parseFloat(document.getElementById('calc-display').value);
+            if (!isNaN(val)) {
+                document.getElementById('X_series_position').value = val;
+                Position();
+            }
+        }
+
+        function calcToXSpd() {
+            var val = parseFloat(document.getElementById('calc-display').value);
+            if (!isNaN(val)) {
+                document.getElementById('X_series_speed').value = val;
+                Speed();
+            }
+        }
+
+        function calcToProPos() {
+            var val = parseFloat(document.getElementById('calc-display').value);
+            if (!isNaN(val)) {
+                document.getElementById('Pro_series_position').value = val;
+                PositionReverse();
+            }
+        }
+
+        function calcToProSpd() {
+            var val = parseFloat(document.getElementById('calc-display').value);
+            if (!isNaN(val)) {
+                document.getElementById('Pro_series_speed').value = val;
+                SpeedReverse();
+            }
+        }
+
+        // Drag support for floating calculator
+        (function() {
+            var dragging = false, ox, oy, ex, ey;
+            var handle = document.getElementById('calc-drag');
+            var panel  = document.getElementById('calc-float');
+            handle.addEventListener('mousedown', function(e) {
+                dragging = true;
+                ox = e.clientX; oy = e.clientY;
+                ex = panel.offsetLeft; ey = panel.offsetTop;
+                e.preventDefault();
+            });
+            document.addEventListener('mousemove', function(e) {
+                if (!dragging) return;
+                panel.style.left  = (ex + e.clientX - ox) + 'px';
+                panel.style.top   = (ey + e.clientY - oy) + 'px';
+                panel.style.right = 'auto';
+            });
+            document.addEventListener('mouseup', function() { dragging = false; });
+        })();
+
+        // ===== Import Sector =====
+        // Sector file format: motordata = speed1, pos1, speed2, pos2, ... (27 pairs = 54 values)
+        // Backend returns these as motionstate=2 (relative) or motionstate=4 (absolute)
+        function ImportSector() {
+            var strategy  = document.getElementById('import_strategy').value;
+            var sectorNum = document.getElementById('import_sector').value.trim();
+            var statusEl  = document.getElementById('import_status');
+
+            if (!sectorNum) {
+                document.getElementById('label').innerHTML = 'Import Sector: please enter a sector number!';
+                return;
+            }
+
+            // 直接向 motionpackage 指定要讀哪個策略，不再切換全域 strategy。
+            // 舊做法是 publish /location 切過去、等 150ms、讀完再切回來 ——
+            // 那個等待是純猜測，而且會連帶讓影像、走路等節點全部重載設定。
+            var svc = new ROSLIB.Service({
+                ros: ros,
+                name: '/package/InterfaceReadSaveMotion',
+                serviceType: 'nstc_msgs/ReadMotion'
+            });
+            svc.callService(new ROSLIB.ServiceRequest({
+                read: true,
+                name: 'sector/' + sectorNum,
+                readstate: 0,
+                strategy: strategy
+            }), function(data) {
+                    if (!data.vectorcnt || data.vectorcnt === 0) {
+                        document.getElementById('label').innerHTML = 'Import failed: sector/' + sectorNum + ' not found in [' + strategy + ']';
+                        return;
+                    }
+
+                    var baseRP = document.getElementById('RelativePositionTable').getElementsByClassName('inthesmallbox2').length;
+                    var baseRS = document.getElementById('RelativeSpeedTable').getElementsByClassName('inthesmallbox2').length;
+                    var baseAP = document.getElementById('AbsolutePositionTable').getElementsByClassName('inthesmallbox2').length;
+                    var baseAS = document.getElementById('AbsoluteSpeedTable').getElementsByClassName('inthesmallbox2').length;
+
+                    var nRP = 0, nRS = 0, nAP = 0, nAS = 0;
+                    var relEntryIdx = 0, absEntryIdx = 0;
+
+                    for (var i = 0; i < data.vectorcnt; i++) {
+                        var tName = (data.item_names && data.item_names[i]) ? data.item_names[i] : '';
+                        switch (data.motionstate[i]) {
+                            case 0: break; // MotionList: skip
+
+                            case 2: {
+                                // Combined entry: motordata = speed0,pos0,speed1,pos1,...
+                                // Even index → speed, Odd index → position
+                                var off = relEntryIdx * 54;
+
+                                NewRelativePosition();
+                                var rdP = (baseRP + nRP) * 2;
+                                document.getElementById('RelativePositionTable').getElementsByTagName('div')[rdP].getElementsByClassName('textbox')[0].value = -1;
+                                document.getElementById('RelativePositionTable').getElementsByTagName('div')[rdP+1].getElementsByClassName('textbox')[0].value = '-1';
+                                for (var j = 0; j < 27; j++)
+                                    document.getElementById('RelativePositionTable').getElementsByTagName('div')[rdP+1].getElementsByClassName('textbox')[j+1].value = data.relativedata[off + j*2 + 1];
+                                nRP++;
+
+                                NewRelativeSpeed();
+                                var rdS = (baseRS + nRS) * 2;
+                                document.getElementById('RelativeSpeedTable').getElementsByTagName('div')[rdS].getElementsByClassName('textbox')[0].value = -1;
+                                document.getElementById('RelativeSpeedTable').getElementsByTagName('div')[rdS+1].getElementsByClassName('textbox')[0].value = '-1';
+                                for (var j = 0; j < 27; j++)
+                                    document.getElementById('RelativeSpeedTable').getElementsByTagName('div')[rdS+1].getElementsByClassName('textbox')[j+1].value = data.relativedata[off + j*2];
+                                nRS++;
+                                relEntryIdx++;
+                                break;
+                            }
+                            case 4: {
+                                // Combined absolute: same interleaved format
+                                var off = absEntryIdx * 54;
+
+                                NewAbsolutePosition();
+                                var rdP = (baseAP + nAP) * 2;
+                                document.getElementById('AbsolutePositionTable').getElementsByTagName('div')[rdP].getElementsByClassName('textbox')[0].value = -1;
+                                document.getElementById('AbsolutePositionTable').getElementsByTagName('div')[rdP+1].getElementsByClassName('textbox')[0].value = '-1';
+                                for (var j = 0; j < 27; j++)
+                                    document.getElementById('AbsolutePositionTable').getElementsByTagName('div')[rdP+1].getElementsByClassName('textbox')[j+1].value = data.absolutedata[off + j*2 + 1];
+                                nAP++;
+
+                                NewAbsoluteSpeed();
+                                var rdS = (baseAS + nAS) * 2;
+                                document.getElementById('AbsoluteSpeedTable').getElementsByTagName('div')[rdS].getElementsByClassName('textbox')[0].value = -1;
+                                document.getElementById('AbsoluteSpeedTable').getElementsByTagName('div')[rdS+1].getElementsByClassName('textbox')[0].value = '-1';
+                                for (var j = 0; j < 27; j++)
+                                    document.getElementById('AbsoluteSpeedTable').getElementsByTagName('div')[rdS+1].getElementsByClassName('textbox')[j+1].value = data.absolutedata[off + j*2];
+                                nAS++;
+                                absEntryIdx++;
+                                break;
+                            }
+                        }
+                    }
+                    document.getElementById('label').innerHTML =
+                        'Import Sector [' + sectorNum + '] from [' + strategy + '] done! (' + data.vectorcnt + ' entries)';
+            });
+        }
+    </script>
+</body>
+</html>

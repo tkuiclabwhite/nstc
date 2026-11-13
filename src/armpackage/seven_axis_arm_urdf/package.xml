@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>seven_axis_arm_urdf</name>
+  <version>1.0.0</version>
+  <description>Seven-axis dual arm with two Linker Hand O6 on the stand.</description>
+  <maintainer email="todo@todo.com">junkai</maintainer>
+  <license>BSD</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

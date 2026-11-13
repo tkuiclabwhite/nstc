@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 测试与类型检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ROS2 colcon 构建产物
+install/
+log/
+.colcon/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 其他
+*.bak
+*.ttk

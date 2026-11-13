@@ -1,0 +1,10 @@
+# 查詢目前各馬達的扭力狀態。
+#
+# 這是「指令快取」而非硬體實際狀態：motionpackage 訂閱 /set_torque 記錄每次
+# 開關的結果，開機時全部視為 OFF（driver_node 初始化時為了寫入 indirect address
+# 必定會先關閉每顆馬達的扭力，故此假設成立）。
+# 若 motionpackage 單獨重啟而 driver_node 未重啟，快取會歸零但硬體可能仍為 ON。
+bool query
+---
+# index 0 對應 ID 1，index 29 對應 ID 30；1 = ON（鎖死），0 = OFF（洩力）
+int16[] states

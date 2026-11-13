@@ -1,0 +1,534 @@
+import sys
+import threading
+import time
+
+import can
+import numpy as np
+from can.exceptions import CanError
+from utils.color_msg import ColorMsg
+from utils.open_can import OpenCan
+
+
+class LinkerHandL6Can:
+    def __init__(self, can_id, can_channel='can0', baudrate=1000000,yaml=""):
+        self.can_id = can_id
+        self.can_channel = can_channel
+        self.baudrate = baudrate
+        self.open_can = OpenCan(load_yaml=yaml)
+
+        self.x01 = [0] * 6 # 关节位置
+        self.x02 = [-1] * 6 # 转矩限制
+        self.x05 = [0] * 6 # 速度
+        self.x07 = [-1] * 6 # 加速度
+        self.x33 = [0] * 6 # 温度
+        self.x35 = [0] * 6 # 关节错误码
+        self.x36 = [-1] * 6 # 电流
+        self.xb0,self.xb1,self.xb2,self.xb3,self.xb4,self.xb5 = [-1] * 5,[-1] * 5,[-1] * 5,[-1] * 5,[-1] * 5,[-1] * 5
+
+        self.thumb_matrix = np.full((12, 6), -1)
+        self.index_matrix = np.full((12, 6), -1)
+        self.middle_matrix = np.full((12, 6), -1)
+        self.ring_matrix = np.full((12, 6), -1)
+        self.little_matrix = np.full((12, 6), -1)
+        self.matrix_map = {
+            0: 0,
+            16: 1,
+            32: 2,
+            48: 3,
+            64: 4,
+            80: 5,
+            96: 6,
+            112: 7,
+            128: 8,
+            144: 9,
+            160: 10,
+            176: 11,
+        }
+        self.serial_number = []
+        self.serial_number_map = {
+            0: 0,
+            1: 1,
+            2: 2,
+            3: 3,
+        }
+        # Fault codes
+        
+        self.joint_angles = [0] * 6
+        self.pressures = [200] * 6  # Default torque 200
+        self.bus = self.init_can_bus(can_channel, baudrate)
+        self.normal_force, self.tangential_force, self.tangential_force_dir, self.approach_inc = [[-1] * 6 for _ in range(4)]
+        self.is_lock = False
+        self.version = None
+        # Start the receiving thread
+        self.running = True
+        self.receive_thread = threading.Thread(target=self.receive_response)
+        self.receive_thread.daemon = True
+        self.receive_thread.start()
+        self.get_version()
+        time.sleep(0.1)
+        self._check_touch_type()
+
+    def _check_touch_type(self):
+            '''根据SN编码判断压感类型'''
+            self.sn = self.get_serial_number()
+            time.sleep(0.1)
+            if self.sn != "-1":
+                parts = self.sn.split("-")
+                if parts[4] == "A":
+                    self.touch_type = 1
+                elif parts[4] == "B":
+                    self.touch_type = 2
+                    self.touch_code = 0xC6  # 6*12
+                elif parts[4] == "B1": # B1掌部传感器
+                    self.touch_type = 2
+                    self.touch_code = 0xC6  # 6*12
+                    self.touch_palm_code = [0x0E, 0x0F]
+                    self.row = 14 # 行
+                    self.col = 15 # 列
+                    self.touch_palm = [[-1 for _ in range(self.col)] for _ in range(self.row)]
+                elif parts[4] == "J":
+                    self.touch_type = 3
+                elif parts[4] == "J1":
+                    self.touch_type = 2
+                    self.touch_code = 0xC6  # 6*12
+                    self.touch_palm_code = [0x0E, 0x04]
+                    self.row = 14 # 行
+                    self.col = 4 # 列
+                    self.touch_palm = [[-1 for _ in range(self.col)] for _ in range(self.row)]
+                elif parts[4] == "F":
+                    self.touch_type = 4
+                    self.touch_code = 0xC6 # 4*10   
+                elif parts[4] == "F1":
+                    self.touch_type = 4
+                    self.touch_code = 0xC6 # 4*10
+                    self.touch_palm_code = [0x0A, 0x0A]
+                    self.row = 10 # 行
+                    self.col = 10 # 列
+                    self.touch_palm = [[-1 for _ in range(self.col)] for _ in range(self.row)]
+                elif parts[4] == "Z":
+                    self.touch_type = -1
+            else:
+                # 如果没有SN编码则根据返回数据进行判断
+                self.touch_type = self.get_touch_type()
+
+    def init_can_bus(self, channel, baudrate):
+        """
+        尝试按优先级连接 CAN 总线，并实现回退机制。
+        """
+        # --- 统一异常处理块开始 ---
+        try:
+            if sys.platform == "linux":
+                # Linux 优先级：1. socketcan
+                try:
+                    self.open_can.open_can(self.can_channel)
+                    # 尝试 socketcan
+                    bus = can.interface.Bus(channel=channel, interface="socketcan", bitrate=baudrate)
+                    ColorMsg(msg=f"成功连接: interface='socketcan', channel='{channel}'", color="green")
+                    return bus
+                except CanError as e:
+                    # 如果 socketcan 失败，可以考虑在这里尝试其他 Linux 接口 (如 'pcan')
+                    ColorMsg(msg=f"socketcan 接口连接失败: {e}", color="yellow")
+                    raise # 重新抛出异常，让外层 try 捕获
+            elif sys.platform == "win32":
+                # Windows 优先级：1. pcan
+                try:
+                    bus = can.interface.Bus(channel=channel, interface='pcan', bitrate=baudrate)
+                    ColorMsg(msg=f"成功连接: interface='pcan', channel='{channel}'", color="green")
+                    return bus
+                except CanError as e:
+                    ColorMsg(msg=f"pcan 接口连接失败，尝试回退到 'candle': {e}", color="yellow")
+                # Windows 优先级：2. candle (回退方法)
+                try:
+                    bus = can.Bus(interface="candle", channel=channel, bitrate=baudrate)
+                    ColorMsg(msg=f"成功连接: interface='candle', channel='{channel}'", color="green")
+                    return bus
+                except CanError as e:
+                    ColorMsg(msg=f"candle 接口连接失败: {e}", color="yellow")
+                    raise # 两个接口都失败，抛出异常
+            else:
+                raise EnvironmentError("Unsupported platform for CAN interface")
+        # --- 统一异常处理块结束 ---
+        except Exception as e:
+            # 如果任何一个接口尝试失败并抛出异常（包括 EnvironmentError）
+            ColorMsg(msg=f"致命错误：所有 CAN 接口连接尝试均失败或平台不受支持。请检查设备连接或驱动安装和配置文件中CAN参数的配置。\n错误详情: {e}", color="red")
+            # 保持 raise 动作，将错误信息传递给调用者，避免程序继续运行
+            raise
+
+    def send_frame(self, frame_property, data_list,sleep=0.003):
+        """Send a single CAN frame with specified properties and data."""
+        frame_property_value = int(frame_property.value) if hasattr(frame_property, 'value') else frame_property
+        data = [frame_property_value] + [int(val) for val in data_list]
+        msg = can.Message(arbitration_id=self.can_id, data=data, is_extended_id=False)
+        try:
+            self.bus.send(msg)
+        except can.CanError as e:
+            print(f"Failed to send message: {e}")
+            self.open_can.open_can(self.can_channel)
+            time.sleep(1)
+            self.is_can = self.open_can.is_can_up_sysfs(interface=self.can_channel)
+            time.sleep(1)
+            if self.is_can:
+                self.bus = can.interface.Bus(channel=self.can_channel, interface="socketcan", bitrate=self.baudrate)
+            else:
+                print("Reconnecting CAN devices ....")
+        time.sleep(sleep)
+
+    def set_joint_positions(self, joint_angles):
+        """Set the positions of 10 joints (joint_angles: list of 10 values)."""
+        if len(joint_angles) > 6:
+            self.joint_angles = joint_angles[:6]
+        else:
+            self.joint_angles = joint_angles
+        # Send angle control in frames
+        self.send_frame(0x01, self.joint_angles, sleep=0.003)
+
+    def set_max_torque_limits(self, pressures, type="get"):
+        """Set maximum torque limits."""
+        if type == "get":
+            self.pressures = [0.0]
+        else:
+            self.pressures = pressures[:6]
+
+    def set_torque(self, torque=None):
+        """Set L6 maximum torque limits."""
+        if torque is None:
+            torque = [180] * 6
+        if len(torque) != 6:
+            raise ValueError("Torque list must have 6 elements.")
+            return
+        self.send_frame(0x02, torque)
+
+    def set_speed(self, speed=None):
+        """Set L6 speed."""
+        if speed is None:
+            speed = [180] * 6
+        if len(speed) != 6:
+            raise ValueError("Speed list must have 6 elements.")
+            return
+        self.x05 = speed
+        for _ in range(2):
+            time.sleep(0.001)
+            self.send_frame(0x05, speed)
+
+    ''' -------------------Pressure Sensors---------------------- '''
+    def get_normal_force(self):
+        self.send_frame(0x20, [],sleep=0.01)
+
+    def get_tangential_force(self):
+        self.send_frame(0x21, [],sleep=0.01)
+
+    def get_tangential_force_dir(self):
+        self.send_frame(0x22, [],sleep=0.01)
+
+    def get_approach_inc(self):
+        self.send_frame(0x23, [],sleep=0.01)
+
+    ''' -------------------Motor Temperature---------------------- '''
+    def get_motor_temperature(self):
+        self.send_frame(0x33, [])
+
+    # Motor fault codes
+    def get_motor_fault_code(self):
+        self.send_frame(0x35, [])
+
+    def receive_response(self):
+        """Receive CAN responses and process them."""
+        while self.running:
+            try:
+                msg = self.bus.recv(timeout=1.0)
+                if msg:
+                    self.process_response(msg)
+            except can.CanError as e:
+                print(f"Error receiving CAN message: {e}")
+
+    def process_response(self, msg):
+        """Process received CAN messages."""
+        #if msg.arbitration_id == self.can_id:
+        if msg.arbitration_id in (self.can_id, self.can_id + 8):
+            if not msg.data:
+                return
+            frame_type = msg.data[0]
+            response_data = msg.data[1:]
+            if len(list(response_data)) == 0:
+                return
+            if frame_type == 0x01:   # 0x01
+                self.x01 = list(response_data)
+            elif frame_type == 0x02:    # 0x02
+                self.x02 = list(response_data)
+            elif frame_type == 0x05: # Set speed
+                self.x05 = list(response_data)
+            elif frame_type == 0x20:
+                d = list(response_data)
+                self.normal_force = [float(i) for i in d]
+            elif frame_type == 0x21:
+                d = list(response_data)
+                self.tangential_force = [float(i) for i in d]
+            elif frame_type == 0x22:
+                d = list(response_data)
+                self.tangential_force_dir = [float(i) for i in d]
+            elif frame_type == 0x23:
+                d = list(response_data)
+                self.approach_inc = [float(i) for i in d]
+            elif frame_type == 0x33: # L6 temperature
+                self.x33 = list(response_data)
+            elif frame_type == 0x35: # L6 fault codes
+                self.x35 = list(response_data)
+            elif frame_type == 0x36: # L6 电流
+                self.x36 = list(response_data)
+            elif frame_type == 0xb0:
+                self.xb0 = list(response_data)
+            elif frame_type == 0xb1:
+                d = list(response_data)
+                if len(d) == 2:
+                    self.xb1 = d
+                elif len(d) == 7:
+                    index = self.matrix_map.get(d[0])
+                    if index is not None:
+                        self.thumb_matrix[index] = d[1:]  # Remove the first flag bit
+            elif frame_type == 0xb2:
+                d = list(response_data)
+                if len(d) == 2:
+                    self.xb2 = d
+                elif len(d) == 7:
+                    index = self.matrix_map.get(d[0])
+                    if index is not None:
+                        self.index_matrix[index] = d[1:]  # Remove the first flag bit
+            elif frame_type == 0xb3:
+                d = list(response_data)
+                if len(d) == 2:
+                    self.xb3 = d
+                elif len(d) == 7:
+                    index = self.matrix_map.get(d[0])
+                    if index is not None:
+                        self.middle_matrix[index] = d[1:]  # Remove the first flag bit
+            elif frame_type == 0xb4:
+                d = list(response_data)
+                if len(d) == 2:
+                    self.xb4 = d
+                elif len(d) == 7:
+                    index = self.matrix_map.get(d[0])
+                    if index is not None:
+                        self.ring_matrix[index] = d[1:]  # Remove the first flag bit
+            elif frame_type == 0xb5:
+                d = list(response_data)
+                if len(d) == 2:
+                    self.xb5 = d
+                elif len(d) == 7:
+                    index = self.matrix_map.get(d[0])
+                    if index is not None:
+                        self.little_matrix[index] = d[1:]  # Remove the first flag bit
+            elif 'touch_palm' in vars(self):
+                if frame_type == 0xB6:
+                    self.fill_from_can(can_data=list(response_data), rows=self.row, cols=self.col)
+            elif frame_type == 0x64: # L6 version number
+                self.version = list(response_data)
+            elif frame_type == 0xC2: # L6 version number
+                self.version = list(response_data)
+            elif frame_type == 0xC0:
+                d = list(response_data)
+                index = self.serial_number_map.get(d[0])
+                if index is not None:
+                    self.serial_number=self.serial_number + d[1:]
+                else:
+                    self.serial_number=self.serial_number + [-1] * 6
+                
+    def fill_from_can(self, can_data: bytes, rows: int, cols: int) -> bool:
+        """
+        从CAN数据填充到矩阵，支持换行（一行填不满自动换到下一行）
+        
+        参数:
+            can_data: [行] [列] [数据...] (b6已剔除)
+            rows: 矩阵总行数
+            cols: 矩阵总列数
+        """
+        if len(can_data) < 2:
+            return False
+        
+        row, col = can_data[0], can_data[1]
+        data = can_data[2:]
+        
+        if not data:
+            return False
+        
+        # 验证起始行列
+        if row >= rows or col >= cols:
+            print(f"起始位置超出范围: row={row}, col={col}")
+            return False
+        
+        # 从起始位置开始填充，支持换行
+        current_row = row
+        current_col = col
+        
+        for value in data:
+            # 检查当前列是否超出边界
+            if current_col >= cols:
+                # 换到下一行
+                current_row += 1
+                current_col = 0
+                
+                # 检查行是否超出边界
+                if current_row >= rows:
+                    print(f"数据超出矩阵范围: 已填{len(data)}字节，在行{current_row}列{current_col}溢出")
+                    return False
+            
+            # 填充数据
+            self.touch_palm[current_row][current_col] = value
+            current_col += 1
+        
+        return True
+
+    def get_version(self):
+        self.send_frame(0x64, [],sleep=0.1)
+        time.sleep(0.1)
+        if self.version is None:
+            self.send_frame(0xC2, [],sleep=0.1)
+            time.sleep(0.1)
+        return self.version
+
+    def get_current_status(self):
+        self.send_frame(0x01, [],sleep=0.005)
+        return self.x01
+        
+    def get_current_pub_status(self):
+        return self.x01
+
+    def get_speed(self):
+        #self.send_frame(0x05, [],sleep=0.003)
+        #print("L6暂不支持读取实时速度")
+        return [0] * 6
+
+    def get_current(self):
+        '''Not supported yet.'''
+        self.send_frame(0x36, [],sleep=0.005)
+        return self.x36
+
+
+
+    def get_torque(self):
+        '''Not supported yet.'''
+        #self.send_frame(0x2, [],sleep=0.003)
+        #return self.x02
+        return self.get_current()
+
+    def get_touch_type(self):
+        '''Get touch type'''
+        self.send_frame(0xb1,[])
+        t = []
+        for _ in range(3):
+            t = self.xb1
+            time.sleep(0.01)
+        if len(t) == 2:
+            return 2
+        else:
+            self.send_frame(0x20,[],sleep=0.03)
+            time.sleep(0.01)
+            if self.normal_force[0] == -1:
+                return -1
+            else:
+                return 1
+
+
+    def get_touch(self):
+        '''Get touch data'''
+        self.send_frame(0xb1,[],sleep=0.03)
+        self.send_frame(0xb2,[],sleep=0.03)
+        self.send_frame(0xb3,[],sleep=0.03)
+        self.send_frame(0xb4,[],sleep=0.03)
+        self.send_frame(0xb5,[],sleep=0.03)
+        return [self.xb1[1],self.xb2[1],self.xb3[1],self.xb4[1],self.xb5[1],0] # The last digit is palm, currently not available
+    
+    def get_matrix_touch(self):
+        self.send_frame(0xb1,[self.touch_code],sleep=0.01)
+        self.send_frame(0xb2,[self.touch_code],sleep=0.01)
+        self.send_frame(0xb3,[self.touch_code],sleep=0.01)
+        self.send_frame(0xb4,[self.touch_code],sleep=0.01)
+        self.send_frame(0xb5,[self.touch_code],sleep=0.01)
+
+        return self.thumb_matrix , self.index_matrix , self.middle_matrix , self.ring_matrix , self.little_matrix
+    
+    def get_matrix_touch_v2(self):
+        self.send_frame(0xb1,[self.touch_code],sleep=0.009)
+        self.send_frame(0xb2,[self.touch_code],sleep=0.009)
+        self.send_frame(0xb3,[self.touch_code],sleep=0.009)
+        self.send_frame(0xb4,[self.touch_code],sleep=0.009)
+        self.send_frame(0xb5,[self.touch_code],sleep=0.009)
+        return self.thumb_matrix , self.index_matrix , self.middle_matrix , self.ring_matrix , self.little_matrix
+    
+    def get_thumb_matrix_touch(self,sleep_time=0.005):
+        self.send_frame(0xb1,[self.touch_code],sleep=sleep_time)
+        return self.thumb_matrix
+    
+    def get_index_matrix_touch(self,sleep_time=0.005):
+        self.send_frame(0xb2,[self.touch_code],sleep=sleep_time)
+        return self.index_matrix
+    
+    def get_middle_matrix_touch(self,sleep_time=0.005):
+        self.send_frame(0xb3,[self.touch_code],sleep=sleep_time)
+        return self.middle_matrix
+    
+    def get_ring_matrix_touch(self,sleep_time=0.005):
+        self.send_frame(0xb4,[self.touch_code],sleep=sleep_time)
+        return self.ring_matrix
+    
+    def get_little_matrix_touch(self,sleep_time=0.005):
+        self.send_frame(0xb5,[self.touch_code],sleep=sleep_time)
+        return self.little_matrix
+
+    def get_palm_matrix_touch(self,sleep_time=0.002):
+        if 'touch_palm_code' in vars(self):
+            self.send_frame(0xb6,self.touch_palm_code,sleep=sleep_time)
+
+            return self.touch_palm
+        else:
+            return [-1]
+
+    def get_force(self):
+        '''Get pressure.'''
+        return [self.normal_force, self.tangential_force, self.tangential_force_dir, self.approach_inc]
+
+    def get_temperature(self):
+        '''Get temperature.'''
+        self.get_motor_temperature()
+        return self.x33
+
+    def get_fault(self):
+        '''Get faults.'''
+        self.get_motor_fault_code()
+        return self.x35
+    
+    def get_finger_order(self):
+        return ["thumb_cmc_pitch", "thumb_cmc_yaw", "index_mcp_pitch", "middle_mcp_pitch", "ring_mcp_pitch", "pinky_mcp_pitch"]
+
+    def show_fun_table(self):
+        pass
+    
+    def clear_faults(self, finger_mask=None):
+        """O6 暂不支持清除故障码"""
+        if finger_mask is None:
+            finger_mask = [1, 1, 1, 1, 1]
+        pass
+
+    def get_serial_number(self):
+        try:
+            self.send_frame(0xC0,[],sleep=0.005)
+            # 1. 使用 bytes() 函数将整数列表转换为字节对象
+            #    bytes() 接收一个由 0-255 之间的整数组成的列表。
+            byte_data = bytes(self.serial_number)
+            # 2. 使用 .decode() 方法将字节对象解码为 ASCII 字符串
+            result_string = byte_data.decode('ascii')
+            if result_string == "":
+                return "-1"
+            else:
+                # print(f"原始 ASCII 码列表: {self.serial_number}")
+                # print(f"解码后的字符串: {result_string}")
+                return result_string
+        except Exception:
+            return "-1"
+
+    def close_can_interface(self):
+        """Stop the CAN communication."""
+        self.running = False
+        if self.receive_thread.is_alive():
+            self.receive_thread.join()
+        if self.bus:
+            self.bus.shutdown()

@@ -1,0 +1,222 @@
+* {
+    box-sizing: border-box; /* 讓 padding 和 border 包含在 width 裡面，不會額外撐大 */
+}
+
+body{
+  width: 1750px;
+  min-width: 1750px;
+  margin: 0;
+  padding: 0;
+  background-image: url(../picture/Gray_Background.jpg);
+  background-size: cover;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+#parameter{
+	width: 80px;
+	margin: 10px;
+	opacity: 0.7;
+	padding: 10px;
+	right: 0px;
+	position: fixed;
+	bottom: 100px;
+	background: lightgreen;
+
+}
+
+/*NAV BAR*/
+ul {
+    list-style-type: none;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: visible; /* 改為 visible，讓 dropdown 可以超出 navbar 高度顯示 */
+    display: flow-root;
+    /* background-color: #ff0000; */
+    height: 82px;
+    border-bottom: #00fa9a solid 3px;
+}
+
+/* ── Dropdown ── */
+li.dropdown { position: relative; }
+
+li.dropdown:hover .dropdown-menu { display: block; }
+
+.dropdown-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 82px;           /* 緊貼 navbar 底部 */
+    /* 重設繼承自 ul 的 navbar 樣式 */
+    height: auto;
+    width: auto;
+    border-bottom: none;
+    /* Dropdown 本身樣式 */
+    min-width: 160px;
+    background: rgba(5, 10, 15, 0.97);
+    border: 1px solid #00fa9a;
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    z-index: 1000;
+    padding: 4px 0;
+    box-shadow: 0 8px 24px rgba(0, 250, 154, 0.12);
+}
+
+.dropdown-menu li {
+    float: none;
+    font-size: 16px;
+    height: auto;
+    border-bottom: 1px solid #0a1a0a;
+}
+.dropdown-menu li:last-child { border-bottom: none; }
+
+.dropdown-menu li a {
+    display: block;
+    color: #bbb;
+    padding: 10px 20px;
+    text-align: left;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.dropdown-menu li a:hover { background: #000080; color: #00fa9a; }
+.dropdown-menu li a.dm-active { color: #03e9f4; text-decoration: underline; }
+
+li {
+    float: right;
+    font-size: 20px;
+}
+
+li a {
+    display: block;
+    color: white;
+    text-align: center;
+    padding: 2px;
+    text-decoration: none;
+}
+
+li a:hover:not(.active) {
+    background-color: #000080;
+}
+
+li a.logo:hover:not(.active) 
+{
+	background-color: #00fa9a;
+}
+
+.navbarright {
+    padding: 34px 20px 34px 20px;
+    color: white;
+    font-size: 23px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+.active {
+    background-color: #4CAF50;
+}
+
+.logo {
+    float: left;
+    border-right:solid #333;
+    background-color: white;
+}
+
+#logoimg {
+    height: 80px;
+    padding: 2px 0 4px 0;
+    margin: 0;
+}
+
+.desc {
+    border-right: 1px solid white;
+    height: 450px;
+    margin-bottom: 10px;
+}
+
+.indexImages
+{
+    height: 534px;
+}
+
+section{
+    margin: 3px;
+}
+
+
+/*Slide Show*/
+
+* {box-sizing: border-box;}
+.mySlides {display: none;}
+img{
+    vertical-align: middle;
+}
+
+/* Slideshow container */
+.slideshow-container {
+  max-width: 800px;
+  position: relative;
+  margin: auto;
+}
+
+/* The dots/bullets/indicators */
+.dot {
+  height: 15px;
+  width: 15px;
+  margin: 0 2px;
+  background-color: #bbb;
+  border-radius: 50%;
+  display: inline-block;
+  transition: background-color 0.6s ease;
+}
+
+.active {
+  background-color: #717171;
+}
+
+/* Fading animation */
+.fade {
+  -webkit-animation-name: fade;
+  -webkit-animation-duration: 1.5s;
+  animation-name: fade;
+  animation-duration: 1.5s;
+}
+
+@-webkit-keyframes fade {
+  from {opacity: .4} 
+  to {opacity: 1}
+}
+
+@keyframes fade {
+  from {opacity: .4} 
+  to {opacity: 1}
+}
+
+/* On smaller screens, decrease text size */
+@media only screen and (max-width: 300px) {
+  .text {font-size: 11px}
+}
+
+#motor_area{
+  float: left;
+  margin-left: 50px;
+}
+#button_choose{
+  margin: 2px;
+}
+/* 當按鈕被加上這個 class 時，會變成亮綠色 */
+.button_active {
+    background-color: #ffb8f9 !important; /* 強制覆蓋原本顏色 */
+    color: black !important;
+    border: 2px solid #fff;
+    box-shadow: 0 0 10px #ff78f4; /* 發光特效 */
+    font-weight: bold;
+}
+
+#motor_display_area {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr); 
+    gap: 5px; /* 間距縮小一點，節省空間 */
+    
+    width: 420px; /* 故意設比 440px 小，留點緩衝 */
+    
+    margin-top: 20px;
+}

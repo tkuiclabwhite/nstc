@@ -1,0 +1,7 @@
+# 讀取指定 Set 的疊合組合設定
+# setid: 1~8，對應 Set1~Set8
+int16 setid
+---
+string color
+string distance
+bool enable

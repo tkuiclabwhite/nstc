@@ -49,6 +49,43 @@ source /opt/ros/humble/setup.bash
 rviz2 -d ~/nstc_ws/nstc/src/bottle_localization/rviz/bottle_localization.rviz
 ```
 
+## 手臂（armpackage）
+
+說明在 `~/arm_ws/README.md`（還沒搬進 nstc，套件名稱看成 `armpackage`）。`~/arm_ws/install/setup.bash` 不要跟 nstc 一起 source，兩邊都有 `seven_axis_arm_urdf`、`seven_axis_arm_moveit_config`。
+
+```bash
+# 模擬：MoveIt + rosbridge + 網頁橋接。從 SSH 開的要加 rviz:=false
+ros2 launch armpackage sim.launch.py
+
+# 接實機：nstc.launch.py 已經包含手臂（等於下一行），不用另外開；arm:=false 不開手臂
+ros2 launch ~/nstc/launch/nstc.launch.py
+# 主系統用 ros2_adult 的 camera.launch.py 時：先開它（driver_node、motionpackage、rosbridge 9090），再開這個
+ros2 launch armpackage sim.launch.py rviz:=false rosbridge:=false real:=true
+
+# 開關實機跟隨（也可以在網頁「IK 目標」面板按「實機跟隨」）
+ros2 topic pub --once /arm_real_enable std_msgs/msg/Bool "{data: true}"
+```
+
+網頁：在桌機的瀏覽器用 sftp 掛載打開 `~/nstc/web/RobotViewer.html`。實機每次停穩會記一行到 `~/.ros/arm_settle_log.csv`。
+
+```bash
+# 開機自我檢查（只讀）：要在 camera.launch.py 開之前跑，driver_node 開著會佔住 U2D2
+ros2 run armpackage self_check.py
+ros2 run armpackage self_check.py config        # 只檢查設定檔，不碰馬達，隨時可以跑
+
+# 順應控制（實驗中）：current_log 要 driver_node 開著；compliance 要 driver_node 關著、馬達扭力關著
+ros2 run armpackage current_log.py
+ros2 run armpackage compliance.py status
+ros2 run armpackage compliance.py apply
+ros2 run armpackage compliance.py restore
+
+# 馬達方向校正：driver_node 開著、實機跟隨關著
+ros2 run armpackage jog_motor.py check right    # 左手：check left
+
+# 改了 URDF、STL 或網頁樣板（~/nstc/web/RobotViewer.template.html）之後，重新產生網頁
+ros2 run armpackage build_viewer.py
+```
+
 ## 其他節點
 
 ```bash

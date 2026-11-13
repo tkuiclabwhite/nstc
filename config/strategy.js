@@ -1,0 +1,1 @@
+window.currentStrategy = "nstc/Parameter";

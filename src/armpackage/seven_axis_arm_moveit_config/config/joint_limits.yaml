@@ -1,0 +1,105 @@
+# joint_limits.yaml allows the dynamics properties specified in the URDF to be overwritten or augmented as needed
+
+# For beginners, we downscale velocity and acceleration limits.
+# You can always specify higher scaling factors (<= 1.0) in your motion requests.  # Increase the values below to 1.0 to always move at maximum speed.
+default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+
+# Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
+# Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
+#
+# 線材保護（實機限制，MoveIt 原本不知道），兩隻手一樣（左手是鏡像，同樣的角度 = 鏡像的姿勢）：
+#   2026-10-21 起站姿 = URDF 零位（實機全 2048），第 3 軸 *arm1Joint、第 5 軸 *forarm1Joint 以站姿為中心各 ±180°
+#   （= 馬達單圈刻度 0~4095），不讓 MoveIt 挑超過 180° 的解，會扭到 RS485 線。
+#   （2026-10-19 ~ 10-21 站姿是第 3 軸 +π、第 5 軸 -π，所以那時是 0~3.14、-3.14~0）
+#   *armJoint 的 URDF 下限 -3.3 超出馬達單圈刻度（-π），也夾回來。
+#   線材量過、確定能扭更多的話，再把這幾個數字放寬。
+joint_limits:
+  Larm1Joint:
+    has_position_limits: true
+    min_position: -3.14
+    max_position: 3.14
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  LarmJoint:
+    has_position_limits: true
+    min_position: -3.14
+    max_position: 0.5
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  Lforarm1Joint:
+    has_position_limits: true
+    min_position: -3.14
+    max_position: 3.14
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  LforarmJoint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  LshoulderJoint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  Lwrist1Joint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  LwristJoint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  Rarm1Joint:
+    has_position_limits: true
+    min_position: -3.14
+    max_position: 3.14
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  RarmJoint:
+    has_position_limits: true
+    min_position: -3.14
+    max_position: 0.5
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  Rforarm1Joint:
+    has_position_limits: true
+    min_position: -3.14
+    max_position: 3.14
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  RforarmJoint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  RshoulderJoint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  Rwrist1Joint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  RwristJoint:
+    has_velocity_limits: true
+    max_velocity: 2.3824000000000001
+    has_acceleration_limits: true
+    max_acceleration: 1.0

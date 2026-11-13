@@ -1,0 +1,4 @@
+# 通用重載服務（depth / overlap 共用，以 service 名稱區分）
+bool build
+---
+bool already

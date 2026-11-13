@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8" />
+	<link rel="SHORTCUT ICON" href="./picture/icon.png">
+	<title>HandControl</title>
+
+	<!-- CSS References -->
+	<link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/style.css">
+
+	<!-- JavaScript References -->
+	<script src="./js/config.js"></script>
+	<script src="./js/nav.js"></script>
+	<script src="./js/hand_presets.js"></script>
+	<script type="text/javascript" src="./js/roslib/eventemitter2.min.js"></script>
+	<script type="text/javascript" src="./js/roslib/roslib.min.js"></script>
+
+	<style type="text/css">
+		body {
+			width: 1520px;
+			overflow: visible;
+			background-image: url(./picture/Gray_Background.jpg);
+			background-size: cover;
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+		}
+
+		#container {
+			background-color: #333;
+			border: 2px black solid;
+			width: 1440px;
+			margin: 10px auto 30px auto;
+			padding-bottom: 10px;
+			overflow: visible;
+			color: white;
+		}
+
+		/* 與 MotionControlInterface 相同的策略顯示框 */
+		.strategy-box {
+			display: inline-block;
+			background-color: #222;
+			border: 1px solid #444;
+			border-radius: 5px;
+			padding: 8px 20px;
+			box-shadow: inset 0 0 10px #000;
+			text-align: center;
+			min-width: 120px;
+		}
+		.strategy-label {
+			color: #888;
+			font-size: 12px;
+			text-transform: uppercase;
+			display: block;
+			margin-bottom: 3px;
+		}
+		#current-strategy-name {
+			color: #00D600;
+			font-family: 'Consolas', 'Monaco', monospace;
+			font-size: 22px;
+			font-weight: bold;
+		}
+
+		/* 一隻手一個 section，左右並排 */
+		section.hand {
+			float: left;
+			width: 700px;
+			margin: 10px 8px 0 8px;
+			border: 1px #FFF solid;
+			padding-bottom: 8px;
+		}
+		section.wide {
+			float: left;
+			width: 1416px;
+			margin: 10px 8px 0 8px;
+			border: 1px #FFF solid;
+			padding-bottom: 8px;
+		}
+		section.third {
+			float: left;
+			width: 464px;
+			margin: 10px 4px 0 4px;
+			border: 1px #FFF solid;
+			padding-bottom: 8px;
+			min-height: 250px;
+		}
+
+		table.control { border-collapse: collapse; width: auto; margin: 0 auto; }
+		table.control td, table.control th { padding: 3px 5px; vertical-align: middle; }
+		table.control th { background-color: #000080; border: 1px white solid; }
+		td.label { width: 96px; white-space: nowrap; text-align: left; }
+		.Range { width: 250px; height: 10px; margin: 2px; vertical-align: middle; }
+		.Button { height: 26px; margin-left: 6px; }
+		.Txt { width: 50px; }
+		.TxtS { width: 42px; }
+		.TxtRO { width: 50px; background-color: #555; color: #fff; }
+
+		/* 狀態列：連線 / 模式 / 線上 */
+		#connected { color: #00D600; display: none; font-size: 20px; margin: 0; }
+		.state-on { color: #00D600; font-weight: bold; }
+		.state-off { color: #f44336; font-weight: bold; }
+		#label {
+			width: 1400px;
+			height: auto;
+			min-height: 18px;
+			margin: 6px 0 0 20px;
+			color: #ffd24d;
+			text-align: left;
+		}
+		#stopButton {
+			width: 200px;
+			height: 46px;
+			font-size: 18px;
+			font-weight: bold;
+			background-color: #f44336;
+			color: white;
+			border: none;
+			border-radius: 3px;
+			cursor: pointer;
+		}
+
+		/* 夾持狀態與壓力顯示 */
+		#hc-grip-status {
+			margin: 4px auto;
+			width: 430px;
+			text-align: left;
+			font-size: 13px;
+			color: #ccc;
+			border: 1px #888 solid;
+			padding: 4px 6px;
+		}
+		.hit { color: #f44336; font-weight: bold; }
+		.frozen { color: #ffd24d; font-weight: bold; }
+	</style>
+</head>
+
+<body>
+	<ul id="mainnav"></ul>
+	<br>
+
+	<div style="padding-left: 20px; height: 70px;">
+		<div style="height: 26px;">
+			<p id="connected">Connected</p>
+		</div>
+		<div class="strategy-box">
+			<span class="strategy-label">Strategy</span>
+			<span id="current-strategy-name">---</span>
+		</div>
+	</div>
+
+	<div id="head" align="center">
+		<h1 align="center" id="header" style="color: white; margin: 4px;">Hand Control Interface</h1>
+		<table>
+			<tr>
+				<td>
+					<select style="height:25px; margin-right: 5px;" id="addressSelect">
+						<option value="localhost">localhost</option>
+					</select>
+				</td>
+				<td>
+					<button type="button" style="width:110px ;height:25px;" onclick="enterAddress()">Enter Address</button>
+				</td>
+				<td style="padding-left:20px;">
+					<input type="button" id="stopButton" value="STOP" onclick="sendStop()"
+					       title="停掉夾持與播放，回手動。手保持在目前位置，不需要解除">
+				</td>
+			</tr>
+		</table>
+	</div>
+
+	<div id="container">
+
+		<!-- ================= 左手 / 右手 ================= -->
+		<section class="hand" align="center">
+			<b><h align="center" style="font-size: 23px">LEFT&nbsp;HAND</h></b>
+			&nbsp;<span id="hc-online-left" class="state-off">OFFLINE</span>
+			<br>
+			<table class="control" id="hc-joints-left"></table>
+			<br>
+			<table class="control">
+				<tr>
+					<td class="label">Speed:</td>
+					<td id="hc-spd-left"></td>
+					<td><input type="text" id="hc-spdall-left" class="TxtS" value="200"
+					           title="填一個值，按 All 把六軸設成同值"></td>
+					<td><input type="button" class="Button" value="All" onclick="setAll('left','spd')">
+					    <input type="button" class="Button" value="Set" onclick="applySpeed('left')"></td>
+				</tr>
+				<tr>
+					<td class="label">Torque:</td>
+					<td id="hc-trq-left"></td>
+					<td><input type="text" id="hc-trqall-left" class="TxtS" value="250"></td>
+					<td><input type="button" class="Button" value="All" onclick="setAll('left','trq')">
+					    <input type="button" class="Button" value="Set" onclick="applyTorque('left')"></td>
+				</tr>
+			</table>
+			<br>
+			<table class="control" id="hc-info-left"></table>
+		</section>
+
+		<section class="hand" align="center">
+			<b><h align="center" style="font-size: 23px">RIGHT&nbsp;HAND</h></b>
+			&nbsp;<span id="hc-online-right" class="state-off">OFFLINE</span>
+			<br>
+			<table class="control" id="hc-joints-right"></table>
+			<br>
+			<table class="control">
+				<tr>
+					<td class="label">Speed:</td>
+					<td id="hc-spd-right"></td>
+					<td><input type="text" id="hc-spdall-right" class="TxtS" value="200"></td>
+					<td><input type="button" class="Button" value="All" onclick="setAll('right','spd')">
+					    <input type="button" class="Button" value="Set" onclick="applySpeed('right')"></td>
+				</tr>
+				<tr>
+					<td class="label">Torque:</td>
+					<td id="hc-trq-right"></td>
+					<td><input type="text" id="hc-trqall-right" class="TxtS" value="250"></td>
+					<td><input type="button" class="Button" value="All" onclick="setAll('right','trq')">
+					    <input type="button" class="Button" value="Set" onclick="applyTorque('right')"></td>
+				</tr>
+			</table>
+			<br>
+			<table class="control" id="hc-info-right"></table>
+		</section>
+
+		<div style="clear: both;"></div>
+
+		<!-- ================= 預設動作 / 雙手同步 / 夾持 ================= -->
+		<section class="third" align="center">
+			<b><h align="center" style="font-size: 23px">Preset&nbsp;Action</h></b>
+			<br>
+			<table class="control">
+				<tr>
+					<td class="label">作用範圍:</td>
+					<td align="left">
+						<input type="radio" name="hc-scope" value="both" checked> 雙手
+						<input type="radio" name="hc-scope" value="left"> 左手
+						<input type="radio" name="hc-scope" value="right"> 右手
+					</td>
+				</tr>
+
+			</table>
+			<br>
+			<div id="hc-presets" style="width: 440px;"></div>
+		</section>
+
+		<section class="third" align="center">
+			<b><h align="center" style="font-size: 23px">Sync&nbsp;/&nbsp;Stop</h></b>
+			<br>
+			<table class="control">
+				<tr>
+					<td class="label">雙手同步:</td>
+					<td align="left"><input type="checkbox" id="hc-sync" onchange="toggleSync()"> 開啟</td>
+				</tr>
+			</table>
+
+		</section>
+
+		<section class="third" align="center">
+			<b><h align="center" style="font-size: 23px">Grip&nbsp;To&nbsp;Pressure</h></b>
+			<div id="hc-grip-status">待機</div>
+			<table class="control">
+				<tr>
+					<td class="label">停止模式:</td>
+					<td align="left">
+						<select id="hc-grip-mode" style="height:25px; width:290px;">
+							<option value="each">each － 每指各自到門檻各自停</option>
+							<option value="any">any － 同一手任一指到就該手全停</option>
+							<option value="anyhand">anyhand － 任一手到就兩手全停</option>
+							<option value="hold">hold － 到門檻後維持壓力</option>
+						</select>
+					</td>
+				</tr>
+				<tr>
+					<td class="label">作用手:</td>
+					<td align="left">
+						<select id="hc-grip-hand" style="height:25px;">
+							<option value="both">雙手</option>
+							<option value="left">左手</option>
+							<option value="right">右手</option>
+						</select>
+					</td>
+				</tr>
+				<tr>
+					<td class="label">壓力門檻:</td>
+					<td align="left"><span id="hc-grip-th"></span>
+						<input type="text" id="hc-grip-thall" class="TxtS" value="250"
+						       title="0~10200（40 格總和）。空載實測是 0，所以有數字就是真的碰到了。
+輕觸 50~150／輕握 200~400／紮實 600~1000">
+						<input type="button" class="Button" value="All" onclick="setAllThreshold()">
+					</td>
+				</tr>
+				<tr>
+					<td class="label">閉合目標:</td>
+					<td align="left"><span id="hc-grip-tg"></span>
+						<input type="text" id="hc-grip-tgall" class="TxtS" value="0">
+						<input type="button" class="Button" value="All"
+						       onclick="setAllTarget()">
+					</td>
+				</tr>
+				<tr>
+					<td class="label">步長 / 逾時:</td>
+					<td align="left">
+						<input type="text" id="hc-grip-step" class="TxtS" value="4"
+						       title="每個控制週期（1/30 秒）往內收幾刻度，3~60。
+4 大約是 120 刻度/秒，從全開收到全閉約 2 秒。越小越輕柔但越慢">
+						<input type="text" id="hc-grip-timeout" class="TxtS" value="10"
+						       title="秒">
+						<span style="font-size:12px; color:#bbb;">count / 秒</span>
+					</td>
+				</tr>
+				<tr>
+					<td class="label">釋放邊界:</td>
+					<td align="left">
+						<input type="text" id="hc-grip-release" class="TxtS" value="80"
+						       title="只有 hold 模式用得到：壓力掉到「門檻 - 此值」以下才會再夾緊。
+太小會在門檻附近一直抖，太大會鬆很多才補。抓門檻的 1/3 左右">
+						<input type="button" class="Button" value="開始夾持" onclick="startGrip()">
+						<input type="button" class="Button" value="停止" onclick="stopGrip()">
+					</td>
+				</tr>
+				<tr>
+					<td class="label">目前壓力:</td>
+					<td align="left"><span id="hc-mass" style="font-size:12px;"></span></td>
+				</tr>
+			</table>
+		</section>
+
+		<div style="clear: both;"></div>
+		<div id="label"></div>
+	</div>
+
+	<script type="text/javascript">
+
+        // ===================================================================
+        // 連線（寫法與 arm_control.html 一致）
+        // ===================================================================
+        var myAddress = window.ROBOT_CONFIG.ip;
+        var ros = new ROSLIB.Ros({ url: 'ws://' + window.ROBOT_CONFIG.ip + ':9090' });
+        var cmdTopic = null, statusSub = null, configSub = null;
+
+        ros.on('connection', function () {
+            setConn(true);
+            document.body.style.backgroundImage = 'url(./picture/Background.jpg)';
+            createTopics();
+        });
+        ros.on('error', function () { setConn(false); });
+        ros.on('close', function () { setConn(false); });
+
+        function setConn(ok) {
+            document.getElementById('connected').style.display = ok ? 'inline' : 'none';
+            if (!ok) {
+                document.body.style.backgroundImage = 'url(./picture/Gray_Background.jpg)';
+                ['left', 'right'].forEach(function (s) { setOnline(s, false); });
+            }
+        }
+
+        function enterAddress() {
+            myAddress = document.getElementById('addressSelect').value;
+            var state = ros.socket ? ros.socket.readyState : WebSocket.CLOSED;
+            if (state === WebSocket.OPEN || state === WebSocket.CONNECTING
+                || state === WebSocket.CLOSING) {
+                ros.close();
+                ros.once('close', function () { ros.connect('ws://' + myAddress + ':9090'); });
+            } else {
+                ros.connect('ws://' + myAddress + ':9090');
+            }
+        }
+
+        function createTopics() {
+            cmdTopic = new ROSLIB.Topic({
+                ros: ros, name: '/hand/cmd', messageType: 'std_msgs/String'
+            });
+            statusSub = new ROSLIB.Topic({
+                ros: ros, name: '/hand/status', messageType: 'std_msgs/String'
+            });
+            statusSub.subscribe(function (m) {
+                try { onStatus(JSON.parse(m.data)); } catch (e) { }
+            });
+            configSub = new ROSLIB.Topic({
+                ros: ros, name: '/hand/config', messageType: 'std_msgs/String'
+            });
+            configSub.subscribe(function (m) {
+                try { onConfig(JSON.parse(m.data)); } catch (e) { }
+            });
+        }
+
+        function sendCmd(obj) {
+            if (!cmdTopic) {
+                msg('還沒連上 rosbridge，指令沒有送出', 'err');
+                return;
+            }
+            cmdTopic.publish(new ROSLIB.Message({ data: JSON.stringify(obj) }));
+        }
+
+        // 訊息寫在 #label，與其他頁面一致
+        function msg(text, kind) {
+            var m = el('label');
+            m.textContent = text;
+            m.className = kind || 'info';
+        }
+
+        // ===================================================================
+        // 狀態
+        // ===================================================================
+        var SIDES = ['left', 'right'];
+        var NJ = 6;
+        // 這些只是連上線前的預設值，連上之後一律以 /hand/config 為準
+        var JOINT_ZH = ['大拇指彎曲', '大拇指橫擺', '食指彎曲', '中指彎曲',
+                        '無名指彎曲', '小拇指彎曲'];
+        var FINGERS = ['thumb', 'index', 'middle', 'ring', 'little'];
+        var ARC_MAX = [0.58, 1.36, 1.6, 1.6, 1.6, 1.6];
+
+        var cfg = null;
+        // 預設動作的備援清單：/hand/config 一到就會被節點的版本覆蓋掉。
+        // 真正的來源是 src/handpackage/handpackage/hand_config.py 的 PRESET_ACTIONS，
+        // 這份只是為了「還沒連上線時那塊不要空白」，改數值請改節點那邊。
+        // inited：這隻手的 slider 是否已用實際位置初始化過。
+        // 這件事很重要 —— slider 如果停在 0 而使用者只動一軸，送出的是完整 6 軸，
+        // 其餘 5 軸會瞬間被拉到 0。所以一定要先用回讀值填進去才允許操作。
+        var inited = { left: false, right: false };
+        var pending = { left: false, right: false };
+        var online = { left: false, right: false };
+        // 最後一次「人」動這隻手的 slider 的時間。沒在操作時，slider 會跟著節點
+        // 回報的 target 走 —— 這樣按預設動作、開同步拖另一手、之後的動作播放，
+        // 畫面都會跟著動，不會只有橘色實際值在跑而青色命令值卡住。
+        var lastInput = { left: 0, right: 0 };
+        var FOLLOW_DELAY_MS = 400;
+        // 速度／扭矩欄位最後被人編輯的時間。原本只擋「目前有焦點」那一格，
+        // 所以一按 All 或點到別處，20 Hz 的 status 就把剛打的值蓋回去 ——
+        // 看起來就是「set 過一次之後改不動、數字會跳回去」。
+        var lastEditSpd = { left: 0, right: 0 };
+        var lastEditTrq = { left: 0, right: 0 };
+        var EDIT_HOLD_MS = 8000;
+
+        function el(id) { return document.getElementById(id); }
+        // 各欄位的實際上下限（與韌體/SDK 一致，不要自己另外猜）：
+        //   位置 0~255           finger_move() 檢查 0<=v<=255
+        //   速度 10~255          set_joint_speed() 任一值 <10 或 >255 就整包丟掉
+        //                        0 是 handpackage 自己的「沿用舊值」語意
+        //   扭矩上限 0~255       set_torque() 檢查 0<=v<=255
+        var POS_MIN = 0, POS_MAX = 255;
+        var SPD_MIN = 10, SPD_MAX = 255;
+        var TRQ_MIN = 0, TRQ_MAX = 255;
+
+        // 速度專用：0 原樣保留（沿用舊值），其餘夾到 10~255
+        function clampSpeed(v) {
+            var n = parseInt(v, 10);
+            if (isNaN(n)) return 0;
+            if (n === 0) return 0;
+            return n < SPD_MIN ? SPD_MIN : (n > SPD_MAX ? SPD_MAX : n);
+        }
+
+        function clampNum(v, lo, hi, dflt) {
+            v = parseInt(v, 10);
+            if (isNaN(v)) return dflt;
+            return v < lo ? lo : (v > hi ? hi : v);
+        }
+
+        // ── 建立 6 軸的列 ──
+        function buildJoints(side) {
+            var host = el('hc-joints-' + side);
+            var h = '<tr><th>Joint</th><th>Position</th><th>Value</th>'
+                  + '<th>Actual</th><th>Angle</th></tr>';
+            for (var i = 0; i < NJ; i++) {
+                h += '<tr><td class="label" id="hc-jn-' + side + '-' + i + '">'
+                   + JOINT_ZH[i] + '</td>'
+                   + '<td><input type="range" class="Range" min="0" max="255" step="1"'
+                   + ' value="0" id="hc-sl-' + side + '-' + i + '" disabled></td>'
+                   + '<td><input type="text" class="Txt" id="hc-nm-' + side + '-' + i
+                   + '" value="0" disabled></td>'
+                   + '<td><input type="text" class="TxtRO" id="hc-ac-' + side + '-' + i
+                   + '" value="--" readonly></td>'
+                   + '<td><input type="text" class="TxtRO" id="hc-ar-' + side + '-' + i
+                   + '" value="--" readonly></td></tr>';
+            }
+            host.innerHTML = h;
+            for (var j = 0; j < NJ; j++) {
+                (function (idx) {
+                    el('hc-sl-' + side + '-' + idx).addEventListener('input', function () {
+                        el('hc-nm-' + side + '-' + idx).value = this.value;
+                        pending[side] = true;
+                        lastInput[side] = Date.now();
+                    });
+                    el('hc-nm-' + side + '-' + idx).addEventListener('change', function () {
+                        var v = clampNum(this.value, 0, 255, 0);
+                        this.value = v;
+                        el('hc-sl-' + side + '-' + idx).value = v;
+                        pending[side] = true;
+                        lastInput[side] = Date.now();
+                    });
+                })(j);
+            }
+        }
+
+        // ── 速度 / 扭矩 / 門檻的小輸入格 ──
+        // onEdit 是選用的：速度／扭矩那兩組要記下「人剛動過」，
+        // 不然 20 Hz 的 status 會把剛打的值蓋回去
+        function buildMini(hostId, idPrefix, n, dflt, onEdit) {
+            var host = el(hostId);
+            host.innerHTML = '';
+            for (var i = 0; i < n; i++) {
+                var inp = document.createElement('input');
+                inp.type = 'text';
+                inp.className = 'TxtS';
+                inp.id = idPrefix + i;
+                inp.value = dflt;
+                if (onEdit) inp.addEventListener('input', onEdit);
+                host.appendChild(inp);
+            }
+        }
+
+        function readMini(idPrefix, n, lo, hi, dflt) {
+            var out = [];
+            for (var i = 0; i < n; i++) {
+                out.push(clampNum(el(idPrefix + i).value, lo, hi, dflt));
+                el(idPrefix + i).value = out[i];
+            }
+            return out;
+        }
+
+        function setAll(side, kind) {
+            var src = kind === 'spd' ? 'hc-spdall-' + side : 'hc-trqall-' + side;
+            var pre = kind === 'spd' ? 'hc-spdv-' + side + '-' : 'hc-trqv-' + side + '-';
+            var v = (kind === 'spd') ? clampSpeed(el(src).value)
+                                     : clampNum(el(src).value, TRQ_MIN, TRQ_MAX, 250);
+            el(src).value = v;
+            for (var i = 0; i < NJ; i++) el(pre + i).value = v;
+            markEdit(side, kind);
+        }
+
+        // 記下「人剛剛動過這組欄位」，EDIT_HOLD_MS 內不要被 status 蓋回去
+        function markEdit(side, kind) {
+            if (kind === 'spd') lastEditSpd[side] = Date.now();
+            else lastEditTrq[side] = Date.now();
+        }
+
+        function setAllTarget() {
+            var v = clampNum(el('hc-grip-tgall').value, POS_MIN, POS_MAX, 0);
+            el('hc-grip-tgall').value = v;
+            for (var i = 0; i < NJ; i++) el('hc-gtg-' + i).value = v;
+        }
+
+        function setAllThreshold() {
+            var v = clampNum(el('hc-grip-thall').value, 1, 10200, 250);
+            el('hc-grip-thall').value = v;
+            for (var i = 0; i < FINGERS.length; i++) el('hc-gth-' + i).value = v;
+        }
+
+        // ===================================================================
+        // 送指令
+        // ===================================================================
+        // slider 拖動時用 20 Hz 節流送出：handpackage 的控制迴路是 30 Hz，
+        // 每個 input 事件都送只會塞滿 rosbridge，沒有任何好處。
+        setInterval(function () {
+            SIDES.forEach(function (side) {
+                if (!pending[side] || !cmdTopic) return;
+                pending[side] = false;
+                var pos = [];
+                for (var i = 0; i < NJ; i++) {
+                    pos.push(parseInt(el('hc-sl-' + side + '-' + i).value, 10));
+                }
+                sendCmd({ cmd: 'manual', hand: side, position: pos });
+            });
+        }, 50);
+
+        function applySpeed(side) {
+            // 0 = 沿用舊值（handpackage 會換成它記住的完整速度），
+            // 其餘夾到 10~255 —— 送 1~9 出去會被上游整包丟掉
+            var spd = [];
+            for (var i = 0; i < NJ; i++) {
+                var box = el('hc-spdv-' + side + '-' + i);
+                var v = clampSpeed(box.value);
+                box.value = v;
+                spd.push(v);
+            }
+            sendCmd({ cmd: 'speed', hand: side, speed: spd });
+        }
+
+        function applyTorque(side) {
+            var trq = readMini('hc-trqv-' + side + '-', NJ, TRQ_MIN, TRQ_MAX, 250);
+            sendCmd({ cmd: 'torque', hand: side, torque: trq });
+        }
+
+        function scope() {
+            var r = document.getElementsByName('hc-scope');
+            for (var i = 0; i < r.length; i++) if (r[i].checked) return r[i].value;
+            return 'both';
+        }
+
+        // 預設動作由網頁自己送位置與速度（定義在 js/hand_presets.js）。
+        // 節點不認動作名稱 —— 這樣調數值只要重新載入網頁，不用重啟節點。
+        // 速度和位置放在同一個封包裡，節點會先套速度再套位置
+        function onPreset(name) {
+            var e = (window.HAND_PRESETS || {})[name];
+            if (!e) return msg('沒有這個預設動作：' + name, 'err');
+            var p = { cmd: 'manual', hand: scope(), position: e.pos };
+            if (e.spd) p.speed = e.spd;
+            sendCmd(p);
+            msg(name, 'ok');
+        }
+
+        function toggleSync() {
+            // 不需要 master —— 鏡像來源是「指令指定的那隻手」，動哪隻哪隻就是來源
+            sendCmd({ cmd: 'sync', on: el('hc-sync').checked });
+        }
+
+        // 單純停下：停掉夾持與播放、回手動。手保持在最後下達的位置，
+        // 不鎖定也不用解除（原本的「緊急停止」是鎖定式的，要按兩次才解開）
+        function sendStop() {
+            sendCmd({ cmd: 'stop' });
+            msg('已送出停止', 'ok');
+        }
+
+        // 夾持（節點階段 ⑤ 才會真的執行，指令格式現在就固定下來）
+        function gripPayload(action) {
+            // 每一軸各自的閉合目標 —— 拇指橫擺跟手指彎曲要收到的位置本來就不同，
+            // 全部設 0 只適合「整隻手握到底」這一種用法
+            var target = readMini('hc-gtg-', NJ, POS_MIN, POS_MAX, 0);
+            return {
+                cmd: 'grip',
+                action: action,
+                hand: el('hc-grip-hand').value,
+                mode: el('hc-grip-mode').value,
+                threshold: readMini('hc-gth-', FINGERS.length, 1, 10200, 250),
+                target: target,
+                step: clampNum(el('hc-grip-step').value, 3, 60, 4),
+                timeout: clampNum(el('hc-grip-timeout').value, 1, 120, 10),
+                release_margin: clampNum(el('hc-grip-release').value, 0, 10200, 80)
+            };
+        }
+        function startGrip() { sendCmd(gripPayload('start')); }
+        function stopGrip() { sendCmd(gripPayload('stop')); }
+
+        // ===================================================================
+        // 收狀態
+        // ===================================================================
+        function onConfig(c) {
+            if (cfg && JSON.stringify(cfg) === JSON.stringify(c)) return;  // 1 Hz 重複發，沒變就不重繪
+            cfg = c;
+
+            if (c.joint_names_zh && c.joint_names_zh.length === NJ) {
+                JOINT_ZH = c.joint_names_zh;
+                SIDES.forEach(function (side) {
+                    for (var i = 0; i < NJ; i++) {
+                        el('hc-jn-' + side + '-' + i).textContent = JOINT_ZH[i];
+                        el('hc-jn-' + side + '-' + i).title = c.joint_names[i];
+                        el('hc-jn-' + side + '-' + i).className = 'label';
+                    }
+                });
+            }
+            if (c.arc_max) ARC_MAX = c.arc_max;
+            if (c.finger_names) FINGERS = c.finger_names;
+
+        }
+
+        function renderPresets(presets) {
+            var host = el('hc-presets');
+            host.innerHTML = '';
+            if (!presets || !Object.keys(presets).length) {
+                host.innerHTML = '<span style="color:#888; font-size:12px;">'
+                               + 'js/hand_presets.js 沒有載入</span>';
+                return;
+            }
+            Object.keys(presets || {}).forEach(function (name) {
+                var b = document.createElement('input');
+                b.type = 'button';
+                b.className = 'Button';
+                b.style.width = '96px';
+                b.style.height = '32px';
+                b.style.margin = '3px';
+                b.value = name;
+                var e = presets[name];
+                var pp = (e && e.pos) ? e.pos : e;
+                var ss = (e && e.spd) ? e.spd : null;
+                b.title = '位置 [' + pp.join(', ') + ']'
+                        + (ss ? '\n速度 [' + ss.join(', ') + ']' : '');
+                b.onclick = function () { onPreset(name); };
+                host.appendChild(b);
+            });
+        }
+
+        function setOnline(side, ok) {
+            online[side] = ok;
+            var b = el('hc-online-' + side);
+            b.textContent = ok ? 'ONLINE' : 'OFFLINE';
+            b.className = ok ? 'state-on' : 'state-off';
+            for (var i = 0; i < NJ; i++) {
+                el('hc-sl-' + side + '-' + i).disabled = !ok;
+                el('hc-nm-' + side + '-' + i).disabled = !ok;
+            }
+            if (!ok) inited[side] = false;   // 重新上線時要再用實際位置初始化一次
+        }
+
+        function onStatus(st) {
+            el('current-strategy-name').textContent = st.strategy || '---';
+
+            SIDES.forEach(function (side) {
+                var h = (st.hands || {})[side] || {};
+                if (!!h.online !== online[side]) setOnline(side, !!h.online);
+
+                var pos = h.position;
+                if (pos && pos.length === NJ) {
+                    // 第一次拿到回讀值就把 slider 對齊實際位置，之後不再覆蓋使用者的操作
+                    if (!inited[side]) {
+                        for (var i = 0; i < NJ; i++) {
+                            el('hc-sl-' + side + '-' + i).value = pos[i];
+                            el('hc-nm-' + side + '-' + i).value = pos[i];
+                        }
+                        inited[side] = true;
+                    }
+                    for (var j = 0; j < NJ; j++) {
+                        el('hc-ac-' + side + '-' + j).value = pos[j];
+                        var deg = (pos[j] / 255) * ARC_MAX[j] * 180 / Math.PI;
+                        el('hc-ar-' + side + '-' + j).value = deg.toFixed(0) + '°';
+                    }
+                }
+                // 使用者沒在動這隻手時，slider 跟著節點的 target 走
+                var tgt = h.target;
+                if (inited[side] && tgt && tgt.length === NJ
+                    && Date.now() - lastInput[side] > FOLLOW_DELAY_MS) {
+                    for (var t = 0; t < NJ; t++) {
+                        var sl = el('hc-sl-' + side + '-' + t);
+                        if (parseInt(sl.value, 10) !== tgt[t]) {
+                            sl.value = tgt[t];
+                            var nb = el('hc-nm-' + side + '-' + t);
+                            if (document.activeElement !== nb) nb.value = tgt[t];
+                        }
+                    }
+                }
+
+                // 速度欄顯示節點記住的「最後下達值」（硬體讀不回來）
+                // 只有在使用者最近沒動過這組欄位時才同步節點的值回來
+                if (h.speed_cmd && h.speed_cmd.length === NJ
+                    && Date.now() - lastEditSpd[side] > EDIT_HOLD_MS) {
+                    for (var m = 0; m < NJ; m++) {
+                        var box = el('hc-spdv-' + side + '-' + m);
+                        if (document.activeElement !== box) box.value = h.speed_cmd[m];
+                    }
+                }
+                if (h.torque_cmd && h.torque_cmd.length === NJ
+                    && Date.now() - lastEditTrq[side] > EDIT_HOLD_MS) {
+                    for (var n = 0; n < NJ; n++) {
+                        var tb = el('hc-trqv-' + side + '-' + n);
+                        if (document.activeElement !== tb) tb.value = h.torque_cmd[n];
+                    }
+                }
+                renderInfo(side, h);
+            });
+
+            renderGrip(st);
+        }
+
+        function renderInfo(side, h) {
+            function arr(a, warn) {
+                if (!a || !a.length) return '--';
+                return a.map(function (v) {
+                    return warn && warn(v)
+                        ? '<span class="state-off">' + v + '</span>' : String(v);
+                }).join(' ');
+            }
+            var rows = [
+                ['Version:', h.version ? h.version.join('.') : '--'],
+                ['Temp:', arr(h.temperature, function (v) { return v >= 60; })],
+                ['Fault:', arr(h.fault, function (v) { return v !== 0; })],
+                ['Torque:', arr(h.torque)],
+                ['TouchType:', (h.touch_type === undefined || h.touch_type === null)
+                    ? '--' : h.touch_type]
+            ];
+            el('hc-info-' + side).innerHTML = rows.map(function (r) {
+                return '<tr><td class="label">' + r[0] + '</td>'
+                     + '<td align="left">' + r[1] + '</td></tr>';
+            }).join('');
+        }
+
+        // 夾持狀態 + 每指壓力。壓感只在夾持期間才有資料（節點刻意不常訂，
+        // 訂了會讓 SDK 的控制迴路變鈍），所以沒資料時要講清楚不是壞了。
+        function renderGrip(st) {
+            var g = st.grip || {};
+            var box = el('hc-grip-status');
+            var txt;
+            if (g.active) {
+                if (g.phase === 'wait_touch') {
+                    txt = '等壓力資料...（還沒開始動手）';
+                    box.style.color = '#ffd24d';
+                } else {
+                    txt = '閉合中 / 模式 ' + g.mode + ' / '
+                        + (g.elapsed || 0).toFixed(1) + ' of ' + g.timeout + ' s'
+                        + ' / 手 ' + (g.hands || []).join('+');
+                    box.style.color = '#00D600';
+                }
+            } else if (g.reason) {
+                txt = '已結束：' + g.reason;
+                if (g.elapsed !== undefined) txt += '（耗時 ' + g.elapsed + ' s）';
+                box.style.color = '#ccc';
+            } else {
+                txt = '待機';
+                box.style.color = '#ccc';
+            }
+            box.textContent = txt;
+
+            var hit = g.hit || {};
+            var th = g.threshold || [];
+            var rows = [];
+            SIDES.forEach(function (side) {
+                var m = ((st.hands || {})[side] || {}).mass;
+                if (!m) return;
+                var row = [(side === 'left' ? 'L ' : 'R ')];
+                for (var i = 0; i < m.length; i++) {
+                    var isHit = (hit[side] || [])[i];
+                    row.push('<span' + (isHit ? ' class="hit"' : '') + '>'
+                        + (FINGERS[i] || i).slice(0, 3) + ' ' + m[i]
+                        + (th[i] !== undefined ? '/' + th[i] : '') + '</span>');
+                }
+                rows.push(row.join('&nbsp; '));
+            });
+            el('hc-mass').innerHTML = rows.length ? rows.join('<br>')
+                : '夾持未啟動時不訂壓感（避免拖慢 SDK 的控制迴路）';
+
+            var frozen = g.frozen || {};
+            SIDES.forEach(function (side) {
+                var f = frozen[side] || [];
+                for (var j = 0; j < NJ; j++) {
+                    el('hc-jn-' + side + '-' + j).className =
+                        'label' + ((g.active && f[j]) ? ' frozen' : '');
+                }
+            });
+        }
+
+        // ===================================================================
+        // 初始化
+        // ===================================================================
+        window.addEventListener('DOMContentLoaded', function () {
+            SIDES.forEach(function (side) {
+                buildJoints(side);
+                (function (sd) {
+                    buildMini('hc-spd-' + sd, 'hc-spdv-' + sd + '-', NJ, 200,
+                        function () { markEdit(sd, 'spd'); });
+                    buildMini('hc-trq-' + sd, 'hc-trqv-' + sd + '-', NJ, 250,
+                        function () { markEdit(sd, 'trq'); });
+                    el('hc-spdall-' + sd).addEventListener('input',
+                        function () { markEdit(sd, 'spd'); });
+                    el('hc-trqall-' + sd).addEventListener('input',
+                        function () { markEdit(sd, 'trq'); });
+                })(side);
+            });
+            buildMini('hc-grip-th', 'hc-gth-', FINGERS.length, 250);
+            for (var i = 0; i < FINGERS.length; i++) {
+                el('hc-gth-' + i).title = FINGERS[i];
+            }
+            buildMini('hc-grip-tg', 'hc-gtg-', NJ, 0);
+            for (var k = 0; k < NJ; k++) {
+                el('hc-gtg-' + k).title = JOINT_ZH[k] + ' 要閉合到的位置';
+            }
+            // 預設動作是純前端的（js/hand_presets.js 用 <script src> 載入，
+            // 所以這裡已經拿得到，不用等 rosbridge 也不用等非同步載入）
+            renderPresets(window.HAND_PRESETS);
+        });
+    	</script>
+</body>
+
+</html>
