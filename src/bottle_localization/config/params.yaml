@@ -35,7 +35,7 @@ bottle_localizer:
     #   z_table = (桌高 − 基準點離地) / 100 + 基準點的 z（基準點見 robot_reference.yaml）
     # 正式的桌子 80.5 cm，測試用的桌子 74.5 cm。
     # 輸出座標系（target_frame）由 launch 從 robot_reference.yaml 的 base_frame 帶進來。
-    table_height_cm: 74.5
+    table_height_cm: 80.5
 
     # --- 偵測框過濾 ---
     score_threshold: 0.5          # YOLO 信心值門檻（bottle_detect_v2 本身已用 0.70 過濾）

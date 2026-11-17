@@ -52,7 +52,7 @@ ros2 run bottle_localization bottle_tuner
 ros2 launch bottle_localization bottle_localization.launch.py log_level:=debug
 ```
 
-看 YOLO 畫面：在桌機的瀏覽器開 `http://172.17.121.10:8080/stream?topic=/med_detect/image`
+看 YOLO 畫面：在桌機的瀏覽器開 `http://172.17.121.11:8080/stream?topic=/med_detect/image`
 
 ## 在桌機用 RViz 看
 

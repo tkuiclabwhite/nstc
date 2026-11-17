@@ -13,11 +13,22 @@
 # 查 base_link <-> 左眼 optical frame 的結果與直接發 base_link -> zed_camera_link 相同。
 #
 # 量完把 measured 改成 true，launch 就不會再印警告。
+# 2026-11-16 換到新平台（seven_axis_arm_head_urdf，base_link = 支架中心）：
+#   x、y、z：由 URDF 算出。頭朝正前方（轉頭 0），相機 pitch 30.92°、roll 0.69°時 ZED 前玻璃中心
+#           (0.1130, -0.0008, 0.1226)，再扣掉玻璃到螺絲孔的距離（a = 0.0129 m、鏡頭比螺絲孔高 0.016 m）。
+#           pitch 每差 1°，位置只差約 1 mm。
+#   roll、pitch：table_plane.py 實測（正式桌子，2026-11-16）：roll +0.29°、pitch +30.37°。
+#           當時 ZED IMU（zed_imu_average.py）abs_roll +1.00°、abs_pitch +31.71°。
+#           舊平台校正時是 IMU +1.0° / +31.9° 對應 table_plane +0.69° / +30.92°；
+#           IMU 和桌面的差多了約 0.4°，是正式桌子和舊桌子傾斜程度不同。
+#           x、y、z 是用 pitch 30.92° 算的，換成 30.37° 只差不到 1 mm，沒有重算。
+#   yaw：量不到，頭擺正當 0，之後用已知位置的瓶子微調。
+#   舊平台（base_link = 右手臂基座）的值：x 0.0870、y 0.0916、z 0.1507。
 measured: true
 child_frame: zed_camera_link
-x: 0.0870
-y: 0.0916
-z: 0.1507
-roll: 0.0120
-pitch: 0.5397
+x: 0.0937
+y: -0.0006
+z: 0.1155
+roll: 0.0051
+pitch: 0.5301
 yaw: 0.0
