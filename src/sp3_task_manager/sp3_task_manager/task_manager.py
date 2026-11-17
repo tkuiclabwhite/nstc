@@ -12,7 +12,9 @@ Result.error_code 是 errors.py 的序號（0 = 成功），message 開頭是完
 
 參數
     config   設定檔路徑（預設 share/sp3_task_manager/config/task_manager.yaml）
-    dry_run  true = 不接硬體，各轉接層模擬成功（設定檔的 dry_run.fail 可模擬失敗）
+    dry_run  要模擬哪幾段：true / all = 全部、false = 全部接實機、或 vision,arm,hand 任意組合
+             （例如 vision = 假藥瓶、手臂和手真的動）。沒給（config）= 用設定檔的 dry_run.modules。
+             設定檔的 dry_run.fail 可模擬模擬段的失敗
 """
 import json
 import os
@@ -26,12 +28,15 @@ from interfaces.action import ExecuteTaskPlan
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
-from sp3_task_manager import adapters, goal as goal_mod, grasp_plan
+from sp3_task_manager import adapters, dry_run as dry_mod, goal as goal_mod, grasp_plan
 from sp3_task_manager.errors import (ESTOP, GRASP_FAILED, OK, OUT_OF_RANGE, TIMEOUT,
                                      TaskError, code_text)
+
+SWITCH_ARM = (GRASP_FAILED, OUT_OF_RANGE)    # 這隻手到不了或規劃失敗：換另一隻手試
 
 STAGES = ['辨識', '規劃', '接近', '抓取', '驗證', '放置', '退回']
 
@@ -46,10 +51,14 @@ class TaskManager(Node):
         default_cfg = os.path.join(get_package_share_directory('sp3_task_manager'),
                                    'config', 'task_manager.yaml')
         self.declare_parameter('config', default_cfg)
-        self.declare_parameter('dry_run', False)
+        # ros2 run -p dry_run:=true 會被當成 bool，所以不限型別，一律轉字串解析
+        self.declare_parameter('dry_run', 'config', ParameterDescriptor(dynamic_typing=True))
         with open(self.get_parameter('config').value, encoding='utf-8') as f:
             self.cfg = yaml.safe_load(f)
-        self.dry_run = bool(self.get_parameter('dry_run').value)
+        dry = self.get_parameter('dry_run').value
+        if dry in ('', 'config'):      # launch 沒給 → 用設定檔
+            dry = self.cfg['dry_run'].get('modules')
+        self.dry_run = dry_mod.parse(dry)
 
         self.state = 'IDLE'
         self.task_id = ''
@@ -64,14 +73,12 @@ class TaskManager(Node):
 
         # 執行中的任務要一邊等其他 topic，所以訂閱放另一個 callback group、用多執行緒 executor
         sub_group = MutuallyExclusiveCallbackGroup()
-        if self.dry_run:
-            self.vision = adapters.DryVisionClient(self, self.cfg, sub_group)
-            self.arm = adapters.DryArmClient(self, self.cfg, sub_group)
-            self.hand = adapters.DryHandClient(self, self.cfg, sub_group)
-        else:
-            self.vision = adapters.VisionClient(self, self.cfg, sub_group)
-            self.arm = adapters.ArmClient(self, self.cfg, sub_group)
-            self.hand = adapters.HandClient(self, self.cfg, sub_group)
+        def client(name, real, dry):
+            return (dry if name in self.dry_run else real)(self, self.cfg, sub_group)
+
+        self.vision = client('vision', adapters.VisionClient, adapters.DryVisionClient)
+        self.arm = client('arm', adapters.ArmClient, adapters.DryArmClient)
+        self.hand = client('hand', adapters.HandClient, adapters.DryHandClient)
 
         self.create_subscription(Bool, '/estop', self._estop_cb, 10, callback_group=sub_group)
         self.pub_status = self.create_publisher(String, '/manip/status', 10)
@@ -83,8 +90,8 @@ class TaskManager(Node):
             goal_callback=self._on_goal,
             cancel_callback=lambda _: CancelResponse.ACCEPT,
             callback_group=ReentrantCallbackGroup())
-        self.get_logger().info(
-            f'等待取放任務：/manip/pick_place{"（dry_run，不接硬體）" if self.dry_run else ""}')
+        dry = '、'.join(m for m in dry_mod.MODULES if m in self.dry_run)
+        self.get_logger().info(f'等待取放任務：/manip/pick_place{f"（模擬：{dry}）" if dry else ""}')
 
     # ------------------------------------------------------------------
     # 狀態
@@ -92,13 +99,15 @@ class TaskManager(Node):
     def _publish_status(self):
         d = {'state': self.state, 'task_id': self.task_id,
              'stage': self.stage, 'stage_name': STAGES[self.stage] if self.stage >= 0 else '',
-             'last_error': self.last_error, 'dry_run': self.dry_run, 'stamp': time.time()}
+             'last_error': self.last_error,
+             'dry_run': [m for m in dry_mod.MODULES if m in self.dry_run], 'stamp': time.time()}
         self.pub_status.publish(String(data=json.dumps(d, ensure_ascii=False)))
 
     def _estop_cb(self, msg):
         if msg.data and not self.estop:
             self.get_logger().error('收到急停')
             self.hand.stop()
+            self.arm.stop('急停')
             self.state = 'ESTOP'
         elif not msg.data and self.estop:
             self.get_logger().info('急停解除')
@@ -177,12 +186,14 @@ class TaskManager(Node):
             self.state = 'IDLE'
         except Canceled:
             self.hand.stop()
+            self.arm.drop_held()
             gh.canceled()
             result.success, result.error_code = False, OK
             result.message = f'已取消 task_id={self.task_id} duration_s={time.monotonic() - t0:.1f}'
             self.state = 'IDLE'
         except TaskError as e:
             self.hand.stop()
+            self.arm.drop_held()
             gh.abort()
             result.success, result.error_code = False, e.code
             result.message = f'{e} task_id={self.task_id} duration_s={time.monotonic() - t0:.1f}'
@@ -191,6 +202,7 @@ class TaskManager(Node):
         except Exception as e:      # 程式錯誤也要讓主控收到結果，不能卡住
             self.get_logger().error(f'未預期的錯誤：{e!r}')
             self.hand.stop()
+            self.arm.drop_held()
             gh.abort()
             result.success, result.error_code = False, GRASP_FAILED
             result.message = f'{code_text(GRASP_FAILED)} 程式錯誤：{e!r}'
@@ -209,6 +221,11 @@ class TaskManager(Node):
     def _run(self, g):
         gc = self.cfg['grasp']
         max_retry = self.cfg['retries']['grasp']
+        # 先回站姿：手臂從哪裡開始都一樣，也不會擋住相機。場景先放桌子
+        self._feedback(0, 0, '回站姿')
+        self.arm.set_speed()
+        self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
+        self.arm.stand(self)
         for retry in range(max_retry + 1):
             try:
                 poses = self._pick(g, retry)
@@ -227,6 +244,7 @@ class TaskManager(Node):
             self.arm.move(self, above, approach, poses.arm, '移到放置點上方')
             self.arm.move(self, place, approach, poses.arm, '放下')
             self.hand.open(self, poses.arm)
+            self.arm.detach(self)
             self.arm.move(self, above, approach, poses.arm, '放下後抬起')
 
         self._feedback(6, 0, '回站姿')
@@ -236,35 +254,52 @@ class TaskManager(Node):
 
     def _pick(self, g, retry):
         self._feedback(0, retry, f'找 {g.bottle_class}')
-        xyz, size = self.vision.locate(self, g.bottle_class)
+        xyz, size, others = self.vision.locate(self, g.bottle_class)
         center = grasp_plan.to_meas(xyz, self.cfg['frames'])
-        if not grasp_plan.in_workspace(center, self.cfg['workspace']):
+        reachable = grasp_plan.reachable_arms(center, self.cfg)
+        if not reachable:
             raise TaskError(OUT_OF_RANGE, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
-                                          '超出手臂工作範圍')
+                                          '超出兩隻手的可及範圍')
+        if g.arm in ('left', 'right') and g.arm not in reachable:
+            raise TaskError(OUT_OF_RANGE, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
+                                          f'{g.arm} 手搆不到（{"、".join(reachable)} 手可以）')
 
-        self._feedback(1, retry, f'{g.bottle_class} 在 {center.round(1).tolist()} cm')
-        arms = grasp_plan.arm_order(g.arm, center)
+        self._feedback(1, retry, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
+                                 f'障礙物：桌子{"、" + "、".join(o[0] for o in others) if others else ""}')
+        self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, others))
         self.arm.set_speed()
 
+        # 選手（S3-01：運動規劃負責）：主控有指定就用那隻；auto 時兩隻手算出來的位置一樣（top / front）
+        # 就送 auto 讓 moveit_bridge 依 IK、碰撞挑，不一樣（side）才由這裡照左右依序試
+        cands = [a for a in grasp_plan.arm_order(g.arm, center) if a in reachable]
+        plans = {a: grasp_plan.plan(center, size, a, self.cfg['grasp']) for a in cands}
+        if len(cands) == 2 and grasp_plan.same_poses(plans['right'], plans['left']):
+            tries = [('auto', cands)]
+        else:
+            tries = [(a, [a]) for a in cands]
+
         err = None
-        for arm in arms:
-            poses = grasp_plan.plan(center, size, arm, self.cfg['grasp'])
-            self._feedback(2, retry, f'{arm} 手開掌、移到預抓位置')
+        for choice, hands in tries:
+            self._feedback(2, retry, f'{"、".join(hands)} 手開掌、{choice} 移到預抓位置')
             try:
-                self.hand.open(self, arm)
-                self.arm.move(self, poses.pregrasp, poses.approach, arm, '移到預抓位置')
+                for h in hands:
+                    self.hand.open(self, h)
+                arm = self.arm.move(self, plans[hands[0]].pregrasp, plans[hands[0]].approach,
+                                    choice, '移到預抓位置')
                 break
             except TaskError as e:
-                if e.code != GRASP_FAILED:
+                if e.code not in SWITCH_ARM:
                     raise
                 err = e
         else:
             raise err
 
+        poses = plans[arm]
         self._arm_used = arm
         self._feedback(3, retry, f'{arm} 手靠近並夾持')
         self.arm.move(self, poses.grasp, poses.approach, arm, '移到抓取位置')
         self.hand.grip(self, arm)
+        self.arm.attach(self, arm, grasp_plan.held_obstacle(xyz, size))   # 之後的移動會算手上的藥瓶
 
         self._feedback(4, retry, f'抬起 {self.cfg["grasp"]["lift_cm"]:g} cm 確認夾住')
         self.arm.move(self, poses.lift, poses.approach, arm, '抬起')
@@ -276,6 +311,7 @@ class TaskManager(Node):
         if self._arm_used is None:
             return
         try:
+            self.arm.detach(self)
             self.hand.open(self, self._arm_used)
         except TaskError as e:
             self.get_logger().warning(f'重試前張開手失敗：{e}')

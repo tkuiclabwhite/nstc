@@ -79,7 +79,7 @@ ros2 launch ~/nstc/launch/nstc.launch.py
 ros2 launch armpackage sim.launch.py rviz:=false rosbridge:=false real:=true
 
 # 開關實機跟隨（也可以在網頁「IK 目標」面板按「實機跟隨」）
-ros2 topic pub --once /arm_real_enable std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once -w 1 /arm_real_enable std_msgs/msg/Bool "{data: true}"
 ```
 
 網頁：在桌機的瀏覽器用 sftp 掛載打開 `~/nstc/web/RobotViewer.html`。實機每次停穩會記一行到 `~/.ros/arm_settle_log.csv`。
@@ -120,6 +120,16 @@ ros2 run task_plan_demo client_gui
 想看失敗時的回覆：改 `src/sp3_task_manager/config/task_manager.yaml` 的 `dry_run.fail`
 （`detect` 找不到藥瓶、`arm` 手臂到不了、`grip` 沒夾到、`hold` 抬起後沒夾住；`''` 全部成功），重開終端機 1。
 
+只模擬其中幾段、其他接實機：寫在 `task_manager.yaml` 的 `dry_run.modules`（例如 `[vision]`，`[]` = 全部接實機），
+或 launch 時用 `dry_run:=` 臨時指定（逗號分隔，以 launch 為準）：
+
+```bash
+ros2 launch sp3_task_manager task_manager.launch.py dry_run:=vision       # 假藥瓶（dry_run.bottle_base_link_m），手臂和手真的動
+ros2 launch sp3_task_manager task_manager.launch.py dry_run:=vision,arm   # 只有手真的開合、夾持
+```
+
+真的那幾段要的節點一樣要開（見下面「接實機」）。只模擬 vision 時手臂會真的移到假藥瓶的位置，先確定那裡是空的。
+
 ### 接實機
 
 ```bash
@@ -128,13 +138,54 @@ ros2 launch ~/nstc/launch/nstc.launch.py
 # 2. YOLO 與藥罐定位
 ros2 run med_detect bottle_detect_v2
 ros2 launch bottle_localization bottle_localization.launch.py
-# 3. 網頁 IK 面板打開「實機跟隨」（或下一行）
-ros2 topic pub --once /arm_real_enable std_msgs/msg/Bool "{data: true}"
+# 3. 打開實機跟隨（沒開的話任務會回 MAN-E-007）
+ros2 topic pub --once -w 1 /arm_real_enable std_msgs/msg/Bool "{data: true}"
 # 4. 任務管理
 ros2 launch sp3_task_manager task_manager.launch.py
 ```
 
-上實機前先填 `task_manager.yaml` 標【待量測】的放置點 `place_targets` 與工作範圍 `workspace`。
+- 上實機前先填 `task_manager.yaml` 標【待量測】的值（桌子 `table`、放置點 `place_targets`、工作範圍 `workspace`）。
+- 任務管理會把桌子和其他藥瓶發到 `/arm_ik_obstacles`（來源 sp3）給 MoveIt 避開，跟網頁加的物體分開、不會互相蓋掉。
+  夾住的藥瓶會掛到手上（`/arm_attach`）。armpackage 要用 2026-11-17 之後的版本（.11 上的），舊版不認這些格式。
+- 急停或任務中斷時，任務管理會取消 MoveIt 軌跡（`/arm_stop`）並關掉實機跟隨；再跑任務前要重新執行第 3 步。
+- 只測 MoveIt、不動實機：`task_manager.yaml` 的 `real_arm.required: false`。
+
+```bash
+# 看任務管理送給 MoveIt 的障礙物、手臂每一步的結果（cmd / arm / reason）
+ros2 topic echo /arm_ik_obstacles
+ros2 topic echo /arm_ik_status
+```
+
+### 可及範圍與避障測試（reach_test）
+
+不經任務管理，直接對 moveit_bridge 下移動指令看結果。要先開 moveit_bridge（第 1 步的 nstc.launch.py），**任務管理不要開**。
+先在實機跟隨**關著**時跑（只動模擬，在 RViz／網頁看）；實機跟隨開著時要加 `--real` 才會執行。
+
+```bash
+# 實際極限：每個左右位置從桌緣往前每 2 cm 試一次，印出「模型最遠前 / 實際最遠前」
+ros2 run sp3_task_manager reach_test scan                       # 右手、從上方、掌心離桌 10 cm（b1 頂上 1 cm）
+ros2 run sp3_task_manager reach_test scan --arm left
+ros2 run sp3_task_manager reach_test scan --up 9                # 矮的藥瓶（b2、b4 約 7.8 cm 高）
+ros2 run sp3_task_manager reach_test scan --dir front --fingers 90 --up 6   # 從前方（目前不用）
+
+# 避障（從上方）：沒障礙、旁邊 15 cm、旁邊 7 cm 緊貼、前面加另一側、上方有板子、目標在桌面下，看 PASS / FAIL
+ros2 run sp3_task_manager reach_test obstacles --pause          # 每一項停下來讓你看 RViz
+ros2 run sp3_task_manager reach_test obstacles --arm left --front 15
+
+# 確定模擬沒問題，再開實機跟隨跑實機（手臂會真的動，旁邊要有人顧急停）
+ros2 run sp3_task_manager reach_test point 18.9 12 10 --real              # 移到一點停住，量掌心，Enter 回站姿
+ros2 run sp3_task_manager reach_test point 0 10 10 30 20 10 --real       # 好幾點（每三個數一點：右 前 上）
+ros2 run sp3_task_manager reach_test obstacles --real --pause --cases 1 2 4
+```
+
+實機時 `obstacles --pause` 會先印出實體物品要擺在哪（桌面座標），擺好按 Enter 手臂才動，動完再停一次讓你量。
+掌心點 = 手掌面上、左右置中、離手掌底部（接手腕那端）7 cm；量「右」離機器人中線、「前」離桌緣、「上」離桌面。
+
+測試加的物體用場景來源 `sp3_test`，測完會自動清掉；中途 Ctrl+C 也會清。
+
+**不用 RViz 看結果**：`obstacles` 每一項都存一張圖（俯視、正視、側視：桌子、障礙物、目標掌心、手臂外形），
+並印出「手離物體最近幾 cm」（含障礙物的餘裕，負的 = 插進去）。圖在 `~/reach_test_out/<時間>_obstacles_<手>/case<N>.png`，
+輸出會印路徑。看圖：在 AGX 用 `eog <路徑>`，或拿回桌機 `scp iclab@172.17.121.11:<路徑> .`。
 
 ### 沒有螢幕時用指令送任務、看狀態
 
@@ -146,14 +197,16 @@ ros2 action send_goal --feedback /manip/pick_place interfaces/action/ExecuteTask
 # 狀態（IDLE / BUSY / ERROR / ESTOP），1 Hz
 ros2 topic echo /manip/status
 
-# 急停／解除
-ros2 topic pub --once /estop std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /estop std_msgs/msg/Bool "{data: false}"
+# 急停／解除（-w 1：等訂閱的節點連上才送；只寫 --once 常常還沒連上就送出，訊息會掉）
+ros2 topic pub --once -w 1 /estop std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once -w 1 /estop std_msgs/msg/Bool "{data: false}"
 ```
 
 ```bash
 # 單元測試（不需要 ROS）
 cd ~/nstc/src/sp3_task_manager && python3 -m pytest test -q
+# 有 pytest 外掛衝突時
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test -q
 ```
 
 ## 其他節點

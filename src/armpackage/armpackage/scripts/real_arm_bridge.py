@@ -131,7 +131,11 @@ class RealArmBridge(Node):
         self._say(f"關閉。按「實機跟隨」開始（實機：{self.who}，馬達 {self.motors}{self.skip_note}）。{last_check()[1]}")
 
     def _publish_status(self):
-        self.status_pub.publish(String(data=json.dumps(self.status, ensure_ascii=False)))
+        # 網頁只看 state / msg / warn。另外附給任務管理（sp3_task_manager）用的：
+        #   settled：跟隨中、MoveIt 停住、實機也停穩了（同「實機停穩」那則訊息的條件；目標沒變就一直是 true）
+        #   stamp：發布時間
+        d = dict(self.status, settled=self.state == "follow" and self.settle is True, stamp=time.time())
+        self.status_pub.publish(String(data=json.dumps(d, ensure_ascii=False)))
 
     def _say(self, msg, warn=False):
         """狀態 → 終端機 + 網頁（/arm_real_status）"""

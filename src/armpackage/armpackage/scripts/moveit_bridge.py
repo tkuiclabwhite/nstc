@@ -20,9 +20,17 @@
   /arm_ik_arm       std_msgs/String：auto（肩膀離目標近的先試，不行換另一隻，預設）/ right / left
   /arm_speed_cmd    std_msgs/Float64：速度（Dynamixel 單位，1 = 0.229 rpm）
   /arm_stand        std_msgs/Bool：回站姿（兩隻手）
-  /arm_ik_obstacles std_msgs/String：場景物體（JSON 清單，格式見 to_collision_object），會避開
+  /arm_ik_obstacles std_msgs/String：場景物體，會避開。{"source": "sp3", "objects": [...]}，或舊格式（只有清單）= 網頁（source web）。
+                    依來源分開存、合併後給 MoveIt：同一來源每次送整份（空清單 = 清空這個來源），不會蓋掉別的來源。
+                    物體格式見 to_collision_object；MoveIt 裡的 id = html_<來源>_<id>（id 本來就以「來源_」開頭就不重複加）
+  /arm_attach       std_msgs/String：夾起來的物體掛到手上 / 拿掉（格式見 _attach_cb），結果 cmd = attach / detach
+  /arm_stop         std_msgs/Bool：true = 取消執行中的軌跡，這個動作不再執行下一段（結果 reason = canceled）
   結果 /arm_ik_status std_msgs/String（JSON）：{"stage_only": true, "stage": "..."} = 進行中；
-        其他 = 做完或失敗：{"ok": true / false, "note": 說明, "q_deg": 關節角, "ticks": 馬達刻度}
+        其他 = 做完或失敗：{"ok": true / false, "note": 說明, "q_deg": 關節角, "ticks": 馬達刻度,
+                            "cmd": move / stand / attach / detach（None = 不是指令的結果，例如停住後的「MoveIt 目前姿勢」）,
+                            "arm": 實際用的那隻手（兩隻都不行、回站姿 = null）,
+                            "reason": 失敗分類（成功 = null）：bad_request / busy / unreachable / joint_limit / collision /
+                                      plan_failed / exec_failed / canceled / moveit_down / internal（見 R_*）}
         移動成功時 note 第二行 = 這次掌心的姿態（R / P / Y 和 quaternion，pose_text）：網頁用「掌心方向 + 手指」移好，
         之後自己的程式要同一個姿態就把這組填進 /arm_ik_target
   base_link ↔ 實機量測座標（前 / 右 / 高，cm）：前 = x·100 + 1.35、右 = −y·100、高 = z·100 + 120.2（arm_config.to_meas）
@@ -61,7 +69,9 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Point, Pose, PoseStamped
 from std_msgs.msg import String, Bool, Float64
 from shape_msgs.msg import SolidPrimitive
-from moveit_msgs.msg import DisplayTrajectory, CollisionObject, PlanningScene, Constraints, JointConstraint, RobotTrajectory
+import xml.etree.ElementTree as ET
+from moveit_msgs.msg import (AttachedCollisionObject, DisplayTrajectory, CollisionObject, PlanningScene, Constraints,
+                             JointConstraint, RobotTrajectory)
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 import yaml
@@ -114,9 +124,30 @@ MAX_JUMP = 0.35      # 直線段相鄰兩點任一軸轉超過這麼多（rad）
 JOINT_WEIGHTS = np.array([3.0, 3.0, 2.0, 2.0, 1.0, 1.0, 1.0])   # 比較轉動量時肩膀權重大
 STAND_MOVEIT = np.clip(STAND, -3.14, 3.14)                     # 站姿夾進 URDF 的 ±3.14（現在站姿全 0，不會被夾）
 ERR = {-1: "規劃失敗（找不到路，或目標到不了）", -2: "規劃結果無效", -4: "控制器執行失敗", -6: "逾時",
+       -7: "被取消（/arm_stop）",
        -10: "起點姿勢已經撞到東西", -12: "目標姿勢會撞到東西", -31: "IK 解不到（到不了，或在關節範圍內做不到）",
        99999: "MoveIt 失敗",
        -9999: "連不到 move_group（MoveIt 有開嗎？）", -9998: "MoveIt 沒接受請求"}
+
+# 失敗原因：結果（/arm_ik_status）的 reason 欄位，固定的英文代碼給程式分類（任務管理對應 S3-05 錯誤碼），note 給人看
+R_BAD = "bad_request"      # 指令格式不對、不認得的方向或手、frame 不支援（沒有動）
+R_BUSY = "busy"            # 上一個動作還沒做完（沒有動）
+R_UNREACH = "unreachable"  # IK 解不到、離肩膀太遠：這個位置／方向到不了
+R_LIMIT = "joint_limit"    # 超出關節或線材範圍（check：CABLE_TICKS、MAX_TRAVEL、URDF ∩ joint_limits），直線靠近途中到極限或翻轉
+R_COLL = "collision"       # 目標、直線靠近、路徑、站姿會撞到（含目標在物體裡面、起點就碰到東西）
+R_PLAN = "plan_failed"     # MoveIt 規劃失敗、只找到繞遠路的路
+R_EXEC = "exec_failed"     # MoveIt 沒接受執行、執行失敗
+R_CANCEL = "canceled"      # 被 /arm_stop 取消
+R_DOWN = "moveit_down"     # 連不到 move_group 或它的服務
+R_INTERNAL = "internal"    # 這支程式出錯（例外）
+# 自動試了好幾隻手、好幾個方向，原因不一樣時報哪一個：先報換手或重試還有機會的，全部都到不了才報 unreachable
+REASON_ORDER = [R_COLL, R_PLAN, R_EXEC, R_LIMIT, R_UNREACH]
+LINE_REASON = {"途中碰到關節極限": R_LIMIT, "途中姿勢會突然翻轉": R_LIMIT, "途中會撞到東西": R_COLL}   # _line 的原因
+
+
+def plan_reason(code):
+    """MoveIt 錯誤碼 → reason"""
+    return {-10: R_COLL, -12: R_COLL, -31: R_UNREACH, -7: R_CANCEL, -9999: R_DOWN}.get(code, R_PLAN)
 
 
 def err_text(code, res=None):
@@ -130,10 +161,27 @@ def _dur(t):
     return Duration(sec=int(t), nanosec=int((t % 1) * 1e9))
 
 
+# 場景物體依來源分開存（/arm_ik_obstacles）。舊格式（只有清單）= 網頁。合併時 id 加上來源前綴：
+# 網頁的 3 → web_3（MoveIt 裡是 html_web_3）；本來就有前綴的（任務管理的 sp3_table）不重複加
+WEB = "web"
+FLOOR_ID = f"{WEB}_floor"            # 網頁的地板（plane）
+
+
+def _obj_label(oid):
+    """合併後的物體 id → 中文：web_3 → 物體 #3、web_floor → 地板、sp3_table → 物體 sp3_table"""
+    if oid == FLOOR_ID:
+        return "地板"
+    if oid.startswith(WEB + "_"):
+        return f"物體 #{oid[len(WEB) + 1:]}"
+    return f"物體 {oid}"
+
+
 def _contact_name(body):
-    """MoveIt 的碰撞物件名稱 → 中文（html_3 = 網頁的物體 #3）"""
+    """MoveIt 的碰撞物件名稱 → 中文（html_web_3 = 網頁的物體 #3、attached_sp3_held = 掛在手上的 sp3_held）"""
     if body.startswith("html_"):
-        return "地板" if body == "html_floor" else f"物體 #{body[5:]}"
+        return _obj_label(body[5:])
+    if body.startswith("attached_"):
+        return f"手上的 {body[9:]}"
     return body
 
 
@@ -457,6 +505,11 @@ class MoveItBridge(Node):
         self.create_subscription(String, "/arm_ik_arm", lambda m: setattr(self, "arm_choice", m.data), 10)
         self.create_subscription(Float64, "/arm_speed_cmd", self._speed_cb, 10)
         self.create_subscription(Bool, "/arm_stand", self._stand_cb, 10)
+        self.create_subscription(String, "/arm_attach", self._attach_cb, 10)
+        self.create_subscription(Bool, "/arm_stop", self._stop_cb, 10)
+        # 每隻手的手掌、手指 link：掛在手上的物體碰到它們不算碰撞（touch_links）
+        links = [l.get("name") for l in ET.parse(urdf).getroot().findall("link")]
+        self.hand_links = {a: [l for l in links if l.startswith(ARMS[a]["hand"])] for a in ARMS}
         self.real_state, self.real_t = "off", 0.0          # 實機跟隨開著才做高度補償
         self.create_subscription(String, "/arm_real_status", self._real_status_cb, 10)
         self.scene_cli = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
@@ -465,7 +518,13 @@ class MoveItBridge(Node):
         self.exec_ac = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
         self.create_timer(1.0 / RATE, self._tick)
         self.create_timer(SCENE_RESEND, lambda: self._sync_scene(force=True))
-        self.obstacles = []            # 網頁最新送來的物體
+        self.obstacle_src = {}         # 來源 → 最新送來的物體清單（web = 網頁、sp3 = 任務管理…）；self.obstacles 是合併後的
+        self.attached = {}             # 掛在手上的物體 id → 手（/arm_attach）
+        self.dz_now = 0.0              # 上一個動作的高度補償（m）：模擬的手比實機高這麼多，掛物體時用
+        self.ctx = {"cmd": None, "arm": None}   # 執行中的動作（結果的 cmd、arm 欄位）
+        self.fail_codes = {"IK": R_UNREACH}     # 這一次移動的失敗原因（中文）→ reason
+        self.stop_req = False          # 收到 /arm_stop：這個動作不再執行下一段
+        self.exec_gh = None            # 執行中的軌跡（/arm_stop 取消用）
         self.in_scene = set()          # 目前 MoveIt 場景裡由這裡放的物體 id
         self.scene_key = None          # 上次同步的內容，沒變就不重送
         self.scene_shift = 0.0         # 高度補償檢查時，MoveIt 場景裡的物體暫時往上移多少（m）
@@ -524,14 +583,35 @@ class MoveItBridge(Node):
         n = len(next(iter(paths.values())))
         self._report(list(paths), f"MoveIt 規劃好了（{n} 點，還沒執行）", paths=paths)
 
-    # ---------- 網頁的物體 → MoveIt 場景 ----------
+    # ---------- 場景物體（網頁、任務管理）→ MoveIt 場景 ----------
     def _obstacles_cb(self, msg):
+        """/arm_ik_obstacles：{"source": "sp3", "objects": [...]}，或舊格式（只有清單）= 網頁。
+        同一個來源每次送的是整份（空清單 = 清空這個來源），不會蓋掉別的來源"""
         try:
-            self.obstacles = json.loads(msg.data)
-        except ValueError as e:
+            d = json.loads(msg.data)
+            if isinstance(d, list):
+                src, objs = WEB, d
+            else:
+                src, objs = str(d["source"]), d["objects"]
+                if not src or not isinstance(objs, list):
+                    raise ValueError("source 不能是空的、objects 要是清單")
+            if not all(isinstance(o, dict) and "type" in o for o in objs):
+                raise ValueError("每個物體都要是 {id, type, …}")
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             self.get_logger().warn(f"/arm_ik_obstacles 格式不對：{e}")
             return
+        self.obstacle_src[src] = objs
         self._sync_scene()
+
+    @property
+    def obstacles(self):
+        """所有來源合併後的物體清單；id 加上來源前綴（見 WEB）"""
+        out = []
+        for src, objs in sorted(self.obstacle_src.copy().items()):
+            for o in objs:
+                oid = str(o.get("id"))
+                out.append(dict(o, id=oid if oid.startswith(src + "_") else f"{src}_{oid}"))
+        return out
 
     def _sync_scene(self, force=False, wait=False):
         objs = [shift_up(o, self.scene_shift) for o in self.obstacles if str(o.get("id")) not in self.ignore]
@@ -572,18 +652,20 @@ class MoveItBridge(Node):
     def _target_cb(self, msg):
         """之後整合用的 API：PoseStamped（base_link，m）= 掌心位置 + 任意手掌姿態（網頁不用這個，網頁用 /arm_move）"""
         if msg.header.frame_id not in ("", BASE, "world"):
-            return self._note(f"目標的 frame_id '{msg.header.frame_id}' 不支援，只收 base_link", ok=False)
+            return self._note(f"目標的 frame_id '{msg.header.frame_id}' 不支援，只收 base_link", ok=False,
+                              reason=R_BAD, cmd="move", arm=None)
         p, o = msg.pose.position, msg.pose.orientation
         p = np.array([p.x, p.y, p.z])
         R = None
         if self.mode != "pos_only":
             qn = np.linalg.norm([o.x, o.y, o.z, o.w])
             if qn < 1e-6:
-                return self._note("位置 + 姿態模式要給姿態（收到的 quaternion 是 0）；只要位置的話 /arm_ik_mode 送 pos_only", ok=False)
+                return self._note("位置 + 姿態模式要給姿態（收到的 quaternion 是 0）；只要位置的話 /arm_ik_mode 送 pos_only",
+                                  ok=False, reason=R_BAD, cmd="move", arm=None)
             R = quat_to_R(o.x / qn, o.y / qn, o.z / qn, o.w / qn)
         self.tgt_pub.publish(Point(x=float(p[0]), y=float(p[1]), z=float(p[2])))
         spec = {"dir": None, "label": "", "axis": None, "fingers": None, "R": R}
-        self._run(self._do_move, p, self.arm_choice, lambda arm: [spec])
+        self._run("move", self._do_move, p, self.arm_choice, lambda arm: [spec])
 
     def _move_cb(self, msg):
         """網頁的「移動」：{"pos": [前, 右, 高]（cm）, "dir": 掌心方向, "fingers": 手指朝向（度，null = 自動）, "arm": auto / right / left}
@@ -596,12 +678,14 @@ class MoveItBridge(Node):
             fingers = None if fingers in (None, "") else float(fingers)
             choice = d.get("arm") or "auto"
         except (ValueError, KeyError, TypeError) as e:
-            return self._note(f"/arm_move 格式不對：{e}", ok=False)
+            return self._note(f"/arm_move 格式不對：{e}", ok=False, reason=R_BAD, cmd="move", arm=None)
         if dirname != "auto" and dirname not in approaches("right"):
-            return self._note(f"不認得的掌心方向 {dirname!r}", ok=False)
+            return self._note(f"不認得的掌心方向 {dirname!r}", ok=False, reason=R_BAD, cmd="move", arm=None)
+        if choice != "auto" and choice not in ARMS:
+            return self._note(f"arm 只接受 auto / right / left，收到 {choice!r}", ok=False, reason=R_BAD, cmd="move", arm=None)
         p = from_meas(f, r, h)
         self.tgt_pub.publish(Point(x=float(p[0]), y=float(p[1]), z=float(p[2])))
-        self._run(self._do_move, p, choice, self._dir_specs(p, dirname, fingers))
+        self._run("move", self._do_move, p, choice, self._dir_specs(p, dirname, fingers))
 
     def _dir_specs(self, p, dirname, fingers):
         """掌心方向 + 手指朝向 → 「手 → 要試的姿態清單」。每個姿態 {dir, label, axis = 掌心朝向, fingers, R（手指有指定才有）}。
@@ -625,25 +709,104 @@ class MoveItBridge(Node):
 
     def _stand_cb(self, msg):
         if msg.data:
-            self._run(self._do_stand)
+            self._run("stand", self._do_stand)
 
-    def _run(self, fn, *args):
-        """在背景執行一個動作：規劃 + 執行要好幾秒，不能卡住轉發手臂角度的 callback"""
+    def _stop_cb(self, msg):
+        """/arm_stop（Bool true）：取消執行中的軌跡（模擬停在目前的位置），這個動作也不再執行下一段。
+        只停這一個動作，下一個指令照常做。實機要停另外送 /arm_real_enable false（real_arm_bridge）"""
+        if not msg.data:
+            return
+        self.stop_req = True
+        gh = self.exec_gh
+        if gh is not None:
+            gh.cancel_goal_async()
+        self.get_logger().warn("收到 /arm_stop：" + ("取消執行中的軌跡" if gh is not None else
+                                                   "目前沒有在執行軌跡" + ("，規劃中的動作不會執行" if self.busy else "")))
+
+    def _run(self, cmd, fn, *args):
+        """在背景執行一個動作：規劃 + 執行要好幾秒，不能卡住轉發手臂角度的 callback。
+        cmd = 結果的 cmd 欄位（move / stand）"""
         if self.busy:
-            self._note("上一個動作還沒做完，等它結束再送", ok=False)
+            self._note("上一個動作還沒做完，等它結束再送", ok=False, reason=R_BUSY, cmd=cmd, arm=None)
             return
         self.busy = True
+        self.stop_req = False
+        self.ctx = {"cmd": cmd, "arm": None}
 
         def work():
             try:
                 if not self.move_ac.wait_for_server(timeout_sec=2.0):   # 沒開的話每個碰撞檢查都要等 3 秒逾時
-                    return self._note(err_text(-9999), ok=False)
+                    return self._note(err_text(-9999), ok=False, reason=R_DOWN)
                 fn(*args)
             except Exception as e:      # 背景執行緒的例外不會自己印出來
-                self._note(f"出錯：{e}", ok=False)
+                self._note(f"出錯：{e}", ok=False, reason=R_INTERNAL)
             finally:
                 self.reported = True    # 動作自己報過結果了，停住後不要再用「目前姿勢」蓋掉
+                self.ctx = {"cmd": None, "arm": None}
                 self.busy = False
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---------- 掛在手上的物體（任務管理：夾起來的藥瓶）----------
+    def _attach_cb(self, msg):
+        """/arm_attach（std_msgs/String，JSON；base_link，m）：
+          {"action": "attach", "arm": "right", "id": "sp3_held", "type": "stick", "a": [x, y, z], "b": [x, y, z], "r": 0.026}
+            type / 欄位同 /arm_ik_obstacles 的物體（ball / box / stick）。做成 AttachedCollisionObject 掛在那隻手的手掌 link，
+            手掌、手指碰到它不算碰撞（touch_links）。之後的規劃、碰撞檢查（自己的 IK 也是問 MoveIt）都會算它，跟著手移動
+          {"action": "detach", "arm": "right", "id": "sp3_held"}：拿掉，不留在場景裡
+        實機跟隨開著時，模擬的手比實機高 dz_now（高度補償），物體跟著往上 dz_now，跟手的相對位置才會跟實機一樣。
+        結果用 /arm_ik_status 回報（cmd = attach / detach）。不管手臂是不是正在動都可以送"""
+        action, arm = "attach", None
+        try:
+            d = json.loads(msg.data)
+            action, arm, oid = d["action"], d["arm"], str(d["id"])
+            if action not in ("attach", "detach"):
+                raise ValueError(f"action 只接受 attach / detach，收到 {action!r}")
+            if arm not in ARMS:
+                raise ValueError(f"arm 只接受 right / left，收到 {arm!r}")
+            mid = f"attached_{oid}"
+            scene = PlanningScene(is_diff=True)
+            scene.robot_state.is_diff = True
+            aco = AttachedCollisionObject(link_name=ARMS[arm]["tip"])
+            if action == "attach":
+                dz = self.dz_now if self._real_on() else 0.0
+                co = to_collision_object(shift_up(dict(d, id=oid), dz)) if d.get("type") != "plane" else None
+                if co is None:
+                    raise ValueError(f"type 只接受 ball / box / stick，收到 {d.get('type')!r}")
+                co.id = mid
+                aco.object, aco.touch_links = co, list(self.hand_links[arm])
+            else:
+                dz = 0.0
+                aco.object = CollisionObject(id=mid, operation=CollisionObject.REMOVE)
+                # MoveIt 拿下來的物體會放回場景，要再從場景刪掉。沒掛著的時候不刪（刪不存在的物體 MoveIt 會回失敗）
+                if oid in self.attached:
+                    scene.world.collision_objects.append(CollisionObject(id=mid, operation=CollisionObject.REMOVE))
+            scene.robot_state.attached_collision_objects = [aco]
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            return self._note(f"/arm_attach 格式不對：{e}", ok=False, reason=R_BAD, cmd=action,
+                              arm=arm if arm in ARMS else None)
+        if not self.scene_cli.service_is_ready():
+            return self._note("連不到 /apply_planning_scene（MoveIt 有開嗎？）", ok=False, reason=R_DOWN,
+                              cmd=action, arm=arm, arms=(arm,))
+
+        def work():                 # 等 MoveIt 回覆要在背景執行緒（callback 裡等會卡住）
+            res = self._wait(self.scene_cli.call_async(ApplyPlanningScene.Request(scene=scene)), 3.0)
+            name, was = ARMS[arm]["label"], self.attached.get(oid)
+            if res is None:
+                return self._note(f"{action} {oid}：MoveIt 3 秒沒有回覆", ok=False, reason=R_DOWN,
+                                  cmd=action, arm=arm, arms=(arm,))
+            if action == "attach":
+                if not res.success:
+                    return self._note(f"{oid} 掛到{name}失敗（MoveIt 不接受）", ok=False, reason=R_PLAN,
+                                      cmd=action, arm=arm, arms=(arm,))
+                self.attached[oid] = arm
+                self._note(f"{oid} 掛到{name}" + (f"（高度補償：跟著模擬的手往上 {dz * 100:.1f} cm）" if dz else ""),
+                           cmd=action, arm=arm, arms=(arm,))
+            else:
+                if not res.success and was is not None:
+                    return self._note(f"{oid} 從{name}拿掉失敗（MoveIt 不接受）", ok=False, reason=R_PLAN,
+                                      cmd=action, arm=arm, arms=(arm,))
+                self.attached.pop(oid, None)
+                self._note(f"{oid} 從{name}拿掉" if was else f"{oid} 本來就沒有掛在手上", cmd=action, arm=arm, arms=(arm,))
         threading.Thread(target=work, daemon=True).start()
 
     def _arm_order(self, p, choice):
@@ -657,6 +820,7 @@ class MoveItBridge(Node):
         """掌心移到 p（base_link，m）。make_specs(手) = 這隻手要依序試的姿態（_dir_specs）。步驟見最上面"""
         t0 = time.time()
         self.ax_cache = {}
+        self.fail_codes = {"IK": R_UNREACH}
         dz = REAL_Z_COMP * max(to_meas(p)[0], 0.0) / 100 if self._real_on() else 0.0
         p_sim = p + UP * dz                         # 模擬（MoveIt）的掌心目標：實機會低 dz，剛好落在 p
         f, r, h = to_meas(p)
@@ -665,10 +829,11 @@ class MoveItBridge(Node):
             d = surface_dist(o, p)
             if d is not None and d < INSIDE_TOL:
                 top, bottom = object_top_bottom(o)
+                lb = _obj_label(o["id"])
                 return self._note(
-                    f"掌心目標（{goal}）{'在物體 #' + str(o['id']) + ' 裡面' if d < 0 else '貼著物體 #' + str(o['id']) + ' 的表面'}。\n"
-                    f"物體 #{o['id']} 底 {bottom:.1f}、頂 {top:.1f} cm。左邊的「高」是掌心的高度、不是物體的：從上方要停在物體上面，"
-                    f"掌心高要比 {top:.1f} 高（例如 {top + 2:.1f}）。點物體再按「← 選取的物體」會自動算", ok=False)
+                    f"掌心目標（{goal}）{'在' + lb + '裡面' if d < 0 else '貼著' + lb + '的表面'}。\n"
+                    f"{lb} 底 {bottom:.1f}、頂 {top:.1f} cm。左邊的「高」是掌心的高度、不是物體的：從上方要停在物體上面，"
+                    f"掌心高要比 {top:.1f} 高（例如 {top + 2:.1f}）。點物體再按「← 選取的物體」會自動算", ok=False, reason=R_COLL)
         fails, best = {}, None
         for arm in self._arm_order(p_sim, choice):
             fails[arm] = []
@@ -685,8 +850,10 @@ class MoveItBridge(Node):
             if best:
                 break
         if best is None:
-            return self._note(f"到不了 {goal}（試了 {time.time() - t0:.0f} 秒）：\n" + self._fail_text(p_sim, fails), ok=False)
+            return self._note(f"到不了 {goal}（試了 {time.time() - t0:.0f} 秒）：\n" + self._fail_text(p_sim, fails), ok=False,
+                              reason=self._overall_reason(fails))
         spec, arm, route, appr = best
+        self.ctx["arm"] = arm                       # 結果的 arm 欄位：實際用的那隻手（執行失敗也寫這隻）
         name = ARMS[arm]["label"]
         t_plan = time.time() - t0
         if appr is None:                            # 微調：直接轉過去
@@ -700,6 +867,7 @@ class MoveItBridge(Node):
             elif not (self._exec(route, f"{name}移動：移到預備點") and
                       self._exec(self._timed(arm, appr, self._approach_vlim(len(appr))), f"{name}移動：直線靠近")):
                 return
+        self.dz_now = dz                            # 掛物體（/arm_attach）時用：模擬的手現在比實機高 dz
         T = self.fk[arm](self.qa(arm))
         head = f"{name}{spec['label']}到了：{goal}"
         R_show = spec["R"]                          # 鎖定手指 / API 給的姿態：就是要的那個（IK 誤差 < 0.1°）
@@ -818,8 +986,8 @@ class MoveItBridge(Node):
                 return dict(spec, fingers=ang, R=R, want=want, limit=lim), res
             why = why or c2.most_common(1)[0][0]
         cnt.clear()
-        cnt[f"手指轉不到 {want:+.0f}°，最接近的（{finger_text(spec['dir'], tried[0])}）也不行："
-            f"{'到不了' if why == 'IK' else why}"] += 1
+        self._fail(cnt, f"手指轉不到 {want:+.0f}°，最接近的（{finger_text(spec['dir'], tried[0])}）也不行："
+                        f"{'到不了' if why == 'IK' else why}", self.fail_codes.get(why, R_PLAN))
         return None, None
 
     def _finger_edge(self, arm, p, axis, want, q):
@@ -853,7 +1021,7 @@ class MoveItBridge(Node):
         回傳 (手, 軌跡, 直線靠近的關節角清單) 或 None（原因記在 fails；IK 解不到記 "IK"，由 _explain 說明）；
         直線靠近 = None 是微調：軌跡直接到目標"""
         if np.linalg.norm(p - self.shoulder[arm]) > REACH:
-            fails["離肩膀太遠"] += 1
+            self._fail(fails, "離肩膀太遠", R_UNREACH)
             return None
         name = ARMS[arm]["label"]
         small = self._small_move(arm, p, R, dz, axis)
@@ -865,15 +1033,16 @@ class MoveItBridge(Node):
         ok = [q for q in sols if self._free(arm, q)]
         if not ok:
             if sols:
-                fails["會撞到：" + "、".join(self._contacts(arm, sols[0])) + "（掌心太靠近物體，或手會碰到旁邊的東西）"] += 1
+                self._fail(fails, "會撞到：" + "、".join(self._contacts(arm, sols[0])) +
+                           "（掌心太靠近物體，或手會碰到旁邊的東西）", R_COLL)
             else:
-                fails["IK"] += 1
+                self._fail(fails, "IK", R_UNREACH)
             return None
         if dz > 0.001:
             self._stage(f"檢查實機的位置（比模擬低 {dz * 100:.1f} cm）：{name}")
             ok = self._real_free(arm, ok, dz)
             if not ok:
-                fails[f"實機的位置（比模擬低 {dz * 100:.1f} cm）會撞到東西"] += 1
+                self._fail(fails, f"實機的位置（比模擬低 {dz * 100:.1f} cm）會撞到東西", R_COLL)
                 return None
         # 2. 預備點 → 目標走直線（每一步都檢查碰撞，含預備點），像站姿的先試
         cands = []
@@ -884,11 +1053,11 @@ class MoveItBridge(Node):
             a = self.fk[arm](q)[:3, 0]              # 掌心朝向
             back, why = self._line(arm, q, p, p - a * PRE_DIST, a, R)
             if back is None:
-                fails[f"最後 {PRE_DIST * 100:.0f} cm 直線靠近{why}"] += 1
+                self._fail(fails, f"最後 {PRE_DIST * 100:.0f} cm 直線靠近{why}", LINE_REASON.get(why, R_LIMIT))
                 continue
             appr = back[::-1] + [q]                 # 預備點 → 目標
             if check(arm, appr):
-                fails["直線靠近途中會轉過頭"] += 1
+                self._fail(fails, "直線靠近途中會轉過頭", R_LIMIT)
                 continue
             cands.append((self._pose_cost(arm, q) + _travel(appr), appr))
         # 3. 目前姿勢 → 預備點：先試每顆馬達直接轉過去（不繞路），會撞到才請 MoveIt 規劃（會繞開物體）
@@ -900,8 +1069,20 @@ class MoveItBridge(Node):
             code, res, why = self._plan_route(ARMS[arm]["group"], self._joint_goal(ARMS[arm]["joints"], appr[0], tol=1e-3))
             if code == 1 and not check(arm, _traj_q(res.planned_trajectory, ARMS[arm]["joints"])):
                 return arm, res.planned_trajectory, appr
-            fails[f"移到預備點：{why if code != 1 else '路徑會轉過頭'}"] += 1
+            self._fail(fails, f"移到預備點：{why if code != 1 else '路徑會轉過頭'}",
+                       R_LIMIT if code == 1 else plan_reason(code))
         return None
+
+    def _fail(self, cnt, text, reason):
+        """失敗原因記到 cnt（中文，_explain、_fail_text 用），同時記下它的分類（reason）"""
+        cnt[text] += 1
+        self.fail_codes[text] = reason
+
+    def _overall_reason(self, fails):
+        """每隻手、每個方向的主要原因 → 一個 reason（REASON_ORDER：先報換手或重試還有機會的）"""
+        codes = {self.fail_codes.get(cnt.most_common(1)[0][0], R_PLAN)
+                 for items in fails.values() for _, cnt in items if cnt}
+        return next((r for r in REASON_ORDER if r in codes), R_UNREACH)
 
     def _small_move(self, arm, p, R, dz, axis=None):
         """微調：目標離目前掌心不到 PRE_DIST、姿態差不到 SMALL_ROT，就從目前姿勢解（姿勢跟現在接近）、直接轉過去，
@@ -968,7 +1149,8 @@ class MoveItBridge(Node):
         for arm in ARMS:                            # 站姿本身會碰到物體的話，MoveIt 只會說「失敗」，先查出是哪個
             hits = self._contacts(arm, STAND_MOVEIT)
             if hits:
-                return self._note(f"{ARMS[arm]['label']}的站姿會碰到東西：" + "、".join(hits) + "，先把它移開", ok=False)
+                return self._note(f"{ARMS[arm]['label']}的站姿會碰到東西：" + "、".join(hits) + "，先把它移開", ok=False,
+                                  reason=R_COLL)
         stand = {a: STAND_MOVEIT for a in ARMS}
         self._stage("回站姿：先試每顆馬達直接轉回去（不繞路，線直接轉回原位）")
         route, how = self._direct(stand), "每顆馬達直接轉回去"
@@ -999,9 +1181,11 @@ class MoveItBridge(Node):
                                               SWING_TOL_STAND)
             if code != 1:
                 return self._note(f"回站姿規劃失敗：{why}" + ("（手已經往後退開了，可以再按一次回站姿，或用「移動」把手移到空一點的地方）"
-                                                         if backs else "（手可能被物體擋住，先用「移動」把手移開）"), ok=False)
+                                                         if backs else "（手可能被物體擋住，先用「移動」把手移開）"), ok=False,
+                                  reason=plan_reason(code))
             route, how = res.planned_trajectory, ("先往後退開，再 " if backs else "") + "MoveIt 規劃（直接轉會撞到）"
         if self._exec_checked(route, "回站姿"):
+            self.dz_now = 0.0
             self._report(list(ARMS), f"雙手回到站姿（{how}）")
 
     def _retreats(self, dist):
@@ -1176,7 +1360,7 @@ class MoveItBridge(Node):
             return -9999, None
         contacts = self._start_contacts(group)
         if contacts:                                         # MoveIt 自己只會回「失敗」，先查出是誰碰到誰
-            objs = {b for pair in contacts for b in pair if b.startswith("html_") and b != "html_floor"}
+            objs = {b for pair in contacts for b in pair if b.startswith("html_") and b != "html_" + FLOOR_ID}
             if not objs or any(not any(b in objs for b in pair) for pair in contacts):
                 return -10, [f"{_contact_name(a)}↔{_contact_name(b)}" for a, b in contacts]   # 碰到支架、自己、地板：不能忽略
             names = "、".join(_contact_name(b) for b in sorted(objs))
@@ -1205,15 +1389,27 @@ class MoveItBridge(Node):
         return (-6, None) if res is None else (res.result.error_code.val, res.result)
 
     def _exec(self, traj, label):
+        if self.stop_req:                           # /arm_stop 之後，這個動作剩下的段都不執行
+            self._note(f"{label}：已經收到 /arm_stop，不執行", ok=False, reason=R_CANCEL)
+            return False
         self._stage(label)
         gh = self._wait(self.exec_ac.send_goal_async(ExecuteTrajectory.Goal(trajectory=traj)), 5.0)
         if gh is None or not gh.accepted:
-            self._note(f"{label}：MoveIt 沒接受執行", ok=False)
+            self._note(f"{label}：MoveIt 沒接受執行", ok=False, reason=R_EXEC)
             return False
-        res = self._wait(gh.get_result_async(), 120.0)
+        self.exec_gh = gh
+        if self.stop_req:                           # 送出去的同時收到 /arm_stop（那時 exec_gh 還沒設）
+            gh.cancel_goal_async()
+        try:
+            res = self._wait(gh.get_result_async(), 120.0)
+        finally:
+            self.exec_gh = None
         code = -6 if res is None else res.result.error_code.val
+        if self.stop_req:
+            self._note(f"{label}：被 /arm_stop 取消（模擬停在目前的位置）", ok=False, reason=R_CANCEL)
+            return False
         if code != 1:
-            self._note(f"{label}執行失敗：{err_text(code)}", ok=False)
+            self._note(f"{label}執行失敗：{err_text(code)}", ok=False, reason=R_EXEC)
             return False
         return True
 
@@ -1228,8 +1424,11 @@ class MoveItBridge(Node):
     def _stage(self, text):
         self.status_pub.publish(String(data=json.dumps({"stage_only": True, "stage": text}, ensure_ascii=False)))
 
-    def _note(self, text, ok=True, arms=tuple(ARMS)):
-        """結果（網頁 IK 面板的文字、API 的回覆），附這幾隻手目前的關節角、刻度"""
+    def _note(self, text, ok=True, arms=tuple(ARMS), reason=None, **extra):
+        """結果（網頁 IK 面板的文字、API 的回覆），附這幾隻手目前的關節角、刻度。
+        cmd（move / stand / attach / detach；None = 不是指令的結果，例如停住後的「MoveIt 目前姿勢」）、
+        arm（實際用的那隻手；兩隻都不行、回站姿 = None）預設取執行中的動作（self.ctx），extra 可以蓋過；
+        reason：失敗時的分類（R_*），成功是 None"""
         q_deg, ticks = [], {}
         for a in arms:
             q = self.qa(a)
@@ -1238,8 +1437,10 @@ class MoveItBridge(Node):
         uncal = [ARMS[a]["label"] for a in arms if not ARMS[a]["calibrated"]]
         if uncal:
             text += f"\n（{'、'.join(uncal)}刻度未校正：實機跟隨不會送這隻手）"
-        self.status_pub.publish(String(data=json.dumps({"ok": ok, "note": text, "q_deg": q_deg, "ticks": ticks},
-                                                       ensure_ascii=False)))
+        d = {"ok": ok, "note": text, "q_deg": q_deg, "ticks": ticks, **self.ctx,
+             "reason": None if ok else (reason or R_INTERNAL)}
+        d.update(extra)
+        self.status_pub.publish(String(data=json.dumps(d, ensure_ascii=False)))
         text = text.replace("\n", "｜")
         if ok:                         # rclpy 不准同一行程式用不同等級 log，所以分兩行寫
             self.get_logger().info(text)
@@ -1255,7 +1456,7 @@ class MoveItBridge(Node):
             lines.append(f"{ARMS[a]['label']}掌心（模擬）前 {{:.1f}}、右 {{:.1f}}、高 {{:.1f}} cm".format(
                 *(np.round(to_meas(p), 1) + 0.0)))         # + 0.0：-0.0 → 0.0
         lines += ["實機可以照做"] if not warn else ["⚠ " + w for w in warn]
-        self._note("\n".join(lines), ok=not warn, arms=arms)
+        self._note("\n".join(lines), ok=not warn, arms=arms, reason=R_LIMIT if warn else None)
 
 
 def main():

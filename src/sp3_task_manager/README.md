@@ -37,10 +37,25 @@
 | 轉接 | 用到的介面 |
 |---|---|
 | VisionClient | `/bottle_detections_3d`（bottle_localization，base_link，m） |
-| ArmClient | `/arm_move`、`/arm_stand`、`/arm_speed_cmd`、`/arm_ik_status`（arm_ws 的 moveit_bridge）；`/joint_states` 檢查 driver 還活著 |
+| ArmClient | `/arm_move`、`/arm_stand`、`/arm_speed_cmd`、`/arm_ik_obstacles`、`/arm_attach`、`/arm_stop`、`/arm_ik_status`（armpackage 的 moveit_bridge，只認 `cmd` 對得上的結果）；`/joint_states` 檢查 driver 還活著；`/arm_real_status`（real_arm_bridge）：實機跟隨不是 follow 就回 MAN-E-007，MoveIt 到了之後等 `settled` 才往下（設定檔 `real_arm.required: false` 可以只測 MoveIt） |
+| 急停／中斷 | 急停時、手臂移動中被取消／逾時／狀態中斷時送 `/arm_stop`（取消 MoveIt 軌跡）＋`/arm_real_enable false`（實機停在最後的目標）；之後要重新打開實機跟隨 |
 | HandClient | `/hand/cmd`、`/hand/status`（handpackage）；夾到「壓力到門檻」才算抓到 |
 
 位置換算（base_link → 手臂量測座標）、抓取偏移、放置點、逾時、重試次數都在 `config/task_manager.yaml`。
+
+障礙物（`table`、`obstacles`）：任務開始時把桌子（暫時寫死在設定檔）、找到藥瓶後再把**其他**藥瓶（要抓的那瓶不算）
+發到 `/arm_ik_obstacles`（`{"source": "sp3", "objects": [...]}`，不會蓋掉網頁的物體），moveit_bridge 規劃、最後 10 cm 直線靠近都會檢查碰撞。
+夾住後把藥瓶掛到手上（`/arm_attach`），放下、重試或任務失敗時拿掉。
+
+可及範圍（`workspace`）：reach_test scan 實測的表（每個左右位置掌心最遠往前多少，左右手相同、中間內插），從上方抓用。
+藥瓶不在任何一隻手的範圍內 = MAN-E-002；指定的手搆不到也是 MAN-E-002；auto 時只考慮搆得到的手。
+桌面座標 [右, 前, 上]（cm）：原點 = 桌緣上、正對 base_link 左右中線的點，高度 = 桌面，拿捲尺量的值都用這套。
+
+選手：主控指定 left / right 就用那隻；auto 時兩隻手的預抓、抓取位置一樣（`front`、`top`）就送 `arm: auto`，
+由 moveit_bridge 依 IK 與碰撞挑（結果的 `arm` 欄位），`side` 才由任務管理照藥瓶左右依序試。
+
+moveit_bridge 結果的 `reason` → 錯誤碼：`unreachable`、`joint_limit`、`bad_request` = MAN-E-002（不重試，auto 時換手）；
+其他（`collision`、`plan_failed`、`exec_failed`…）= MAN-E-004（可重試）。
 
 ## 執行
 
@@ -48,12 +63,17 @@
 cd ~/nstc && colcon build --symlink-install --packages-select interfaces task_plan_demo sp3_task_manager
 source install/setup.bash
 
-# 不接硬體，先測流程與主控通訊（設定檔 dry_run.fail 可模擬各種失敗）
-ros2 launch sp3_task_manager task_manager.launch.py dry_run:=true
+# 要模擬哪幾段寫在設定檔 dry_run.modules（vision / arm / hand 任意組合，[] = 全部接實機），
+# launch 給 dry_run:= 就以 launch 為準。設定檔 dry_run.fail 可模擬各種失敗
+ros2 launch sp3_task_manager task_manager.launch.py                    # 照設定檔
+ros2 launch sp3_task_manager task_manager.launch.py dry_run:=true      # 全部模擬，測流程與主控通訊
+ros2 launch sp3_task_manager task_manager.launch.py dry_run:=vision    # 假藥瓶，手臂和手真的動
 ros2 run task_plan_demo client_gui          # 主控模擬器（src/drivers/ros2_task_plan_demo）
 
 # 接實機：nstc.launch.py、arm_ws（sim.launch.py real:=true）、bottle_localization 都開著
 ros2 launch sp3_task_manager task_manager.launch.py
 ```
+
+可及範圍與避障測試（直接對 moveit_bridge，不經任務管理）：`ros2 run sp3_task_manager reach_test scan` / `obstacles`，用法見檔頭或 COMMANDS.md。
 
 單元測試（不需要 ROS）：`cd src/sp3_task_manager && python3 -m pytest test -q`
