@@ -35,9 +35,11 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float64, String
 
 from sp3_task_manager import grasp_plan as gp
+from sp3_task_manager.adapters import LATCHED_QOS
 from sp3_task_manager.arm_shape import ARM_PREFIX, ArmShape, distance
 
-SOURCE = 'sp3_test'        # 場景來源：跟任務管理（sp3）、網頁（web）分開，測完清掉
+SOURCE = 'reach_test'      # 場景來源：跟任務管理（sp3）、網頁（web）分開，測完清掉。不能叫 sp3_xxx：MoveIt 的 id 會是 html_sp3_xxx_…，
+                           # 任務管理會當成自己的（它認 html_sp3_ 開頭），2026-11-18 用 sp3_test 時任務管理說「多了」而不動手臂
 # 手臂關節名 = 字首 + 這些（armpackage arm_config.JOINT_SUFFIX）；moveit_bridge 結果的 q_deg 依這個順序、右手在前
 JOINT_SUFFIX = ['shoulderJoint', 'armJoint', 'arm1Joint', 'forarmJoint', 'forarm1Joint', 'wristJoint', 'wrist1Joint']
 
@@ -48,7 +50,7 @@ class Tester(Node):
         self.cfg, self.args = cfg, args
         self.pub_move = self.create_publisher(String, '/arm_move', 10)
         self.pub_stand = self.create_publisher(Bool, '/arm_stand', 10)
-        self.pub_obs = self.create_publisher(String, '/arm_ik_obstacles', 10)
+        self.pub_obs = self.create_publisher(String, '/arm_ik_obstacles', LATCHED_QOS)
         self.pub_speed = self.create_publisher(Float64, '/arm_speed_cmd', 10)
         self.result = None
         self.real = None
@@ -227,8 +229,9 @@ def short(res):
 
 
 def table_with_scene(cfg, extra):
-    """場景：桌子 + 這次測試加的物體。"""
-    return [dict(gp.table_obstacle(cfg['table'], cfg['frames']), id=f'{SOURCE}_table')] + extra
+    """場景：桌子 + 固定物（設定檔 fixtures）+ 這次測試加的物體。"""
+    fixed = [gp.table_obstacle(cfg['table'], cfg['frames'])] + gp.fixture_obstacles(cfg)
+    return [dict(o, id=f'{SOURCE}_{o["id"].removeprefix("sp3_")}') for o in fixed] + extra
 
 
 def model_front(cfg, arm, right, up):
@@ -523,6 +526,54 @@ def run_point(t, cfg, args):
     t.scene([])
 
 
+def run_bottle(t, cfg, args):
+    """影像對手：讀 /bottle_detections_3d 裡 args.bottle 的位置，掌心移到瓶頂正上方 args.above cm 停住，
+    看掌心有沒有對準真的藥瓶（影像座標 + 手臂座標一起驗）。其他看到的藥瓶當障礙物（同任務管理）。"""
+    from vision_msgs.msg import Detection3DArray
+    seen = []                                   # 收到的每一筆 (xyz, size, 其他)
+
+    def cb(msg):
+        dets = {d.results[0].hypothesis.class_id: d for d in msg.detections if d.results}
+        if args.bottle in dets:
+            b = dets[args.bottle].bbox
+            others = [(c, np.array([d.bbox.center.position.x, d.bbox.center.position.y, d.bbox.center.position.z]),
+                       np.array([d.bbox.size.x, d.bbox.size.y, d.bbox.size.z]))
+                      for c, d in sorted(dets.items()) if c != args.bottle]
+            seen.append((np.array([b.center.position.x, b.center.position.y, b.center.position.z]),
+                         np.array([b.size.x, b.size.y, b.size.z]), others))
+
+    sub = t.create_subscription(Detection3DArray, '/bottle_detections_3d', cb, 10)
+    print(f'\n== 影像對手：{args.bottle}（收 2 秒 /bottle_detections_3d 取平均）')
+    t.spin_for(2.0)
+    t.destroy_subscription(sub)
+    if not seen:
+        print(f'⚠ 2 秒內沒看到 {args.bottle}（bottle_detect_v2、bottle_localization 有開嗎？瓶子在畫面裡嗎？）')
+        return
+    P = np.array([s_[0] for s_ in seen])
+    xyz, size, others = P.mean(axis=0), seen[-1][1], seen[-1][2]
+    right, front, up = gp.meas_to_table(gp.to_meas(xyz, cfg['frames']), cfg['table'], cfg['frames'])
+    jit = (P.max(axis=0) - P.min(axis=0)) * 1000
+    print(f'   影像：瓶身中心 桌面座標 右 {right:.1f}、前 {front:.1f}、上 {up:.1f} cm（{len(seen)} 筆，'
+          f'抖動 x {jit[0]:.0f} / y {jit[1]:.0f} / z {jit[2]:.0f} mm）；瓶高 {size[2] * 100:.1f} cm')
+    print(f'   請先用捲尺量真的瓶子中心離中線、離桌緣幾 cm，跟上面比（影像準不準）')
+    for c, _, _ in others:
+        print(f'   {c} 也看到了，當障礙物')
+    p = (right, front, up + size[2] * 50.0 + args.above)
+    objs = table_with_scene(cfg, [gp.bottle_obstacle(c, xyz_o, size_o, cfg['obstacles']['margin_cm'],
+                                                     oid=f'{SOURCE}_bottle_{c}') for c, xyz_o, size_o in others])
+    t.scene(objs)
+    shape, d = load_shape(), out_dir(args, 'bottle')
+    t.stand()
+    res = t.move(p, args.dir, args.arm, args.fingers)
+    print(f'   掌心目標：瓶頂正上方 {args.above:g} cm = 右 {p[0]:.1f}、前 {p[1]:.1f}、上 {p[2]:.1f}\n      {short(res)}')
+    report_pose(t, cfg, shape, res, p, objs, args.arm, os.path.join(d, 'bottle.png'),
+                f'{args.bottle}：掌心到瓶頂正上方 {args.above:g} cm｜{short(res)}')
+    if res.get('ok'):
+        input('      看掌心是不是在瓶子正上方（量偏右／偏前幾 cm、掌心離瓶頂幾 cm）後按 Enter（回站姿）…')
+    t.stand()
+    t.scene([])
+
+
 def run_obstacles(t, cfg, args):
     """幾種擺法，每種都從站姿出發，看結果符不符合預期。"""
     dims = {'b1': (0.0829, 0.0923), 'b2': (0.04943, 0.07803), 'b3': (0.04485, 0.08988), 'b4': (0.03785, 0.07924)}
@@ -578,7 +629,10 @@ def run_obstacles(t, cfg, args):
 
 def main():
     ap = argparse.ArgumentParser(description='可及範圍與避障測試（直接對 moveit_bridge）')
-    ap.add_argument('mode', choices=['scan', 'obstacles', 'point'])
+    ap.add_argument('mode', choices=['scan', 'obstacles', 'point', 'bottle'])
+    ap.add_argument('--bottle', default='b1', help='bottle 模式：哪一類藥瓶（b1～b4）')
+    ap.add_argument('--above', type=float, default=10.0,
+                    help='bottle 模式：掌心停在瓶頂上方幾 cm（手最低處在掌心下 4.5 cm）')
     ap.add_argument('values', nargs='*', type=float, help='point 的點：右 前 上（桌面座標 cm），可以給好幾組')
     ap.add_argument('--cases', type=int, nargs='+', help='obstacles 只做這幾項（例如 --cases 1 2 3）')
     ap.add_argument('--arm', choices=['left', 'right'], default='right')
@@ -609,7 +663,8 @@ def main():
         if not t.check_controllers() or not t.check_real():
             return
         t.pub_speed.publish(Float64(data=args.speed))
-        {'scan': run_scan, 'obstacles': run_obstacles, 'point': run_point}[args.mode](t, cfg, args)
+        {'scan': run_scan, 'obstacles': run_obstacles, 'point': run_point,
+         'bottle': run_bottle}[args.mode](t, cfg, args)
     except KeyboardInterrupt:
         print('\n中斷：清掉測試場景')
         try:

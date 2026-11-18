@@ -11,6 +11,11 @@ import time
 
 import numpy as np
 from std_msgs.msg import Bool, Float64, String
+from rclpy.qos import DurabilityPolicy, QoSProfile
+# /arm_ik_obstacles、/manip/target 用 TRANSIENT_LOCAL 發：rosbridge 訂閱時，若現有的發布者全是 TRANSIENT_LOCAL
+# （網頁經 rosbridge 發的 /arm_ik_obstacles 就是）會用 TRANSIENT_LOCAL 訂，VOLATILE 的發布者就收不到（QoS 不相容）。
+# TRANSIENT_LOCAL 發布者兩種訂閱都相容，晚開的網頁也會先收到最後一筆
+LATCHED_QOS = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 from sp3_task_manager import grasp_plan as gp
 from sp3_task_manager.errors import (BOTTLE_NOT_FOUND, DRIVER_ERROR, GRASP_FAILED,
@@ -99,7 +104,7 @@ class ArmClient:
         self.pub_stand = node.create_publisher(Bool, '/arm_stand', 10)
         self.pub_speed = node.create_publisher(Float64, '/arm_speed_cmd', 10)
         self.pub_real_enable = node.create_publisher(Bool, '/arm_real_enable', 10)
-        self.pub_obstacles = node.create_publisher(String, '/arm_ik_obstacles', 10)
+        self.pub_obstacles = node.create_publisher(String, '/arm_ik_obstacles', LATCHED_QOS)
         self.pub_attach = node.create_publisher(String, '/arm_attach', 10)
         self.pub_stop = node.create_publisher(Bool, '/arm_stop', 10)
         self.held = None           # 掛在手上的物體 (手, id)，失敗時要拿掉

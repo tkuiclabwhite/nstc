@@ -119,19 +119,26 @@ def from_meas(p_cm, frames):
     ])
 
 
+def margins(m):
+    """加厚設定 → (前後, 左右, 上下) cm：一個數字 = 三個方向一樣，或 [前後, 左右, 上下]。"""
+    return tuple(float(v) for v in (m if isinstance(m, (list, tuple)) else (m, m, m)))
+
+
 def table_obstacle(table, frames):
-    """桌子 → /arm_ik_obstacles 的 box（base_link，m）：從地板到桌面，桌緣往前 depth_cm，
-    桌面、桌緣、左右各加厚 margin_cm（沒設 = 0）。"""
-    m = table.get('margin_cm', 0.0) / 100.0
-    x0 = table['edge_from_base_link_cm'] / 100.0 - m
-    x1 = x0 + table['depth_cm'] / 100.0 + 2 * m
+    """桌子 → /arm_ik_obstacles 的 box（base_link，m）：桌板從 bottom_cm（沒設 = 地板）到桌面，桌緣往前 depth_cm，
+    加厚 margin_cm（前後、左右、上下，見 margins；貼地時下面不加）。"""
+    mf, mr, mu = (v / 100.0 for v in margins(table.get('margin_cm', 0.0)))
+    x0 = table['edge_from_base_link_cm'] / 100.0 - mf
+    x1 = x0 + table['depth_cm'] / 100.0 + 2 * mf
     y = from_meas((0.0, table['center_right_cm'], 0.0), frames)[1]
-    z_top = from_meas((0.0, 0.0, table['top_cm']), frames)[2] + m
-    z_floor = from_meas((0.0, 0.0, 0.0), frames)[2]
+    z_top = from_meas((0.0, 0.0, table['top_cm']), frames)[2] + mu
+    z_floor = from_meas((0.0, 0.0, table.get('bottom_cm', 0.0)), frames)[2]
+    if table.get('bottom_cm'):
+        z_floor -= mu
     return {'id': 'sp3_table', 'type': 'box',
             'c': [(x0 + x1) / 2, y, (z_top + z_floor) / 2],
             'R': [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            'h': [(x1 - x0) / 2, table['width_cm'] / 200.0 + m, (z_top - z_floor) / 2]}
+            'h': [(x1 - x0) / 2, table['width_cm'] / 200.0 + mr, (z_top - z_floor) / 2]}
 
 
 def bottle_obstacle(name, xyz_m, size_m, margin_cm, oid=None):
@@ -170,10 +177,24 @@ def scene_missing(source, objs, have):
     return want - set(have), mine - want
 
 
+def fixture_obstacles(cfg):
+    """設定檔 fixtures（桌面座標的方塊，cm）→ /arm_ik_obstacles 的 box（base_link，m），
+    各邊加厚 margin_cm（沒給 = table.margin_cm；也可以給 [前後, 左右, 上下] 分開設）。"""
+    out = []
+    for f in cfg.get('fixtures') or []:
+        mf, mr, mu = margins(f.get('margin_cm', cfg['table'].get('margin_cm', 0.0)))
+        c = from_meas(table_to_meas(f['center'], cfg['table'], cfg['frames']), cfg['frames'])
+        w, d, t = (float(v) for v in f['size'])
+        out.append({'id': f'sp3_fix_{f["id"]}', 'type': 'box', 'c': c.tolist(),
+                    'R': [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    'h': [(d / 2 + mf) / 100.0, (w / 2 + mr) / 100.0, (t / 2 + mu) / 100.0]})
+    return out
+
+
 def scene(cfg, others):
-    """要發給 /arm_ik_obstacles 的整份清單：桌子 + others [(類別, 中心 m, 尺寸 m)]（要抓的那瓶不在裡面）。"""
+    """要發給 /arm_ik_obstacles 的整份清單：桌子 + 固定物（fixtures）+ others [(類別, 中心 m, 尺寸 m)]（要抓的那瓶不在裡面）。"""
     margin = cfg['obstacles']['margin_cm']
-    return [table_obstacle(cfg['table'], cfg['frames'])] + [
+    return [table_obstacle(cfg['table'], cfg['frames'])] + fixture_obstacles(cfg) + [
         bottle_obstacle(name, xyz, size, margin) for name, xyz, size in others]
 
 

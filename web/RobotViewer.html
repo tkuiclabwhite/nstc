@@ -70,6 +70,7 @@ canvas{display:block}
   <div id="op-line"><span id="op-dot" class="dot-off">●</span> <span id="op-txt">/object_position: 等待中</span></div>
   <div id="ik-line"><span id="ik-dot" class="dot-off">●</span> <span id="ik-txt">/ik_viewer: 等待中</span></div>
   <div id="obs-line"><span id="obs-dot" class="dot-off">●</span> <span id="obs-txt">/arm_ik_obstacles（別的來源）: 等待中</span></div>
+  <div id="tgt-line"><span id="tgt-dot" class="dot-off">●</span> <span id="tgt-txt">/manip/target（要抓的）: 等待中</span></div>
 </div>
 <div id="ctrl-bar">
   <select id="addressSelect"></select>
@@ -1180,6 +1181,7 @@ ros.on('close', ()=>{
   setHud('op','dot-off','/object_position: 已斷線');
   setHud('ik','dot-off','/ik_viewer: 已斷線');
   setHud('obs','dot-off','/arm_ik_obstacles（別的來源）: 已斷線');
+  setHud('tgt','dot-off','/manip/target（要抓的）: 已斷線');
 });
 
 function enterAddress() {
@@ -1637,8 +1639,8 @@ extObsRoot.matrixAutoUpdate=false;
 scene.add(extObsRoot);
 const EXT_OBS_COLOR=0x33dddd;
 
-function extObstacleMesh(o) {
-  const mat=new THREE.MeshPhongMaterial({ color:EXT_OBS_COLOR, transparent:true, opacity:0.35,
+function extObstacleMesh(o, color=EXT_OBS_COLOR) {
+  const mat=new THREE.MeshPhongMaterial({ color, transparent:true, opacity:0.35,
                                           depthWrite:false, side:THREE.DoubleSide });
   let mesh=null;
   if (o.type==='box') {
@@ -1658,30 +1660,58 @@ function extObstacleMesh(o) {
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), d.normalize());
   } else return null;      // plane（地板）不畫
   const edges=new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),
-                                     new THREE.LineBasicMaterial({ color:EXT_OBS_COLOR }));
+                                     new THREE.LineBasicMaterial({ color }));
   mesh.add(edges);
   mesh.renderOrder=998;
   return mesh;
 }
 
+// 子三任務管理要抓的藥瓶（/manip/target，跟障礙物分開：它不是障礙物），亮綠色
+let targetSub=null, targetGroup=null;
+const TARGET_COLOR=0x66ff33;
+
+function showGroup(old, objs, color) {
+  if (old) {
+    extObsRoot.remove(old);
+    old.traverse(o=>{ if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  }
+  const g=new THREE.Group();
+  for (const o of objs || []) { const m=extObstacleMesh(o, color); if (m) g.add(m); }
+  scene.updateMatrixWorld(true);
+  extObsRoot.matrix.copy(linkObjects['base_link'].matrixWorld);
+  extObsRoot.matrixWorldNeedsUpdate=true;
+  extObsRoot.add(g);
+  return g;
+}
+
+function startTarget() {
+  if (targetSub) targetSub.unsubscribe();
+  targetSub=new ROSLIB.Topic({ ros, name:'/manip/target', messageType:'std_msgs/String' });
+  let lastKey='';
+  targetSub.subscribe(msg=>{
+    if (msg.data===lastKey) return;          // 每秒重發，沒變就不重畫
+    lastKey=msg.data;
+    let d;
+    try { d=JSON.parse(msg.data); } catch(e) { return; }
+    targetGroup=showGroup(targetGroup, d.objects, TARGET_COLOR);
+    setHud('tgt', d.objects && d.objects.length ? 'dot-on' : 'dot-warn',
+           '/manip/target（要抓的）: '+(d.objects && d.objects.length ? d['class'] : '沒有'));
+  });
+  setHud('tgt','dot-warn','/manip/target（要抓的）: 等待中');
+}
+
 function startExtObstacles() {
+  startTarget();
   if (extObsSub) extObsSub.unsubscribe();
   extObsSub=new ROSLIB.Topic({ ros, name:'/arm_ik_obstacles', messageType:'std_msgs/String' });
+  const lastKey={};        // 來源 → 上一次的內容（任務管理每秒重發，沒變就不重畫）
   extObsSub.subscribe(msg=>{
     let d;
     try { d=JSON.parse(msg.data); } catch(e) { return; }
     if (Array.isArray(d) || !d || !d.source || d.source==='web') return;
-    if (extObs[d.source]) {
-      extObs[d.source].parent.remove(extObs[d.source]);
-      extObs[d.source].traverse(o=>{ if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
-    }
-    const g=new THREE.Group();
-    for (const o of d.objects || []) { const m=extObstacleMesh(o); if (m) g.add(m); }
-    scene.updateMatrixWorld(true);
-    extObsRoot.matrix.copy(linkObjects['base_link'].matrixWorld);
-    extObsRoot.matrixWorldNeedsUpdate=true;
-    extObsRoot.add(g);
-    extObs[d.source]=g;
+    if (lastKey[d.source]===msg.data) return;
+    lastKey[d.source]=msg.data;
+    extObs[d.source]=showGroup(extObs[d.source], d.objects, EXT_OBS_COLOR);
     const parts=Object.entries(extObs).map(([s,grp])=>`${s} ${grp.children.length}`);
     setHud('obs','dot-on','/arm_ik_obstacles（別的來源）: '+parts.join('、'));
   });

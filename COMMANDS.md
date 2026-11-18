@@ -178,10 +178,17 @@ ros2 run sp3_task_manager reach_test point 0 10 10 30 20 10 --real       # 好�
 ros2 run sp3_task_manager reach_test obstacles --real --pause --cases 1 2 4
 ```
 
+```bash
+# 影像對手（要先開 bottle_detect_v2、bottle_localization；任務管理不用開）：讀藥瓶位置，掌心停在瓶頂正上方 10 cm
+ros2 run sp3_task_manager reach_test bottle --bottle b1 --arm left                     # 先只動模擬
+ros2 run sp3_task_manager reach_test bottle --bottle b1 --arm left --real --speed 10   # 實機：量掌心有沒有在瓶子正上方
+```
+會先印影像算的瓶子位置（桌面座標），跟捲尺量的比 = 影像準不準；掌心對不對準瓶子 = 影像＋手臂一起準不準。
+
 實機時 `obstacles --pause` 會先印出實體物品要擺在哪（桌面座標），擺好按 Enter 手臂才動，動完再停一次讓你量。
 掌心點 = 手掌面上、左右置中、離手掌底部（接手腕那端）7 cm；量「右」離機器人中線、「前」離桌緣、「上」離桌面。
 
-測試加的物體用場景來源 `sp3_test`，測完會自動清掉；中途 Ctrl+C 也會清。
+測試加的物體用場景來源 `reach_test`，測完會自動清掉；中途 Ctrl+C 也會清。
 
 **不用 RViz 看結果**：`obstacles` 每一項都存一張圖（俯視、正視、側視：桌子、障礙物、目標掌心、手臂外形），
 並印出「手離物體最近幾 cm」（含障礙物的餘裕，負的 = 插進去）。圖在 `~/reach_test_out/<時間>_obstacles_<手>/case<N>.png`，
@@ -194,7 +201,7 @@ ros2 run sp3_task_manager reach_test obstacles --real --pause --cases 1 2 4
 任務被拒絕（急停中、正在執行別的任務）時 rosbridge 不會回任何東西，網頁等 5 秒沒 feedback 就顯示「沒有回應」。
 別的主控（client_gui）送的任務也看得到進度與結果（看 `/manip/status` 的 feedback、last_message），但不能從網頁取消。
 
-RobotViewer 會把別的來源（sp3、sp3_test）發到 `/arm_ik_obstacles` 的障礙物畫成半透明青色（只看，不能拖）。
+RobotViewer 會把別的來源（sp3、reach_test）發到 `/arm_ik_obstacles` 的障礙物畫成半透明青色（只看，不能拖）。
 任務管理每秒重發一次自己的障礙物，網頁晚開也看得到；reach_test 只在測試中發。
 要抓的藥瓶畫成亮綠色（`/manip/target`，辨識到時出現、任務結束 10 秒後消失）；手臂模擬（dry_run 有 arm）時只有它，沒有障礙物。改了樣板要重新產生：
 `ros2 run armpackage build_viewer.py`。

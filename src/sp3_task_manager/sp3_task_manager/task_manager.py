@@ -32,6 +32,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
+from sp3_task_manager.adapters import LATCHED_QOS
 from sp3_task_manager import adapters, dry_run as dry_mod, goal as goal_mod, grasp_plan
 from sp3_task_manager.errors import (ESTOP, GRASP_FAILED, OK, OUT_OF_RANGE, TIMEOUT,
                                      TaskError, code_text)
@@ -86,7 +87,7 @@ class TaskManager(Node):
         self.pub_status = self.create_publisher(String, '/manip/status', 10)
         # 要抓的藥瓶（只給 RobotViewer 畫，跟 /arm_ik_obstacles 分開：它不是障礙物）。
         # {"class", "objects": [stick]}，objects 空 = 沒有目標。辨識到時發、之後跟 /manip/status 一起每秒重發，任務結束 10 秒後清掉
-        self.pub_target = self.create_publisher(String, '/manip/target', 10)
+        self.pub_target = self.create_publisher(String, '/manip/target', LATCHED_QOS)
         self._target = None
         self._target_until = float('inf')
         self.create_timer(1.0, self._publish_status, callback_group=sub_group)

@@ -95,10 +95,10 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
   0／10／18.9／30／40／50 → 最遠往前 16／22／24／24／22／14，左右手相同、內插；`front_min_cm` 2（前 0 在 18.9、30 joint_limit）。
   表外（跨到另一側）當搆不到——跨中線沒測過，要測用 `reach_test scan --arm left --rights -10 -20`（負的 = 跨過去）。
   歷史：先用左手指尖實量三點的肩膀球模型（扣指尖到掌心 10.8 cm），實測平均寬 3 cm、中線寬 7.5，已拿掉。
-- table：edge 16、top 81.2、depth 75、width 150、center 0（使用者 2026-11-17 給）。
+- table：edge 16（11/18 改 12.5）、top 81.2、depth 75、width 150、center 0（使用者 2026-11-17 給）。
 - obstacles 尺寸照 bottle_localization 每類別的 bottle_dims（已是）。
 - **測試工具 `reach_test`**（2026-11-17）：`ros2 run sp3_task_manager reach_test scan|obstacles`，直接對 moveit_bridge 測
-  實際極限（跟球模型比）與 6 種避障擺法，場景來源 `sp3_test`。使用者要先跑這個確認極限與避障，再填 place_targets。
+  實際極限（跟球模型比）與 6 種避障擺法，場景來源 `sp3_test`（11/18 改名 `reach_test`：sp3_ 開頭會被任務管理當成自己的）。使用者要先跑這個確認極限與避障，再填 place_targets。
 - place_targets：使用者說先一個就好（tray_1，位置還沒給）。
 - **2026-11-17 reach_test 第一輪**：幾乎全是 collision，原因是手本身插進桌子，不是範圍。URDF 算手＋手腕相對掌心點的外形：
   手指方向 −14.9（含手腕）～+10.7 cm、左右 −4～+11（拇指側）、掌心法向 −4～+4.5。掌心最低離桌：front 手指朝上 14.9、
@@ -190,6 +190,30 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
 - **要抓的藥瓶另外顯示（2026-11-18）**：任務管理發 `/manip/target`（JSON {class, objects:[stick]}，跟 /manip/status 一起每秒發，
   任務結束 10 秒後清空），RobotViewer 畫亮綠色；障礙物青色。不能借 /object_position（網頁會把 trackedProp 當自己的物體發給 MoveIt）。
   RobotViewer 兩種都「內容沒變不重畫」。本機私有 rosbridge＋CDP 測過。
+- **固定物 `fixtures`（2026-11-18）**：使用者說手後面有黏在架子上的小桌子，從站姿要先側舉；手臂端新的「先往上抬」直直往上會撞它，
+  場景裡卻沒有。task_manager.yaml 加 `fixtures`（桌面座標方塊 center/size，加厚 table.margin_cm），scene() 與 reach_test 都會放。
+  **尺寸位置待使用者量**，目前空的。reach_test point 圖：紫色（實機馬達）停在站姿 = 實機跟隨關著，不是路徑差很多。
+- 放置高度 bug（待使用者選放手高度）：place_targets 寫死掌心離桌 12，手上瓶子高 9.2（b1）時瓶底只離桌 1.8 < 桌子加厚 3 → collision。
+  建議改成放置點 = 盤面、掌心 = 盤面 + 瓶高 + palm_gap + 放手高度（A：3.5 cm）。
+- reach_test 加 `bottle` 模式（2026-11-18）：收 2 秒 /bottle_detections_3d 平均，掌心到瓶頂正上方 `--above`（預設 10）cm，
+  其他看到的藥瓶當障礙物；印影像的桌面座標讓人跟捲尺比。使用者後來決定加小桌子：fixtures back_shelf（長 50 對稱、寬 20、離地 101～107、前緣離「base_link」5.5）。
+  **URDF 的 base_link 不在立柱中間**：立柱在 base_link 後 1.4～4.3 cm，肩關節在 x = 0；使用者說的 base_link 應該是立柱前面，
+  所以前緣放在 base_link 後 6.9（待確認）。站姿手臂在那個高度最後到後 6.2 → 小桌子只加厚 0.5（fixtures 可各自設 margin_cm）；
+  起點就碰到的物體 moveit_bridge 會暫時不算，所以不能讓站姿碰到。
+- **桌子、小桌子改以網頁三軸（= URDF base_link）為準（2026-11-18）**：base_link 在肩關節轉軸那條線上，在立柱前面 1.35 cm 的空中
+  （量測座標「前 0」= 立柱前表面，MEAS_ORIGIN x −0.0135）。使用者對照三軸定：桌緣 base_link 前 **12**（原本 16；中途說過 12.5、13）、
+  小桌子前緣後 **9**（後緣 29；前後不加厚，左右上下 1.5，fixtures margin_cm 可給 [前後, 左右, 上下]）。
+  桌板 72～80 離地，試過 `table.bottom_cm: 72` 只畫桌板 → 站姿的手在桌板下，規劃讓手指從桌板下往前伸、實機撞桌 → **改回實心到地板**；大桌前後加厚 2（margin_cm [2, 3, 3]；0 時手貼桌緣邊舉邊往前，3 會讓站姿碰到）；桌板下面空了，站姿手在桌板下（掌心離地 67）。
+  桌面座標原點跟著往後 4 → workspace「前」全部 +4、front_min 6；tray 的 pos_cm 是量測座標沒變（桌面座標前 19）；
+  假藥瓶照桌面座標寫，實際往身體靠 4。站姿離加厚後的桌子 0.6、離小桌子 2.6（URDF 算）。
+- **給手臂負責人的第二批（使用者說晚點一起整理，2026-11-18 累積）**：①「先往上抬」_obstacle_top 把旁邊的藥瓶、後面的小桌子都算進
+  「路線下方」→ 要抬到 103～118.5 cm，左右手都抬不上去；直立圓柱最高點多算半徑 ②加了小桌子後「先往上抬」一定撞小桌，
+  只剩 MoveIt 隨機規劃，左手約一半失敗（規劃結果無效、繞遠路 >30°、路線撞到）→ 希望固定的「側舉預備姿勢」（站姿每顆馬達直接轉過去、
+  手往外抬高過桌面，回站姿反過來）③下垂補償（第一批 ①）還沒改。
+- **RobotViewer 收不到障礙物的 QoS 坑（2026-11-18）**：rosbridge 訂閱時，若當下所有發布者都是 TRANSIENT_LOCAL 就用 TRANSIENT_LOCAL 訂
+  （rosbridge 自己的發布者一律 TRANSIENT_LOCAL）。RobotViewer 自己就經 rosbridge 發 /arm_ik_obstacles，所以先開網頁再開 reach_test／
+  任務管理時，網頁的訂閱是 TRANSIENT_LOCAL，VOLATILE 的發布者收不到（WARN：requesting incompatible QoS … DURABILITY）。
+  → /arm_ik_obstacles、/manip/target 改用 `adapters.LATCHED_QOS`（TRANSIENT_LOCAL, depth 1）發；本機私有 rosbridge 重現並驗證過。
 - 黃色手指要動（使用者問）：網頁幽靈手臂吃 `/ik_viewer/joint_state` 任何 URDF 關節名，模擬手時任務管理可以發手指角度到那裡（不用改網頁）——還沒做。
   網頁顯示 sp3 障礙物、真手時黃色手指跟著動：要改 RobotViewer，使用者要先跟手臂負責人討論。
 - **假藥瓶改成每類一瓶（2026-11-18）**：`dry_run.bottles`（桌面座標 [右, 前]＋[直徑, 高]，立在桌面上）；要抓的是目標、其他的當障礙物。

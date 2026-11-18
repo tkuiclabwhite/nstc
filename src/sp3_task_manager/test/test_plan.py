@@ -97,7 +97,7 @@ def test_table_obstacle():
 
 def test_scene_excludes_target():
     others = [('b2', np.array([0.4, 0.1, -0.36]), np.array([0.05, 0.05, 0.08]))]
-    objs = grasp_plan.scene(CFG, others)
+    objs = grasp_plan.scene(dict(CFG, fixtures=[]), others)
     assert [o['id'] for o in objs] == ['sp3_table', 'sp3_bottle_b2']
     b = objs[1]
     m = CFG['obstacles']['margin_cm'] / 100
@@ -106,9 +106,9 @@ def test_scene_excludes_target():
 
 
 def test_table_to_meas():
-    # 桌面原點 = base_link 前 16 cm（量測座標前 17.35）、右 0、高 = top_cm
+    # 桌面原點 = base_link 前 edge_from_base_link_cm（量測座標再加 1.35）、右 0、高 = top_cm
     p = grasp_plan.table_to_meas((-67.0, 0.0, 0.0), CFG['table'], CFG['frames'])
-    assert np.allclose(p, [17.35, -67.0, CFG['table']['top_cm']])
+    assert np.allclose(p, [CFG['table']['edge_from_base_link_cm'] + 1.35, -67.0, CFG['table']['top_cm']])
 
 
 def test_meas_table_roundtrip():
@@ -119,8 +119,8 @@ def test_meas_table_roundtrip():
 
 def test_reach_front_interp():
     ws = CFG['workspace']
-    assert grasp_plan.reach_front(18.9, ws) == pytest.approx(24.0)
-    assert grasp_plan.reach_front(5.0, ws) == pytest.approx(19.0)      # 0 → 16、10 → 22 中間
+    assert grasp_plan.reach_front(18.9, ws) == pytest.approx(28.0)
+    assert grasp_plan.reach_front(5.0, ws) == pytest.approx(23.0)      # 0 → 20、10 → 26 中間
     assert grasp_plan.reach_front(-1.0, ws) is None                    # 跨到另一側
     assert grasp_plan.reach_front(51.0, ws) is None
 
@@ -128,11 +128,12 @@ def test_reach_front_interp():
 def test_reachable_arms():
     t = lambda right, front: grasp_plan.table_to_meas((right, front, 10.0), CFG['table'], CFG['frames'])
     assert grasp_plan.reachable_arms(t(0, 10), CFG) == ['left', 'right']     # 中線、近：兩隻都可以
-    assert grasp_plan.reachable_arms(t(-40, 5), CFG) == ['left']             # 左邊：只有左手
-    assert grasp_plan.reachable_arms(t(40, 5), CFG) == ['right']
-    assert grasp_plan.reachable_arms(t(18.9, 24), CFG) == ['right']          # 肩膀前方的極限
-    assert grasp_plan.reachable_arms(t(18.9, 25), CFG) == []
-    assert grasp_plan.reachable_arms(t(0, 17), CFG) == []                    # 中線最遠 16
+    assert grasp_plan.reachable_arms(t(-40, 8), CFG) == ['left']             # 左邊：只有左手
+    assert grasp_plan.reachable_arms(t(40, 8), CFG) == ['right']
+    assert grasp_plan.reachable_arms(t(-40, 5), CFG) == []                   # 太靠身體（front_min 6）
+    assert grasp_plan.reachable_arms(t(18.9, 28), CFG) == ['right']          # 肩膀前方的極限
+    assert grasp_plan.reachable_arms(t(18.9, 29), CFG) == []
+    assert grasp_plan.reachable_arms(t(0, 21), CFG) == []                    # 中線最遠 20
     assert grasp_plan.reachable_arms(t(30, 1), CFG) == []                    # 太靠身體
 
 
@@ -167,8 +168,37 @@ def test_dry_bottles():
     reach = {c: grasp_plan.reachable_arms(grasp_plan.to_meas(p, CFG['frames']), CFG) for c, (p, s) in dets.items()}
     assert 'right' in reach['b1'] and 'left' in reach['b2']
     p, s = dets['b1']
-    assert p == pytest.approx([0.28, -0.189, (81.2 - 120.2 + 9.23 / 2) / 100], abs=1e-6)   # 立在桌面上
+    edge = CFG['table']['edge_from_base_link_cm']
+    assert p == pytest.approx([(edge + 12.0) / 100, -0.189, (81.2 - 120.2 + 9.23 / 2) / 100], abs=1e-6)   # 立在桌面上
     assert s[2] == pytest.approx(0.0923)
+
+
+def test_fixtures():
+    cfg = dict(CFG, fixtures=[{'id': 'shelf', 'center': [0.0, -20.0, -5.0], 'size': [60.0, 10.0, 2.0]}])
+    f = grasp_plan.fixture_obstacles(cfg)[0]
+    mf, mr, mu = grasp_plan.margins(CFG['table']['margin_cm'])     # 沒給 margin_cm = 跟桌子一樣
+    assert f['id'] == 'sp3_fix_shelf'
+    edge = CFG['table']['edge_from_base_link_cm']
+    assert f['c'] == pytest.approx([(edge - 20.0) / 100, 0.0, (81.2 - 5.0 - 120.2) / 100])   # 桌緣後 20、桌面下 5
+    assert f['h'] == pytest.approx([(5 + mf) / 100, (30 + mr) / 100, (1 + mu) / 100])
+    assert [o['id'] for o in grasp_plan.scene(cfg, [])] == ['sp3_table', 'sp3_fix_shelf']
+    cfg['fixtures'][0]['margin_cm'] = 0.5
+    assert grasp_plan.fixture_obstacles(cfg)[0]['h'][0] == pytest.approx(5.5 / 100)
+    cfg['fixtures'][0]['margin_cm'] = [0.0, 1.5, 2.0]      # 前後、左右、上下分開
+    assert grasp_plan.fixture_obstacles(cfg)[0]['h'] == pytest.approx([0.05, 0.315, 0.03])
+
+
+def test_table_slab():
+    t = grasp_plan.table_obstacle(CFG['table'], CFG['frames'])
+    mf, mr, m = grasp_plan.margins(CFG['table']['margin_cm'])
+    assert (t['c'][0] - t['h'][0]) * 100 == pytest.approx(CFG['table']['edge_from_base_link_cm'] - mf)
+    bottom = (t['c'][2] - t['h'][2]) * 100 + 120.2
+    top = (t['c'][2] + t['h'][2]) * 100 + 120.2
+    assert top == pytest.approx(CFG['table']['top_cm'] + m)
+    slab = grasp_plan.table_obstacle(dict(CFG['table'], bottom_cm=72.0), CFG['frames'])         # 只畫桌板
+    assert (slab['c'][2] - slab['h'][2]) * 100 + 120.2 == pytest.approx(72.0 - m)
+    floor = grasp_plan.table_obstacle(dict(CFG['table'], bottom_cm=0.0), CFG['frames'])   # 沒設底 = 貼地，下面不加厚
+    assert (floor['c'][2] - floor['h'][2]) * 100 + 120.2 == pytest.approx(0.0)
 
 
 def test_place_targets_reachable():
@@ -188,10 +218,13 @@ def test_clearance_distance():
 
 
 def test_scene_missing():
-    objs = grasp_plan.scene(CFG, [('b2', np.array([0.3, 0.1, -0.35]), np.array([0.05, 0.05, 0.08]))])
+    objs = grasp_plan.scene(dict(CFG, fixtures=[]), [('b2', np.array([0.3, 0.1, -0.35]), np.array([0.05, 0.05, 0.08]))])
     want = grasp_plan.moveit_ids('sp3', objs)
     assert want == {'html_sp3_table', 'html_sp3_bottle_b2'}
     assert grasp_plan.scene_missing('sp3', objs, want | {'html_web_3'}) == (set(), set())     # 網頁的不管
     assert grasp_plan.scene_missing('sp3', objs, {'html_sp3_table'}) == ({'html_sp3_bottle_b2'}, set())
     assert grasp_plan.scene_missing('sp3', [], {'html_sp3_bottle_b1'}) == (set(), {'html_sp3_bottle_b1'})
     assert grasp_plan.moveit_ids('sp3_test', [{'id': 'sp3_test_table'}]) == {'html_sp3_test_table'}
+    # 別的來源的 id 不能是 html_sp3_ 開頭，不然任務管理（source sp3）會當成自己多出來的
+    missing, extra = grasp_plan.scene_missing('sp3', [{'id': 'sp3_table'}], {'html_sp3_table', 'html_reach_test_table'})
+    assert not missing and not extra
