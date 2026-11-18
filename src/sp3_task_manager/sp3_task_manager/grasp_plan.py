@@ -99,6 +99,17 @@ def plan(center, size_m, arm, grasp_cfg):
     return GraspPoses(arm, approach, center, pregrasp, grasp, lift)
 
 
+def dry_bottles(cfg):
+    """設定檔 dry_run.bottles → {類別: (中心 base_link m, (直徑, 直徑, 高) m)}，格式同 /bottle_detections_3d。"""
+    out = {}
+    for cls, b in (cfg['dry_run'].get('bottles') or {}).items():
+        d, h = (float(v) for v in b['size_m'])
+        right, front = (float(v) for v in b['table_cm'])
+        center = table_to_meas((right, front, h * 50.0), cfg['table'], cfg['frames'])
+        out[cls] = (from_meas(center, cfg['frames']), np.array([d, d, h]))
+    return out
+
+
 def from_meas(p_cm, frames):
     """量測座標 [前, 右, 高]（cm）→ base_link（m），to_meas 的反過來。"""
     return np.array([

@@ -220,8 +220,10 @@ class Tester(Node):
 
 
 def short(res):
-    note = (res.get('note') or '').split('\n')[0]
-    return f'{"OK " if res.get("ok") else "NG "} {res.get("arm") or "-":5s} {res.get("reason") or "":12s} {note[:60]}'
+    lines = (res.get('note') or '').split('\n')
+    route = next((l.split('；')[0] for l in lines if l.startswith('路線：')), '')   # moveit_bridge 2026-11-18：走哪一種路
+    return (f'{"OK " if res.get("ok") else "NG "} {res.get("arm") or "-":5s} {res.get("reason") or "":12s} '
+            f'{lines[0][:60]}{"｜" + route if route else ""}')
 
 
 def table_with_scene(cfg, extra):
@@ -597,7 +599,7 @@ def main():
     ap.add_argument('--out', default='~/reach_test_out', help='obstacles 的圖存在這個資料夾底下')
     ap.add_argument('--config', default=os.path.join(get_package_share_directory('sp3_task_manager'),
                                                      'config', 'task_manager.yaml'))
-    args = ap.parse_args()
+    args = ap.parse_intermixed_args()      # 點的數字可以放在 --arm 等選項後面（parse_args 會當成多餘的參數）
     with open(args.config, encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
 

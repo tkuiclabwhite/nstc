@@ -64,6 +64,8 @@ class TaskManager(Node):
         self.task_id = ''
         self.stage = -1
         self.last_error = ''
+        self.feedback_text = ''     # 最新一筆 feedback.status、上一個任務的 result.message：放進 /manip/status，
+        self.last_message = ''      # 讓不是送任務的那一方（網頁）也看得到（rosbridge 訂不到 action 的 feedback topic）
         self.estop = False
         self._lock = threading.Lock()
         self._busy = False
@@ -82,6 +84,11 @@ class TaskManager(Node):
 
         self.create_subscription(Bool, '/estop', self._estop_cb, 10, callback_group=sub_group)
         self.pub_status = self.create_publisher(String, '/manip/status', 10)
+        # 要抓的藥瓶（只給 RobotViewer 畫，跟 /arm_ik_obstacles 分開：它不是障礙物）。
+        # {"class", "objects": [stick]}，objects 空 = 沒有目標。辨識到時發、之後跟 /manip/status 一起每秒重發，任務結束 10 秒後清掉
+        self.pub_target = self.create_publisher(String, '/manip/target', 10)
+        self._target = None
+        self._target_until = float('inf')
         self.create_timer(1.0, self._publish_status, callback_group=sub_group)
 
         self._server = ActionServer(
@@ -99,9 +106,12 @@ class TaskManager(Node):
     def _publish_status(self):
         d = {'state': self.state, 'task_id': self.task_id,
              'stage': self.stage, 'stage_name': STAGES[self.stage] if self.stage >= 0 else '',
-             'last_error': self.last_error,
+             'last_error': self.last_error, 'feedback': self.feedback_text, 'last_message': self.last_message,
              'dry_run': [m for m in dry_mod.MODULES if m in self.dry_run], 'stamp': time.time()}
         self.pub_status.publish(String(data=json.dumps(d, ensure_ascii=False)))
+        if self._target is not None and time.monotonic() > self._target_until:
+            self._target = None
+        self.pub_target.publish(String(data=json.dumps(self._target or {'class': '', 'objects': []})))
 
     def _estop_cb(self, msg):
         if msg.data and not self.estop:
@@ -164,6 +174,8 @@ class TaskManager(Node):
         fb.status = f'{stage} {STAGES[stage]}｜retry={retry}｜{detail}'
         fb.progress = float(stage) / len(STAGES)
         self._gh.publish_feedback(fb)
+        self.feedback_text = fb.status
+        self._publish_status()
         self.get_logger().info(f'[{self.task_id}] {fb.status}')
 
     def _execute(self, gh):
@@ -173,6 +185,8 @@ class TaskManager(Node):
         self._arm_used = None
         self.task_id = ''
         self.state, self.stage, self.last_error = 'BUSY', -1, ''
+        self.feedback_text = ''
+        self._target, self._target_until = None, float('inf')
         result = ExecuteTaskPlan.Result()
         try:
             g = goal_mod.parse(gh.request.subtask.parameter_keys,
@@ -209,6 +223,8 @@ class TaskManager(Node):
             self.state = 'ERROR'
         finally:
             self.get_logger().info(f'[{self.task_id}] 結果：{result.message}')
+            self.last_message = result.message
+            self._target_until = time.monotonic() + 10.0
             self._gh = None
             with self._lock:
                 self._busy = False
@@ -256,13 +272,23 @@ class TaskManager(Node):
         self._feedback(0, retry, f'找 {g.bottle_class}')
         xyz, size, others = self.vision.locate(self, g.bottle_class)
         center = grasp_plan.to_meas(xyz, self.cfg['frames'])
+        self._target = {'class': g.bottle_class,
+                        'objects': [grasp_plan.bottle_obstacle(g.bottle_class, xyz, size, 0.0, oid='sp3_target')]}
+        self._publish_status()
         reachable = grasp_plan.reachable_arms(center, self.cfg)
         if not reachable:
             raise TaskError(OUT_OF_RANGE, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
                                           '超出兩隻手的可及範圍')
+        if g.place_target:          # 抓起來就不換手，所以要選放置點也搆得到的那隻
+            place_reach = grasp_plan.reachable_arms(self.cfg['place_targets'][g.place_target]['pos_cm'], self.cfg)
+            both = [a for a in reachable if a in place_reach]
+            if not both:
+                raise TaskError(OUT_OF_RANGE, f'沒有一隻手同時搆得到 {g.bottle_class}（{"、".join(reachable)} 手）'
+                                              f'和 {g.place_target}（{"、".join(place_reach) or "都搆不到"}）')
+            reachable = both
         if g.arm in ('left', 'right') and g.arm not in reachable:
             raise TaskError(OUT_OF_RANGE, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
-                                          f'{g.arm} 手搆不到（{"、".join(reachable)} 手可以）')
+                                          f'{g.arm} 手搆不到藥瓶或放置點（{"、".join(reachable)} 手可以）')
 
         self._feedback(1, retry, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
                                  f'障礙物：桌子{"、" + "、".join(o[0] for o in others) if others else ""}')

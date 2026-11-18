@@ -69,6 +69,8 @@ canvas{display:block}
   <div id="stand-line"><span id="stand-dot" class="dot-warn">●</span> <span id="stand-txt">stand.ini: 使用預設值</span></div>
   <div id="op-line"><span id="op-dot" class="dot-off">●</span> <span id="op-txt">/object_position: 等待中</span></div>
   <div id="ik-line"><span id="ik-dot" class="dot-off">●</span> <span id="ik-txt">/ik_viewer: 等待中</span></div>
+  <div id="obs-line"><span id="obs-dot" class="dot-off">●</span> <span id="obs-txt">/arm_ik_obstacles（別的來源）: 等待中</span></div>
+  <div id="tgt-line"><span id="tgt-dot" class="dot-off">●</span> <span id="tgt-txt">/manip/target（要抓的）: 等待中</span></div>
 </div>
 <div id="ctrl-bar">
   <select id="addressSelect"></select>
@@ -1166,6 +1168,7 @@ ros.on('connection', ()=>{
   startIkViewer();
   startIkPanel();
   startRealPanel();
+  startExtObstacles();
 });
 ros.on('error', ()=>{
   connectFlag=false;
@@ -1177,6 +1180,8 @@ ros.on('close', ()=>{
   setHud('js','dot-off','/joint_commands: 已斷線');
   setHud('op','dot-off','/object_position: 已斷線');
   setHud('ik','dot-off','/ik_viewer: 已斷線');
+  setHud('obs','dot-off','/arm_ik_obstacles（別的來源）: 已斷線');
+  setHud('tgt','dot-off','/manip/target（要抓的）: 已斷線');
 });
 
 function enterAddress() {
@@ -1619,6 +1624,98 @@ function sceneObstacles() {
                n:new THREE.Vector3(0,1,0).transformDirection(inv).toArray() });
   }
   return out;
+}
+
+// ── 別的來源發的障礙物（子三任務管理 sp3、reach_test 的 sp3_test …）──────────
+// /arm_ik_obstacles 是 {"source", "objects"}（整份蓋掉那個來源）；舊格式（陣列）= 網頁自己發的，跳過。
+// 只畫出來給人看：半透明青色、不能拖、不參與網頁的碰撞檢查（碰撞由 moveit_bridge／MoveIt 管）。
+// 物體座標是 base_link（m）。放在另一個 group（位姿抄 base_link），不掛進機器人底下：
+// 幽靈手臂是 clone 整個 worldGroup，掛進去會被複製成橘色；也不會被網頁的碰撞檢查掃到。
+// 手上夾著的（/arm_attach）不在這裡，不畫。
+let extObsSub=null;
+const extObs={};          // 來源 → THREE.Group
+const extObsRoot=new THREE.Group();
+extObsRoot.matrixAutoUpdate=false;
+scene.add(extObsRoot);
+const EXT_OBS_COLOR=0x33dddd;
+
+function extObstacleMesh(o, color=EXT_OBS_COLOR) {
+  const mat=new THREE.MeshPhongMaterial({ color, transparent:true, opacity:0.35,
+                                          depthWrite:false, side:THREE.DoubleSide });
+  let mesh=null;
+  if (o.type==='box') {
+    const h=o.h, R=o.R;
+    mesh=new THREE.Mesh(new THREE.BoxGeometry(2*h[0], 2*h[1], 2*h[2]), mat);
+    const m=new THREE.Matrix4().set(R[0][0],R[0][1],R[0][2],o.c[0], R[1][0],R[1][1],R[1][2],o.c[1],
+                                    R[2][0],R[2][1],R[2][2],o.c[2], 0,0,0,1);
+    m.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  } else if (o.type==='ball') {
+    mesh=new THREE.Mesh(new THREE.SphereGeometry(o.r, 20, 14), mat);
+    mesh.position.fromArray(o.c);
+  } else if (o.type==='stick') {
+    const a=new THREE.Vector3().fromArray(o.a), b=new THREE.Vector3().fromArray(o.b);
+    const d=b.clone().sub(a);
+    mesh=new THREE.Mesh(new THREE.CylinderGeometry(o.r, o.r, d.length(), 20), mat);
+    mesh.position.copy(a).add(b).multiplyScalar(0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), d.normalize());
+  } else return null;      // plane（地板）不畫
+  const edges=new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),
+                                     new THREE.LineBasicMaterial({ color }));
+  mesh.add(edges);
+  mesh.renderOrder=998;
+  return mesh;
+}
+
+// 子三任務管理要抓的藥瓶（/manip/target，跟障礙物分開：它不是障礙物），亮綠色
+let targetSub=null, targetGroup=null;
+const TARGET_COLOR=0x66ff33;
+
+function showGroup(old, objs, color) {
+  if (old) {
+    extObsRoot.remove(old);
+    old.traverse(o=>{ if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  }
+  const g=new THREE.Group();
+  for (const o of objs || []) { const m=extObstacleMesh(o, color); if (m) g.add(m); }
+  scene.updateMatrixWorld(true);
+  extObsRoot.matrix.copy(linkObjects['base_link'].matrixWorld);
+  extObsRoot.matrixWorldNeedsUpdate=true;
+  extObsRoot.add(g);
+  return g;
+}
+
+function startTarget() {
+  if (targetSub) targetSub.unsubscribe();
+  targetSub=new ROSLIB.Topic({ ros, name:'/manip/target', messageType:'std_msgs/String' });
+  let lastKey='';
+  targetSub.subscribe(msg=>{
+    if (msg.data===lastKey) return;          // 每秒重發，沒變就不重畫
+    lastKey=msg.data;
+    let d;
+    try { d=JSON.parse(msg.data); } catch(e) { return; }
+    targetGroup=showGroup(targetGroup, d.objects, TARGET_COLOR);
+    setHud('tgt', d.objects && d.objects.length ? 'dot-on' : 'dot-warn',
+           '/manip/target（要抓的）: '+(d.objects && d.objects.length ? d['class'] : '沒有'));
+  });
+  setHud('tgt','dot-warn','/manip/target（要抓的）: 等待中');
+}
+
+function startExtObstacles() {
+  startTarget();
+  if (extObsSub) extObsSub.unsubscribe();
+  extObsSub=new ROSLIB.Topic({ ros, name:'/arm_ik_obstacles', messageType:'std_msgs/String' });
+  const lastKey={};        // 來源 → 上一次的內容（任務管理每秒重發，沒變就不重畫）
+  extObsSub.subscribe(msg=>{
+    let d;
+    try { d=JSON.parse(msg.data); } catch(e) { return; }
+    if (Array.isArray(d) || !d || !d.source || d.source==='web') return;
+    if (lastKey[d.source]===msg.data) return;
+    lastKey[d.source]=msg.data;
+    extObs[d.source]=showGroup(extObs[d.source], d.objects, EXT_OBS_COLOR);
+    const parts=Object.entries(extObs).map(([s,grp])=>`${s} ${grp.children.length}`);
+    setHud('obs','dot-on','/arm_ik_obstacles（別的來源）: '+parts.join('、'));
+  });
+  setHud('obs','dot-warn','/arm_ik_obstacles（別的來源）: 等待中');
 }
 
 function publishObstacles() {

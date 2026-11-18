@@ -124,7 +124,7 @@ ros2 run task_plan_demo client_gui
 或 launch 時用 `dry_run:=` 臨時指定（逗號分隔，以 launch 為準）：
 
 ```bash
-ros2 launch sp3_task_manager task_manager.launch.py dry_run:=vision       # 假藥瓶（dry_run.bottle_base_link_m），手臂和手真的動
+ros2 launch sp3_task_manager task_manager.launch.py dry_run:=vision       # 假藥瓶（dry_run.bottles：b1 右、b2 左，另兩瓶當障礙物），手臂和手真的動
 ros2 launch sp3_task_manager task_manager.launch.py dry_run:=vision,arm   # 只有手真的開合、夾持
 ```
 
@@ -186,6 +186,18 @@ ros2 run sp3_task_manager reach_test obstacles --real --pause --cases 1 2 4
 **不用 RViz 看結果**：`obstacles` 每一項都存一張圖（俯視、正視、側視：桌子、障礙物、目標掌心、手臂外形），
 並印出「手離物體最近幾 cm」（含障礙物的餘裕，負的 = 插進去）。圖在 `~/reach_test_out/<時間>_obstacles_<手>/case<N>.png`，
 輸出會印路徑。看圖：在 AGX 用 `eog <路徑>`，或拿回桌機 `scp iclab@172.17.121.11:<路徑> .`。
+
+### 網頁送任務（暫代總計畫主控）
+
+`web/SP3TaskInterface.html`（導覽列 SP3Task）：送任務（task_id 空白自動產生 T-年月日-時分、timeout_s 預設 150）、看各階段進度與結果、
+`/manip/status`、取消、急停／解除急停。要先開 nstc.launch（rosbridge 9090）與任務管理。
+任務被拒絕（急停中、正在執行別的任務）時 rosbridge 不會回任何東西，網頁等 5 秒沒 feedback 就顯示「沒有回應」。
+別的主控（client_gui）送的任務也看得到進度與結果（看 `/manip/status` 的 feedback、last_message），但不能從網頁取消。
+
+RobotViewer 會把別的來源（sp3、sp3_test）發到 `/arm_ik_obstacles` 的障礙物畫成半透明青色（只看，不能拖）。
+任務管理每秒重發一次自己的障礙物，網頁晚開也看得到；reach_test 只在測試中發。
+要抓的藥瓶畫成亮綠色（`/manip/target`，辨識到時出現、任務結束 10 秒後消失）；手臂模擬（dry_run 有 arm）時只有它，沒有障礙物。改了樣板要重新產生：
+`ros2 run armpackage build_viewer.py`。
 
 ### 沒有螢幕時用指令送任務、看狀態
 

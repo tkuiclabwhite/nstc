@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8" />
+	<link rel="SHORTCUT ICON" href="./picture/icon.png">
+	<title>SP3Task</title>
+
+	<!-- CSS References -->
+	<link rel="stylesheet" type="text/css" rel="stylesheet" href="./css/style.css">
+
+	<!-- JavaScript References -->
+	<script src="./js/config.js"></script>
+	<script src="./js/nav.js"></script>
+	<!-- 不用 roslib：web/js/roslib 是 1.2.0，沒有 ROS 2 action；這頁直接講 rosbridge 2.0 的 JSON 協定 -->
+
+	<style type="text/css">
+		body {
+			width: 1520px;
+			overflow: visible;
+			background-image: url(./picture/Gray_Background.jpg);
+			background-size: cover;
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+		}
+
+		#container {
+			background-color: #333;
+			border: 2px black solid;
+			width: 1440px;
+			margin: 10px auto 30px auto;
+			padding-bottom: 10px;
+			overflow: visible;
+			color: white;
+		}
+
+		section.wide {
+			float: left;
+			width: 1416px;
+			margin: 10px 8px 0 8px;
+			border: 1px #FFF solid;
+			padding-bottom: 8px;
+		}
+		section.half {
+			float: left;
+			width: 701px;
+			margin: 10px 0 0 8px;
+			border: 1px #FFF solid;
+			padding-bottom: 8px;
+			min-height: 230px;
+		}
+
+		table.control { border-collapse: collapse; width: auto; margin: 0 auto; }
+		table.control td, table.control th { padding: 4px 6px; vertical-align: middle; }
+		td.label { width: 110px; white-space: nowrap; text-align: right; }
+		.Button { height: 30px; margin-left: 6px; padding: 0 14px; font-size: 15px; }
+		select, input[type=text], input[type=number] { height: 26px; font-size: 15px; }
+		input[type=number] { width: 70px; }
+
+		#estop {
+			width: 260px; height: 80px; font-size: 30px; font-weight: bold;
+			background: #c62828; color: white; border: 4px solid #ffcdd2; border-radius: 10px; cursor: pointer;
+		}
+		#estop:active { background: #8e0000; }
+		#estop-release { height: 30px; margin-top: 6px; }
+
+		#state { font-size: 26px; font-weight: bold; padding: 2px 14px; border-radius: 6px; }
+		.st-IDLE { background: #2e7d32; }
+		.st-BUSY { background: #f9a825; color: black; }
+		.st-ERROR { background: #c62828; }
+		.st-ESTOP { background: #ff1744; animation: blink 0.8s step-start infinite; }
+		.st-OFF { background: #555; }
+		@keyframes blink { 50% { opacity: 0.4; } }
+
+		table.stages { border-collapse: separate; border-spacing: 6px; margin: 6px auto; }
+		table.stages td {
+			width: 150px; height: 44px; text-align: center; font-size: 18px;
+			background: #444; border: 1px #888 solid; border-radius: 6px;
+		}
+		table.stages td.done { background: #2e7d32; }
+		table.stages td.now { background: #f9a825; color: black; font-weight: bold; }
+		table.stages td.fail { background: #c62828; }
+
+		#detail { font-size: 17px; margin: 4px 16px; min-height: 24px; }
+		#result { font-size: 20px; margin: 8px 16px; min-height: 28px; white-space: pre-wrap; }
+		.ok { color: #69f0ae; font-weight: bold; }
+		.ng { color: #ff8a80; font-weight: bold; }
+		.dim { color: #bbb; font-size: 13px; }
+
+		#log {
+			background: #000; border: 1px #FFF solid; margin: 4px 16px; height: 190px;
+			overflow-y: auto; font-family: monospace; font-size: 13px; padding: 4px; text-align: left;
+		}
+		table.hist { border-collapse: collapse; margin: 4px auto; width: 1380px; }
+		table.hist th { background-color: #000080; border: 1px white solid; height: 24px; }
+		table.hist td { border: 1px #777 solid; padding: 2px 6px; text-align: center; font-size: 14px; }
+		table.hist td.msg { text-align: left; }
+
+		#connected { color: #00D600; display: none; font-size: 20px; margin: 0; }
+	</style>
+</head>
+
+<body>
+	<ul id="mainnav"></ul>
+	<br>
+
+	<div style="padding-left: 20px; height: 30px;">
+		<p id="connected">Connected</p>
+	</div>
+
+	<div id="head" align="center">
+		<h1 align="center" id="header" style="color: white; margin: 4px;">SP3 Task Interface</h1>
+		<table>
+			<tr>
+				<td>
+					<select style="height:25px; margin-right: 5px;" id="addressSelect">
+						<option value="localhost">localhost</option>
+					</select>
+				</td>
+				<td>
+					<button type="button" style="width:110px ;height:25px;" onclick="enterAddress()">Enter Address</button>
+				</td>
+			</tr>
+		</table>
+	</div>
+
+	<div id="container">
+
+		<!-- ================= 送任務 ================= -->
+		<section class="half" align="center">
+			<b><h align="center" style="font-size: 23px">送任務（/manip/pick_place）</h></b>
+			<table class="control">
+				<tr>
+					<td class="label">bottle_class</td>
+					<td align="left">
+						<select id="f-bottle">
+							<option>b1</option><option>b2</option><option>b3</option><option>b4</option>
+						</select>
+					</td>
+					<td class="label">arm</td>
+					<td align="left">
+						<select id="f-arm">
+							<option>auto</option><option>left</option><option>right</option>
+						</select>
+					</td>
+				</tr>
+				<tr>
+					<td class="label">place_target</td>
+					<td align="left"><input type="text" id="f-place" value="tray_1" style="width:110px"></td>
+					<td class="label">timeout_s</td>
+					<td align="left"><input type="number" id="f-timeout" value="150" min="1"></td>
+				</tr>
+				<tr>
+					<td class="label">task_id</td>
+					<td align="left" colspan="3">
+						<input type="text" id="f-taskid" style="width:220px" placeholder="空白 = 送出時自動產生">
+						<span class="dim">空白就自動產生 T-年月日-時分；自己填要照 T-YYYYMMDD-NNNN</span>
+					</td>
+				</tr>
+			</table>
+			<div style="margin-top:10px;">
+				<input type="button" id="btn-send" class="Button" value="送出" onclick="sendTask()">
+				<input type="button" id="btn-cancel" class="Button" value="取消任務" onclick="cancelTask()" disabled>
+			</div>
+			<div class="dim" id="send-hint" style="margin-top:6px;"></div>
+		</section>
+
+		<!-- ================= 狀態與急停 ================= -->
+		<section class="half" align="center">
+			<b><h align="center" style="font-size: 23px">任務管理狀態（/manip/status）</h></b>
+			<div style="margin: 10px 0;"><span id="state" class="st-OFF">沒有資料</span></div>
+			<div id="status-line" class="dim">—</div>
+			<div style="margin-top: 12px;">
+				<button type="button" id="estop" onclick="estop(true)">急停</button><br>
+				<input type="button" id="estop-release" class="Button" value="解除急停" onclick="estop(false)">
+			</div>
+		</section>
+
+		<div style="clear: both;"></div>
+
+		<!-- ================= 進度與結果 ================= -->
+		<section class="wide" align="center">
+			<b><h align="center" style="font-size: 23px">進度</h></b>
+			<table class="stages"><tr id="stages"></tr></table>
+			<div id="detail" align="left"></div>
+			<div id="result" align="left"></div>
+			<div id="log"></div>
+		</section>
+
+		<div style="clear: both;"></div>
+
+		<!-- ================= 紀錄 ================= -->
+		<section class="wide" align="center">
+			<b><h align="center" style="font-size: 23px">這次開頁以來的任務</h></b>
+			<table class="hist">
+				<thead><tr>
+					<th>送出時間</th><th>task_id</th><th>藥瓶</th><th>arm</th><th>放置點</th>
+					<th>結果</th><th>秒</th><th>訊息</th>
+				</tr></thead>
+				<tbody id="hist"></tbody>
+			</table>
+		</section>
+
+		<div style="clear: both;"></div>
+	</div>
+
+	<script type="text/javascript">
+
+        // ===================================================================
+        // 設定（跟 sp3_task_manager 對齊）
+        // ===================================================================
+        var ACTION = '/manip/pick_place';
+        var ACTION_TYPE = 'interfaces/action/ExecuteTaskPlan';
+        var STAGES = ['辨識', '規劃', '接近', '抓取', '驗證', '放置', '退回'];   // task_manager.py STAGES
+        var ERROR_NAMES = {                                                         // errors.py NAMES
+            1: '任務逾時', 2: '資料超出範圍', 3: '找不到藥瓶', 4: '抓取失敗',
+            5: '關節狀態中斷', 6: '手部狀態中斷', 7: '驅動器錯誤', 8: '急停'
+        };
+        var STATUS_STALE_MS = 3000;     // /manip/status 是 1 Hz，超過 3 秒沒收到 = 任務管理沒開
+        var ACCEPT_WAIT_MS = 5000;      // 送出後這麼久沒有 feedback = 沒被接受
+
+        // ===================================================================
+        // 連線
+        // 兩條 WebSocket：rosbridge 預設在「送 action goal 的那條連線」上會一直卡到任務結束
+        // （send_action_goals_in_new_thread = false），那條連線上的其他訊息都要等。
+        // 所以狀態、急停、取消走常駐的 ctrl，每個任務另開一條 goal 連線，任務結束就關。
+        // ===================================================================
+        var myAddress = window.ROBOT_CONFIG.ip;
+        var ctrl = null;
+        var lastStatus = null, lastStatusT = 0;
+
+        function url() { return 'ws://' + (myAddress.indexOf(':') >= 0 ? myAddress : myAddress + ':9090'); }   // 同 RobotViewer：可帶 :port
+
+        function connectCtrl() {
+            var ws = new WebSocket(url());
+            ctrl = ws;
+            ws.onopen = function () {
+                if (ws !== ctrl) return;
+                setConn(true);
+                ws.send(JSON.stringify({ op: 'advertise', topic: '/estop', type: 'std_msgs/Bool' }));
+                ws.send(JSON.stringify({ op: 'subscribe', topic: '/manip/status', type: 'std_msgs/String' }));
+            };
+            ws.onmessage = function (ev) {
+                var m = JSON.parse(ev.data);
+                if (m.op !== 'publish') return;
+                if (m.topic === '/manip/status') {
+                    try { lastStatus = JSON.parse(m.msg.data); lastStatusT = Date.now(); } catch (e) { }
+                    renderStatus();
+                    observeStatus();
+                }
+            };
+            ws.onclose = function () {
+                if (ws !== ctrl) return;
+                setConn(false);
+                setTimeout(function () { if (ws === ctrl) connectCtrl(); }, 2000);   // 自動重連
+            };
+        }
+
+        function ctrlSend(obj) {
+            if (!ctrl || ctrl.readyState !== WebSocket.OPEN) return false;
+            ctrl.send(JSON.stringify(obj));
+            return true;
+        }
+
+        function setConn(ok) {
+            document.getElementById('connected').style.display = ok ? 'inline' : 'none';
+            document.body.style.backgroundImage = ok ? 'url(./picture/Background.jpg)' : 'url(./picture/Gray_Background.jpg)';
+            renderStatus();
+        }
+
+        function enterAddress() {
+            myAddress = document.getElementById('addressSelect').value;
+            var old = ctrl;
+            ctrl = null;
+            if (old) old.close();
+            connectCtrl();
+        }
+
+        // ===================================================================
+        // 狀態、急停
+        // ===================================================================
+        function statusFresh() { return lastStatus && Date.now() - lastStatusT < STATUS_STALE_MS; }
+
+        function renderStatus() {
+            var el = document.getElementById('state'), line = document.getElementById('status-line');
+            var connected = ctrl && ctrl.readyState === WebSocket.OPEN;
+            if (!connected) {
+                el.className = 'st-OFF'; el.textContent = '沒連上 rosbridge';
+                line.textContent = url();
+            } else if (!statusFresh()) {
+                el.className = 'st-OFF'; el.textContent = '沒有資料';
+                line.textContent = '/manip/status 超過 3 秒沒更新：任務管理有開嗎？';
+            } else {
+                var s = lastStatus;
+                el.className = 'st-' + s.state; el.textContent = s.state;
+                var parts = [];
+                if (s.task_id) parts.push('task_id ' + s.task_id);
+                if (s.stage >= 0) parts.push('階段 ' + s.stage + ' ' + s.stage_name);
+                if (s.dry_run && s.dry_run.length) parts.push('模擬：' + s.dry_run.join('、'));
+                if (s.last_error) parts.push('上次錯誤：' + s.last_error);
+                line.textContent = parts.join('　｜　') || '—';
+            }
+            renderButtons();
+        }
+        setInterval(renderStatus, 1000);
+
+        function estop(on) {
+            if (!on && !confirm('確定解除急停？')) return;
+            if (!ctrlSend({ op: 'publish', topic: '/estop', msg: { data: on } })) {
+                alert('沒連上 rosbridge，' + (on ? '急停' : '解除') + '沒送出！');
+                return;
+            }
+            log((on ? '送出急停' : '送出解除急停'));
+        }
+
+        // ===================================================================
+        // 任務
+        // ===================================================================
+        var task = null;     // { id, ws, row, args, t0, accepted, done }
+
+        function pad(n) { return (n < 10 ? '0' : '') + n; }
+        // 格式要是 T-YYYYMMDD-NNNN（goal.py TASK_ID_RE）；NNNN 跟任務管理自動產生的一樣用「時分」
+        function autoTaskId() {
+            var d = new Date();
+            return 'T-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-'
+                + pad(d.getHours()) + pad(d.getMinutes());
+        }
+
+        function renderButtons() {
+            var busy = task && !task.done;
+            var st = statusFresh() ? lastStatus.state : null;
+            var hint = '';
+            if (busy) hint = '任務進行中';
+            else if (!st) hint = '任務管理沒有狀態，送了大概不會被接受';
+            else if (st === 'ESTOP') hint = '急停中，要先解除才會接任務';
+            else if (st === 'BUSY') hint = '任務管理正在執行別的任務';
+            document.getElementById('btn-send').disabled = busy || st === 'ESTOP' || st === 'BUSY';
+            document.getElementById('btn-cancel').disabled = !(busy && task.accepted);
+            document.getElementById('send-hint').textContent = hint;
+        }
+
+        function sendTask() {
+            if (task && !task.done) return;
+            var taskId = document.getElementById('f-taskid').value.trim() || autoTaskId();
+            var args = {
+                task_id: taskId,
+                bottle_class: document.getElementById('f-bottle').value,
+                arm: document.getElementById('f-arm').value,
+                place_target: document.getElementById('f-place').value.trim(),
+                timeout_s: String(Number(document.getElementById('f-timeout').value) || 30)
+            };
+            var keys = Object.keys(args).filter(function (k) { return args[k] !== ''; });
+            var t = {
+                id: 'sp3_web_' + Date.now(), args: args, t0: Date.now(), accepted: false, done: false,
+                row: addHistRow(args)
+            };
+            task = t;
+            resetProgress();
+            log('送出 ' + keys.map(function (k) { return k + '=' + args[k]; }).join(' '));
+
+            var ws = new WebSocket(url());
+            t.ws = ws;
+            ws.onopen = function () {
+                ws.send(JSON.stringify({
+                    op: 'send_action_goal', id: t.id, action: ACTION, action_type: ACTION_TYPE, feedback: true,
+                    args: { subtask: { parameter_keys: keys, parameter_values: keys.map(function (k) { return args[k]; }) } }
+                }));
+                // 任務管理拒絕（急停、忙碌）或沒開時，rosbridge 2.0 不會回任何東西，只能靠逾時判斷
+                t.acceptTimer = setTimeout(function () {
+                    if (!t.accepted && !t.done)
+                        finish(t, false, '沒有回應：任務管理沒開、正在執行別的任務，或急停中（任務被拒絕）', null);
+                }, ACCEPT_WAIT_MS);
+                // 保險：任務時限過了很久還沒結果，就不等了
+                t.lostTimer = setTimeout(function () {
+                    if (!t.done) finish(t, false, '超過 timeout_s + 30 秒都沒收到結果（連線或任務管理出問題）', null);
+                }, (Number(args.timeout_s) + 30) * 1000);
+            };
+            ws.onmessage = function (ev) {
+                var m = JSON.parse(ev.data);
+                if (m.id !== t.id) return;
+                if (m.op === 'action_feedback') onFeedback(t, m.values);
+                else if (m.op === 'action_result') onResult(t, m);
+            };
+            ws.onerror = function () { if (!t.done) finish(t, false, '連不上 rosbridge（' + url() + '）', null); };
+            ws.onclose = function () { if (!t.done) finish(t, false, '連線中斷，結果不明（看 /manip/status 或任務管理的終端機）', null); };
+            renderButtons();
+        }
+
+        function cancelTask() {
+            if (!task || task.done) return;
+            // 取消要走 ctrl：goal 那條連線卡在等結果，送進去不會被處理。rosbridge 的 goal 清單是共用的，id 對得上就行
+            if (ctrlSend({ op: 'cancel_action_goal', id: task.id, action: ACTION })) log('送出取消');
+            else alert('沒連上 rosbridge，取消沒送出');
+        }
+
+        // feedback.status 格式：'<階段號> <階段名>｜retry=<n>｜<說明>'
+        function onFeedback(t, fb) {
+            if (t !== task || t.done) return;
+            if (!t.accepted) { t.accepted = true; renderButtons(); }
+            renderFeedback(fb);
+        }
+
+        // ---------- 別人送的任務（client_gui、總計畫主控）：只能看，不能取消 ----------
+        // rosbridge 訂不到 action 的 feedback topic（型別在 interfaces.action，它只找 interfaces.msg），
+        // 所以看 /manip/status：任務管理每次 feedback 都會馬上發一筆，帶 feedback（最新的 status 字串）與 last_message（結果）。
+        var observed = null;     // { row, t0, done, fb }
+        var ownFinishedAt = 0;
+
+        function ownActive() { return task && !task.done; }
+
+        function observeStatus() {
+            var s = lastStatus;
+            if (!s || ownActive()) return;
+            if (s.state === 'BUSY') {
+                if (!observed || observed.done) {
+                    if (Date.now() - ownFinishedAt < 2000) return;     // 自己剛結束的任務，晚到的舊狀態
+                    observed = {
+                        t0: Date.now(), done: false, fb: '',
+                        row: addHistRow({ task_id: s.task_id || '?', bottle_class: '—', arm: '—', place_target: '（別的主控送的）' })
+                    };
+                    resetProgress();
+                    log('別的主控送了任務');
+                }
+                if (s.task_id) observed.row.cells[1].textContent = s.task_id;
+                if (s.feedback && s.feedback !== observed.fb) {
+                    observed.fb = s.feedback;
+                    renderFeedback({ status: s.feedback });
+                }
+            } else if (observed && !observed.done) {
+                var msg = s.last_message || '結果不明';
+                var code = s.last_error ? parseInt(s.last_error.slice(-3), 10) : null;
+                finish(observed, /^OK/.test(msg), msg, code);
+            }
+        }
+
+        function renderFeedback(fb) {
+            var parts = String(fb.status).split('｜');
+            var stage = parseInt(parts[0], 10);
+            var retry = (parts[1] || '').replace('retry=', '');
+            var detail = parts.slice(2).join('｜');
+            setStage(stage, false);
+            document.getElementById('detail').textContent =
+                (isNaN(stage) ? '' : stage + ' ' + STAGES[stage]) + (retry && retry !== '0' ? '（第 ' + (Number(retry) + 1) + ' 次）' : '')
+                + '：' + detail;
+            log(fb.status);
+        }
+
+        function onResult(t, m) {
+            if (m.result === false) {      // rosbridge 這邊就失敗了（型別、action 名稱不對等）
+                finish(t, false, 'rosbridge 回報失敗：' + m.values, null);
+                return;
+            }
+            var v = m.values || {};
+            var canceled = m.status === 5;  // action_msgs/GoalStatus.STATUS_CANCELED
+            var text = v.message || '';
+            if (canceled) text = '（已取消）' + text;
+            finish(t, !!v.success, text, v.error_code);
+        }
+
+        function finish(t, ok, message, code) {
+            if (t.done) return;
+            t.done = true;
+            if (t === task) ownFinishedAt = Date.now();
+            clearTimeout(t.acceptTimer); clearTimeout(t.lostTimer);
+            if (t.ws && t.ws.readyState <= WebSocket.OPEN) t.ws.close();
+            var dur = (message.match(/duration_s=([\d.]+)/) || [])[1] || ((Date.now() - t.t0) / 1000).toFixed(1);
+            var el = document.getElementById('result');
+            var head;
+            if (ok) {
+                head = '<span class="ok">✓ 成功</span>';
+                setStage(STAGES.length, false);
+            } else {
+                var name = code ? ('MAN-E-' + ('00' + code).slice(-3) + ' ' + (ERROR_NAMES[code] || '')) : '';
+                head = '<span class="ng">✗ 失敗' + (name ? '　' + name : '') + '</span>';
+                markFail();
+            }
+            el.innerHTML = head + '　<span class="dim">' + dur + ' 秒</span>';
+            el.appendChild(document.createElement('br'));
+            el.appendChild(document.createTextNode(message));
+            log('結果：' + (ok ? '成功' : '失敗') + ' ' + message);
+
+            var cells = t.row.cells;
+            cells[5].innerHTML = ok ? '<span class="ok">成功</span>'
+                : '<span class="ng">' + (code ? 'MAN-E-' + ('00' + code).slice(-3) : '失敗') + '</span>';
+            cells[6].textContent = dur;
+            cells[7].textContent = message;
+            renderButtons();
+        }
+
+        // ===================================================================
+        // 畫面
+        // ===================================================================
+        var curStage = -1;
+        (function () {
+            var tr = document.getElementById('stages');
+            STAGES.forEach(function (name, i) {
+                var td = document.createElement('td');
+                td.textContent = i + ' ' + name;
+                tr.appendChild(td);
+            });
+        })();
+
+        function setStage(stage, failed) {
+            curStage = stage;
+            var tds = document.getElementById('stages').cells;
+            for (var i = 0; i < tds.length; i++)
+                tds[i].className = i < stage ? 'done' : i === stage ? (failed ? 'fail' : 'now') : '';
+        }
+        function markFail() { if (curStage >= 0 && curStage < STAGES.length) setStage(curStage, true); }
+
+        function resetProgress() {
+            setStage(-1, false);
+            document.getElementById('detail').textContent = '';
+            document.getElementById('result').textContent = '';
+        }
+
+        function log(text) {
+            var el = document.getElementById('log');
+            var d = new Date();
+            var line = document.createElement('div');
+            line.textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '  ' + text;
+            el.appendChild(line);
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function addHistRow(a) {
+            var tb = document.getElementById('hist');
+            var tr = tb.insertRow(0);
+            var d = new Date();
+            [pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()),
+             a.task_id, a.bottle_class, a.arm, a.place_target || '—', '進行中', '', '']
+                .forEach(function (v, i) {
+                    var td = tr.insertCell(-1);
+                    td.textContent = v;
+                    if (i === 7) td.className = 'msg';
+                });
+            return tr;
+        }
+
+        connectCtrl();
+    </script>
+</body>
+
+</html>

@@ -41,7 +41,10 @@
      不管上一個動作停在哪，同一個目標都挑差不多的姿勢
   3. 檢查會不會撞到東西；高度補償時，實機那個比較低的位置也檢查（場景物體暫時往上移）
   4. 從目標沿掌心反方向退 PRE_DIST = 預備點；預備點 → 目標走直線（姿態不變），越接近越慢、到目標停
-  5. 目前姿勢 → 預備點：每顆馬達直接轉過去（不繞路，線扭最少），會撞到才請 MoveIt 規劃（繞遠路就重新規劃）
+  5. 目前姿勢 → 預備點：每顆馬達直接轉過去（不繞路，線扭最少）；會撞到就先沿直線往正上方抬過物體、再直接轉過去
+     （_via_path，2026-11-18）；
+     還是不行才請 MoveIt 規劃（繞遠路、路線會撞到就重新規劃；Humble 的 MoveIt 不檢查路線，這裡逐點查）。
+     結果的 note 會寫「路線：…」是哪一種。回站姿也一樣：直接轉 → 往後退開 → 從物體上方繞回 → MoveIt
   微調（目標離目前掌心不到 PRE_DIST、姿態差不到 SMALL_ROT）：不退到預備點，從目前姿勢直接轉過去
 MoveIt → 這裡 → 網頁：
   /joint_states → /ik_viewer/joint_state（橘色雙手）、/ik_viewer/target（洋紅色球）
@@ -75,7 +78,8 @@ from moveit_msgs.msg import (AttachedCollisionObject, DisplayTrajectory, Collisi
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 import yaml
-from moveit_msgs.srv import ApplyPlanningScene, GetStateValidity
+from moveit_msgs.msg import PlanningSceneComponents
+from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene, GetStateValidity
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 
 from arm_config import (ARMS, STAND, LABELS, TOOL_OFFSET, MAX_TRAVEL, MEAS_ORIGIN, rad_to_ticks, tick_range, to_meas,
@@ -86,6 +90,7 @@ BASE = "base_link"
 RATE = 30.0          # 網頁更新頻率（Hz）
 SETTLE = 0.3         # 手臂停住多久（s）才報一次目前姿勢的檢查結果
 SCENE_RESEND = 5.0   # 每幾秒把網頁的物體整批重送給 MoveIt（move_group 晚開或重開也會補上）
+SCENE_READY = 5.0    # 每個動作開始前，場景物體還沒套用到 MoveIt 時最多等幾秒（_ensure_scene），還不行就不動
 FLOOR_SIZE = 3.0     # 地板在 MoveIt 裡用多大的薄板代表（m）
 PLAN_TIME = 3.0      # MoveIt 每次規劃最多想幾秒
 MAX_VEL = 2.3824     # joint_limits.yaml 的 max_velocity，網頁速度換成倍率用
@@ -101,6 +106,12 @@ MAX_FULL = 4         # 找到幾組「直線靠近也可行」的就不再找
 MAX_ROUTE_TRIES = 5  # 最多找幾個候選的「移到預備點」的路
 REACH = 0.62         # 目標離肩膀超過這麼遠（m）就不用試這隻手
 PRE_DIST = 0.10      # 預備點離目標多遠（沿掌心反方向）
+# 先往上抬過物體再過去（_via_path，2026-11-18）：直接轉會撞到時，在 MoveIt 之前先試。
+# 掌心沿直線往正上方抬到「路線下方物體的最高點 + VIA_CLEARS」，再每顆馬達直接轉到目標。
+# 不能整段都用直接轉：從站姿（手掛在桌面下、桌緣後）一開始轉，手指會先往前掃進桌子（2026-11-18 本機：走到 8～20% 拇指就碰到）
+VIA_CLEARS = (0.10, 0.18)       # 抬到掌心比物體最高點高多少（m）；手掌朝下時手最低處在掌心下 4.5 cm，手指朝下約 11 cm
+VIA_CORRIDOR = 0.15             # 起點、終點掌心的水平範圍往外多少（m）以內的物體算「路線下方」
+VIA_TRIES = 2                   # 移到預備點時，最好的幾個目標姿勢試這個方法
 SMALL_ROT = np.radians(30)      # 微調：目標離目前掌心不到 PRE_DIST、姿態差不到這麼多，就不退到預備點，直接轉過去
 SMALL_JOINT = np.radians(45)    # 微調時任一軸要轉超過這麼多，就當作不是微調（走一般流程）
 REAL_Z_COMP = 0.17   # 實機跟隨開著時，目標往上補「前 × 這個值」（前 = 離立柱前面多遠，前 50 cm → +8.5 cm）。
@@ -125,7 +136,8 @@ JOINT_WEIGHTS = np.array([3.0, 3.0, 2.0, 2.0, 1.0, 1.0, 1.0])   # 比較轉動�
 STAND_MOVEIT = np.clip(STAND, -3.14, 3.14)                     # 站姿夾進 URDF 的 ±3.14（現在站姿全 0，不會被夾）
 ERR = {-1: "規劃失敗（找不到路，或目標到不了）", -2: "規劃結果無效", -4: "控制器執行失敗", -6: "逾時",
        -7: "被取消（/arm_stop）",
-       -10: "起點姿勢已經撞到東西", -12: "目標姿勢會撞到東西", -31: "IK 解不到（到不了，或在關節範圍內做不到）",
+       -10: "起點姿勢已經撞到東西", -12: "目標姿勢會撞到東西", -13: "MoveIt 規劃的路線會撞到東西",
+       -31: "IK 解不到（到不了，或在關節範圍內做不到）",
        99999: "MoveIt 失敗",
        -9999: "連不到 move_group（MoveIt 有開嗎？）", -9998: "MoveIt 沒接受請求"}
 
@@ -147,13 +159,17 @@ LINE_REASON = {"途中碰到關節極限": R_LIMIT, "途中姿勢會突然翻轉
 
 def plan_reason(code):
     """MoveIt 錯誤碼 → reason"""
-    return {-10: R_COLL, -12: R_COLL, -31: R_UNREACH, -7: R_CANCEL, -9999: R_DOWN}.get(code, R_PLAN)
+    return {-10: R_COLL, -12: R_COLL, -13: R_COLL, -31: R_UNREACH, -7: R_CANCEL, -9999: R_DOWN}.get(code, R_PLAN)
 
 
 def err_text(code, res=None):
-    """錯誤碼 → 中文；起點就撞到東西時（_plan 回傳 -10 和碰撞清單）列出是哪個物體碰到哪裡"""
+    """錯誤碼 → 中文。_plan 回傳的 res 是清單時列出誰碰到誰（-10 起點就撞到、-13 路線會撞到），是字串時就是說明"""
     if code == -10 and isinstance(res, list):
         return "起點姿勢已經碰到東西：" + "、".join(res) + "（把物體移開一點再試）"
+    if code == -13 and isinstance(res, list):
+        return "MoveIt 規劃的路線會撞到：" + "、".join(res)
+    if isinstance(res, str):
+        return res
     return ERR.get(code, f"MoveIt 錯誤碼 {code}")
 
 
@@ -514,6 +530,9 @@ class MoveItBridge(Node):
         self.create_subscription(String, "/arm_real_status", self._real_status_cb, 10)
         self.scene_cli = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
         self.valid_cli = self.create_client(GetStateValidity, "/check_state_validity")
+        self.get_scene_cli = self.create_client(GetPlanningScene, "/get_planning_scene")
+        self.applied_key = None        # MoveIt 確定套用了的場景（_scene_now 的 key）；跟最新的不一樣 = 還沒進 MoveIt
+        self.scene_lock = threading.Lock()      # 同一時間只送一包場景
         self.move_ac = ActionClient(self, MoveGroup, "/move_action")
         self.exec_ac = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
         self.create_timer(1.0 / RATE, self._tick)
@@ -524,6 +543,7 @@ class MoveItBridge(Node):
         self.ctx = {"cmd": None, "arm": None}   # 執行中的動作（結果的 cmd、arm 欄位）
         self.fail_codes = {"IK": R_UNREACH}     # 這一次移動的失敗原因（中文）→ reason
         self.stop_req = False          # 收到 /arm_stop：這個動作不再執行下一段
+        self.route_how = ""            # 這次移到預備點走哪一種路（_plan_move 第 3 步），寫在結果裡
         self.exec_gh = None            # 執行中的軌跡（/arm_stop 取消用）
         self.in_scene = set()          # 目前 MoveIt 場景裡由這裡放的物體 id
         self.scene_key = None          # 上次同步的內容，沒變就不重送
@@ -613,28 +633,91 @@ class MoveItBridge(Node):
                 out.append(dict(o, id=oid if oid.startswith(src + "_") else f"{src}_{oid}"))
         return out
 
-    def _sync_scene(self, force=False, wait=False):
+    def _scene_now(self):
+        """要給 MoveIt 的物體（扣掉這一段暫時不算的、高度補償檢查時往上移）和代表它的 key"""
         objs = [shift_up(o, self.scene_shift) for o in self.obstacles if str(o.get("id")) not in self.ignore]
-        key = json.dumps(objs, sort_keys=True)
-        if (key == self.scene_key and not force) or not self.scene_cli.service_is_ready():
-            return
-        scene = PlanningScene(is_diff=True)
-        ids = set()
-        for o in objs:
-            co = to_collision_object(o)
-            if co is not None:
-                scene.world.collision_objects.append(co)
-                ids.add(co.id)
-        for gone in self.in_scene - ids:           # 網頁刪掉的（或這一段暫時不算的）也要從 MoveIt 拿掉
-            scene.world.collision_objects.append(CollisionObject(id=gone, operation=CollisionObject.REMOVE))
-        if scene.world.collision_objects:
-            fut = self.scene_cli.call_async(ApplyPlanningScene.Request(scene=scene))
-            if wait:
-                self._wait(fut, 3.0)
-            if key != self.scene_key:
-                self.get_logger().info(f"MoveIt 場景更新：{len(ids)} 個物體" +
-                                       (f"（{sorted(self.ignore)} 暫時不算）" if self.ignore else ""))
-        self.in_scene, self.scene_key = ids, key
+        return objs, json.dumps(objs, sort_keys=True)
+
+    def _sync_scene(self, force=False, wait=False):
+        """場景物體 → MoveIt（/apply_planning_scene）。
+        wait=True（背景執行緒用）：先問 MoveIt 現在有哪些物體，照實際差異送（不會叫它刪不存在的物體、整包被判失敗），
+          等它回覆；回傳 MoveIt 有沒有套用。
+        wait=False（callback、計時器用）：送出就回來，回傳 None；MoveIt 回覆成功時才記 applied_key。
+        同一時間只送一包：背景執行緒在等回覆時 callback 這邊直接跳過（計時器、下一個動作開始前的 _ensure_scene 會補）"""
+        if not self.scene_lock.acquire(blocking=wait):
+            return None
+        try:
+            objs, key = self._scene_now()
+            if (key == self.scene_key and not force) or not self.scene_cli.service_is_ready():
+                return (key == self.applied_key) if wait else None
+            now = self._moveit_ids() if wait else None
+            have = self.in_scene if now is None else {i for i in now if i.startswith("html_")}
+            scene = PlanningScene(is_diff=True)
+            ids = set()
+            for o in objs:
+                co = to_collision_object(o)
+                if co is not None:
+                    scene.world.collision_objects.append(co)
+                    ids.add(co.id)
+            for gone in have - ids:                # 刪掉的（或這一段暫時不算的）也要從 MoveIt 拿掉
+                scene.world.collision_objects.append(CollisionObject(id=gone, operation=CollisionObject.REMOVE))
+            ok = None
+            if scene.world.collision_objects:
+                fut = self.scene_cli.call_async(ApplyPlanningScene.Request(scene=scene))
+                if wait:
+                    res = self._wait(fut, 3.0)
+                    ok = res is not None and bool(res.success)
+                    if ok:
+                        self.applied_key = key
+                else:
+                    fut.add_done_callback(lambda f, k=key: self._applied(f, k))
+                if key != self.scene_key:
+                    self.get_logger().info(f"MoveIt 場景更新：{len(ids)} 個物體" +
+                                           (f"（{sorted(self.ignore)} 暫時不算）" if self.ignore else ""))
+            elif now is not None:                  # 問過 MoveIt、本來就一樣：不用送
+                ok = True
+                self.applied_key = key
+            self.in_scene, self.scene_key = ids, key
+            return ok
+        finally:
+            self.scene_lock.release()
+
+    def _applied(self, fut, key):
+        res = fut.result()
+        if res is not None and res.success:
+            self.applied_key = key
+
+    def _moveit_ids(self):
+        """MoveIt 場景裡現在有哪些物體（id 集合）；問不到回傳 None（背景執行緒用）"""
+        if not self.get_scene_cli.service_is_ready():
+            return None
+        req = GetPlanningScene.Request()
+        req.components.components = PlanningSceneComponents.WORLD_OBJECT_NAMES
+        res = self._wait(self.get_scene_cli.call_async(req), 3.0)
+        return None if res is None else {o.id for o in res.scene.world.collision_objects}
+
+    def _ensure_scene(self, timeout=SCENE_READY):
+        """動作開始前：確認 MoveIt 裡的場景物體就是最新收到的那一份，不是就同步、等 MoveIt 回覆。
+        兩個都要對：MoveIt 回覆套用過這一份（applied_key：形狀、位置）、MoveIt 現在真的有這些物體（問 /get_planning_scene：
+        move_group 重開會清空場景，applied_key 卻還是舊的）。
+        2026-11-17：/apply_planning_scene 還沒好時收到的場景，要等下一次重送（最多 SCENE_RESEND 秒）才會進 MoveIt，
+        中間的移動 MoveIt 看不到桌子，路線穿過桌子。回傳 None = 好了；不然回傳原因（背景執行緒用）"""
+        end = time.time() + timeout
+        while True:
+            objs, key = self._scene_now()
+            want = {"html_" + str(o["id"]) for o in objs if o.get("type") in ("ball", "box", "stick", "plane")}
+            now = self._moveit_ids()
+            if key == self.applied_key and now is not None and {i for i in now if i.startswith("html_")} == want:
+                return None
+            if self.scene_cli.wait_for_service(timeout_sec=min(1.0, max(0.05, end - time.time()))):
+                if self._sync_scene(force=True, wait=True):
+                    return None
+                why = "MoveIt 沒有回覆，或不接受"
+            else:
+                why = "連不到 /apply_planning_scene（MoveIt 有開嗎？）"
+            if time.time() > end:
+                return why
+            time.sleep(0.2)
 
     # ---------- 指令 ----------
     def _speed_cb(self, msg):
@@ -737,6 +820,10 @@ class MoveItBridge(Node):
             try:
                 if not self.move_ac.wait_for_server(timeout_sec=2.0):   # 沒開的話每個碰撞檢查都要等 3 秒逾時
                     return self._note(err_text(-9999), ok=False, reason=R_DOWN)
+                why = self._ensure_scene()              # 場景物體（桌子等）確定在 MoveIt 裡才規劃
+                if why:
+                    return self._note(f"場景物體 {SCENE_READY:g} 秒內沒有套用到 MoveIt（{why}），手臂不動",
+                                      ok=False, reason=R_DOWN)
                 fn(*args)
             except Exception as e:      # 背景執行緒的例外不會自己印出來
                 self._note(f"出錯：{e}", ok=False, reason=R_INTERNAL)
@@ -893,7 +980,7 @@ class MoveItBridge(Node):
             turn = rot_angle(self.fk[arm](appr[0])[:3, :3], spec["R"])
             if turn > 10:
                 lines.append(f"靠近途中手掌轉了 {turn:.0f}°（預備點那麼高同一個姿態轉不到；最後 {HOLD_DIST * 100:.0f} cm 姿態不變）")
-        lines.append(f"找姿勢、路花了 {t_plan:.0f} 秒")
+        lines.append(f"路線：{self.route_how}；找姿勢、路花了 {t_plan:.0f} 秒")
         self._report([arm], "\n".join(lines))
 
     def _fail_text(self, p, fails):
@@ -1060,18 +1147,95 @@ class MoveItBridge(Node):
                 self._fail(fails, "直線靠近途中會轉過頭", R_LIMIT)
                 continue
             cands.append((self._pose_cost(arm, q) + _travel(appr), appr))
-        # 3. 目前姿勢 → 預備點：先試每顆馬達直接轉過去（不繞路），會撞到才請 MoveIt 規劃（會繞開物體）
-        for _, appr in sorted(cands, key=lambda c: c[0])[:MAX_ROUTE_TRIES]:
+        # 3. 目前姿勢 → 預備點，三種路依序試（每一種都逐點檢查碰撞）：
+        #   ① 每顆馬達直接轉過去（不繞路，線扭最少）
+        #   ② 先往上抬過物體再過去（_via_path；2026-11-18 使用者要的收斂路線，例如從站姿先抬過桌面再往前）
+        #   ③ 請 MoveIt 規劃（會繞開物體，但路線是隨機找的，常往旁邊、往後甩）
+        top = sorted(cands, key=lambda c: c[0])[:MAX_ROUTE_TRIES]
+        for _, appr in top:
             self._stage(f"找移到預備點的路：{name}")
             route = self._direct({arm: appr[0]})
             if route is not None:
+                self.route_how = "每顆馬達直接轉過去"
                 return arm, route, appr
+        for _, appr in top[:VIA_TRIES]:
+            self._stage(f"直接轉會撞到，試先往上抬過物體再過去：{name}")
+            path = self._via_path(arm, self.qa(arm), appr[0])
+            if path is not None:
+                self.route_how = "先往上抬過物體再過去"
+                return arm, self._path_route(arm, path), appr
+        for _, appr in top:
+            self._stage(f"請 MoveIt 規劃移到預備點的路：{name}")
             code, res, why = self._plan_route(ARMS[arm]["group"], self._joint_goal(ARMS[arm]["joints"], appr[0], tol=1e-3))
             if code == 1 and not check(arm, _traj_q(res.planned_trajectory, ARMS[arm]["joints"])):
+                self.route_how = "MoveIt 規劃（直接轉、先抬都會撞到）"
                 return arm, res.planned_trajectory, appr
             self._fail(fails, f"移到預備點：{why if code != 1 else '路徑會轉過頭'}",
                        R_LIMIT if code == 1 else plan_reason(code))
         return None
+
+    def _obstacle_top(self, p0, p1):
+        """起點、終點掌心（base_link，m）的水平範圍往外 VIA_CORRIDOR 以內，場景物體的最高點（m）；沒有物體回傳 None。
+        地板（plane）不算"""
+        lo = np.minimum(p0[:2], p1[:2]) - VIA_CORRIDOR
+        hi = np.maximum(p0[:2], p1[:2]) + VIA_CORRIDOR
+        top = None
+        for o in self.obstacles:
+            t = o.get("type")
+            if t == "box":
+                c, h = np.asarray(o["c"], float), np.asarray(o["h"], float)
+                ext = np.abs(np.asarray(o["R"], float)) @ h
+                omin, omax, otop = c[:2] - ext[:2], c[:2] + ext[:2], c[2] + ext[2]
+            elif t == "stick":
+                a, b, r = np.asarray(o["a"], float), np.asarray(o["b"], float), float(o["r"])
+                omin, omax, otop = np.minimum(a, b)[:2] - r, np.maximum(a, b)[:2] + r, max(a[2], b[2]) + r
+            elif t == "ball":
+                c, r = np.asarray(o["c"], float), float(o["r"])
+                omin, omax, otop = c[:2] - r, c[:2] + r, c[2] + r
+            else:
+                continue
+            if np.all(omax >= lo) and np.all(omin <= hi):
+                top = otop if top is None else max(top, otop)
+        return top
+
+    def _via_path(self, arm, q0, q_goal):
+        """先往上抬過物體、再過去：q0 → 掌心沿直線往正上方抬（掌心朝向不變，每 CART_STEP 解一次 IK、檢查碰撞，同 _line）
+        → 每顆馬達直接轉到 q_goal（每 DIRECT_STEP 檢查碰撞，同 _direct）。比 MoveIt 隨機找的路收斂，手不會往旁邊、往後甩。
+        抬到的高度 = 起點、終點之間物體的最高點 + VIA_CLEARS，低的先試。
+        回傳關節角清單（含 q0、q_goal）或 None（沒有物體擋、起點已經在物體上方、或都不行）。
+        回站姿時用 _via_path(站姿, 目前) 再倒過來走：沒撞到的路倒過來也不會撞"""
+        q0, q_goal = np.asarray(q0, float), np.asarray(q_goal, float)
+        T0 = self.fk[arm](q0)
+        p0, p1 = T0[:3, 3], self.fk[arm](q_goal)[:3, 3]
+        top = self._obstacle_top(p0, p1)
+        if top is None or p0[2] >= top + VIA_CLEARS[0]:
+            return None
+        for clear in VIA_CLEARS:
+            z = top + clear
+            up, why = self._line(arm, q0, p0, np.array([p0[0], p0[1], z]), T0[:3, 0])
+            if up is None:
+                self.get_logger().info(f"{ARMS[arm]['label']}往正上方抬到 高 {to_meas([0, 0, z])[2]:.1f} cm 不行：{why}")
+                break                               # 抬不到這麼高，更高的也不行
+            rest = self._direct_path(arm, up[-1], q_goal)
+            if rest is not None:
+                path = np.vstack([q0, np.array(up), rest[1:]])
+                if not check(arm, path):
+                    self.get_logger().info(f"{ARMS[arm]['label']}先往上抬到 高 {to_meas([0, 0, z])[2]:.1f} cm"
+                                           f"（物體最高 {to_meas([0, 0, top])[2]:.1f}）再過去")
+                    return path
+        return None
+
+    def _direct_path(self, arm, qa, qb):
+        """一隻手 qa → qb 每顆馬達直接轉（同 _direct）：關節角清單（含兩端）或 None（實機做不到、途中會撞到）"""
+        qa, qb = np.asarray(qa, float), np.asarray(qb, float)
+        path = np.linspace(qa, qb, max(2, int(np.ceil(np.abs(qb - qa).max() / DIRECT_STEP)) + 1))
+        if check(arm, path) or any(self._contacts(arm, q) for q in path[1:]):
+            return None
+        return path
+
+    def _path_route(self, arm, path):
+        """關節角清單 → 排好時間的軌跡（設定的速度，轉角處 time_path 會先慢下來）"""
+        return self._timed(arm, path, np.full(len(path), MAX_VEL * max(self.speed, 0.02)))
 
     def _fail(self, cnt, text, reason):
         """失敗原因記到 cnt（中文，_explain、_fail_text 用），同時記下它的分類（reason）"""
@@ -1105,6 +1269,7 @@ class MoveItBridge(Node):
         if route is None:
             self.get_logger().info(f"{ARMS[arm]['label']}不能微調（{why or '直接轉過去途中會撞到'}），走一般流程（退到預備點再靠近）")
             return None
+        self.route_how = "微調（直接轉過去）"
         return arm, route, None
 
     def _solve(self, arm, p, R, axis=None, seeds=None):
@@ -1167,6 +1332,17 @@ class MoveItBridge(Node):
                     how = f"{'、'.join(ARMS[a]['label'] for a in cand)}先往後退 {dist * 100:.0f} cm，再每顆馬達直接轉回去"
                 if route is not None:
                     break
+        if route is None:
+            # 往後退開還是會撞到：從物體上方繞回來，到站姿正上方再往下（_via_path 的路倒過來走，2026-11-18，比 MoveIt 收斂）。
+            # 只處理一隻手不在站姿的情況（兩隻手都伸出去時交給 MoveIt 一起規劃）
+            start = {a: (backs[a][-1] if a in backs else self.qa(a)) for a in ARMS}
+            off = [a for a in ARMS if np.abs(np.asarray(start[a]) - STAND_MOVEIT).max() >= 0.05]
+            if len(off) == 1:
+                self._stage(f"直接轉回去會撞到：試從物體上方繞回站姿正上方再往下（{ARMS[off[0]]['label']}）")
+                path = self._via_path(off[0], STAND_MOVEIT, start[off[0]])      # 站姿 → 往上抬 → 目前
+                if path is not None:
+                    route = self._path_route(off[0], path[::-1])
+                    how = ("先往後退開，再" if backs else "") + "從物體上方繞回站姿正上方再往下"
         # 退開（往後退是移動進來的反方向，一定安全）：之後直接轉回去，或從空一點的地方請 MoveIt 規劃
         for a, path in backs.items():
             if not self._exec(self._timed(a, path, np.full(len(path), MAX_VEL * max(self.speed * SLOW, 0.02))),
@@ -1225,21 +1401,17 @@ class MoveItBridge(Node):
         return self._timed(None, path, np.full(n, MAX_VEL * max(self.speed, 0.02)), names)
 
     def _plan_route(self, group, constraints, swing_tol=SWING_TOL):
-        """MoveIt 規劃，繞遠路（任一軸轉到起點、終點之間的範圍外超過 swing_tol）就重新規劃，最多 ROUTE_PLANS 次。
-        回傳 (錯誤碼, 結果, 失敗說明)"""
-        why, code, res = None, 0, None
-        for _ in range(ROUTE_PLANS):               # MoveIt 每次規劃都是隨機找的：失敗、繞遠路都再試
-            code, res = self._plan(group, constraints)
+        """MoveIt 規劃，繞遠路（任一軸轉到起點、終點之間的範圍外超過 swing_tol）或路線會撞到東西就重新規劃，
+        最多 ROUTE_PLANS 次。回傳 (錯誤碼, 結果, 失敗說明)；繞遠路的錯誤碼是 0、會撞到是 -13"""
+        why, code = None, 0
+        for _ in range(ROUTE_PLANS):               # MoveIt 每次規劃都是隨機找的：失敗、繞遠路、撞到都再試
+            code, res = self._plan(group, constraints, swing_tol)
             if code in (-9999, -9998, -10):         # 連不到 MoveIt、起點就撞到：再試也一樣
                 return code, res, err_text(code, res)
-            if code != 1:
-                why = err_text(code, res)
-                continue
-            s = _swing(np.array([p.positions for p in res.planned_trajectory.joint_trajectory.points]))
-            if s <= swing_tol:
+            if code == 1:
                 return 1, res, None
-            why = f"MoveIt 規劃的路會繞遠路（有一軸多轉 {np.degrees(s):.0f}°）"
-        return (code if code != 1 else 0), None, f"{why}（試了 {ROUTE_PLANS} 次）"
+            why = err_text(code, res)
+        return code, None, f"{why}（試了 {ROUTE_PLANS} 次）"
 
     def _seeds(self, arm, p, a=None, fingers=None, n=N_SEED):
         """IK 起點：目前姿勢、站姿，加上起點表裡掌心位置離 p 近（a：掌心朝向也接近；fingers：手指方向也接近）的 n 個
@@ -1353,9 +1525,10 @@ class MoveItBridge(Node):
             return []
         return sorted({(c.contact_body_1, c.contact_body_2) for c in res.contacts}) or [("?", "?")]
 
-    def _plan(self, group, constraints):
+    def _plan(self, group, constraints, swing_tol=SWING_TOL):
         """只規劃不執行（先檢查再決定要不要動）。回傳 (錯誤碼, 結果)；起點就撞到東西、又沒辦法處理時回傳 (-10, 碰撞清單)
-        起點只碰到網頁放的物體（例如手正貼著物體）：這一段先不算那些物體，讓手可以先離開，不然會卡住動不了"""
+        起點只碰到場景物體（例如手正貼著物體）：這一段先不算那些物體，讓手可以先離開，不然會卡住動不了
+        （規劃完的檢查 _plan_checked 也在同一段裡做，一樣不算那些物體）"""
         if not self.move_ac.wait_for_server(timeout_sec=2.0):
             return -9999, None
         contacts = self._start_contacts(group)
@@ -1368,11 +1541,48 @@ class MoveItBridge(Node):
             self.ignore = {b[5:] for b in objs}
             self._sync_scene(force=True, wait=True)
             try:
-                return self._plan_once(group, constraints)
+                return self._plan_checked(group, constraints, swing_tol)
             finally:
                 self.ignore = set()
                 self._sync_scene(force=True, wait=True)
-        return self._plan_once(group, constraints)
+        return self._plan_checked(group, constraints, swing_tol)
+
+    def _plan_checked(self, group, constraints, swing_tol):
+        """規劃一次再自己檢查：繞遠路 → (0, 說明)；路線上會撞到 → (-13, 碰撞清單)；都沒問題 → (1, 結果)。
+        Humble 的 MoveIt 不會檢查規劃出來的路線（規劃流程沒有 ValidateSolution），撞到東西的路線也回成功，
+        之前直接執行（2026-11-17 站姿 → 預備點穿過桌子 13 cm）。所以跟「每顆馬達直接轉過去」一樣每 DIRECT_STEP 查一次"""
+        code, res = self._plan_once(group, constraints)
+        if code != 1:
+            return code, res
+        jt = res.planned_trajectory.joint_trajectory
+        P = np.array([p.positions for p in jt.points])
+        s = _swing(P)
+        if s > swing_tol:
+            return 0, f"MoveIt 規劃的路會繞遠路（有一軸多轉 {np.degrees(s):.0f}°）"
+        self._stage("檢查 MoveIt 規劃的路線會不會撞到")
+        hits = self._route_contacts(group, jt.joint_names, P)
+        if hits:
+            self.get_logger().warn("MoveIt 規劃的路線會撞到（不執行，重新規劃）：" + "、".join(hits))
+            return -13, hits
+        return 1, res
+
+    def _route_contacts(self, group, names, P):
+        """關節角清單（N × len(names)）每 DIRECT_STEP 檢查一次碰撞（起點不查：起點碰到的情況 _plan 已經處理）。
+        回傳第一個撞到的地方碰到什麼（空的 = 整條都沒撞到）。MoveIt 的軌跡點很密：離上一個檢查點不到 DIRECT_STEP 的跳過"""
+        P = np.asarray(P, float)
+        last, pts = P[0], []
+        for i in range(1, len(P)):
+            d = np.abs(P[i] - last).max()
+            if d < DIRECT_STEP and i < len(P) - 1:
+                continue
+            n = max(1, int(np.ceil(d / DIRECT_STEP)))
+            pts += [last + (P[i] - last) * k / n for k in range(1, n + 1)]
+            last = P[i]
+        for q in pts:
+            hits = self._contacts_q(group, names, q)
+            if hits:
+                return hits
+        return []
 
     def _plan_once(self, group, constraints):
         goal = MoveGroup.Goal()

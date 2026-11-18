@@ -4,8 +4,10 @@
 bottle_classes: [b1, b2, b3, b4]
 
 # 放置點：掌心要到的位置，實機量測座標 [前, 右, 高]（cm）。【待量測】
+# 任務管理只選「藥瓶和放置點都搆得到」的那隻手（workspace 表），所以右邊的藥瓶不能放到 tray_2。
 place_targets:
-  tray_1: {pos_cm: [45.0, 15.0, 100.0], approach: top}
+  tray_1: {pos_cm: [32.4, 25.0, 93.2], approach: top}    # 右手：桌面座標 右 25、前 15、掌心離桌 12（暫定）
+  tray_2: {pos_cm: [32.4, -25.0, 93.2], approach: top}   # 左手：tray_1 的鏡像（暫定）
 
 # base_link（m）→ 量測座標 [前, 右, 高]（cm）。要跟 armpackage arm_config.py 的 MEAS_ORIGIN 一模一樣
 # （任務管理換成 cm 送出、moveit_bridge 用同一組換回 base_link），不要單獨改。2026-11-17 確認一致。
@@ -95,12 +97,17 @@ timeouts:
   real_settle_s: 8.0         # MoveIt 到了之後，等實機停穩最多幾秒（實機卡住 2 秒 real_arm_bridge 會自己停掉）
 
 # dry_run：被模擬的那幾段直接模擬成功，其他接實機。
-# 只模擬 vision 時，手臂會真的移到下面這個假藥瓶位置，要確定那裡是空的、到得了。
+# 只模擬 vision 時，手臂會真的移到下面的假藥瓶位置，要確定那裡是空的、到得了。
 # fail 只對有模擬的那段有效（例如 fail: grip 要模擬 hand 才會發生）。
 dry_run:
   modules: []               # 要模擬哪幾段：vision / arm / hand 任意組合，[] = 全部接實機。
                             # launch 給 dry_run:=true / false / vision,arm 時以 launch 為準
-  bottle_base_link_m: [0.28, -0.189, -0.35]   # 假藥瓶中心（base_link）：右肩正前方、桌緣往前 12 cm、桌面上 4 cm
-  bottle_size_m: [0.05, 0.05, 0.08]
+  # 假藥瓶：桌面座標 [右, 前]（cm，瓶身中心，立在桌面上）、[直徑, 高]（m，同 bottle_dims.yaml）。
+  # 要抓的那一類是目標，其他類都當障礙物發給 MoveIt；沒列的類別 = 看不到（MAN-E-003）。
+  bottles:
+    b1: {table_cm: [18.9, 12.0], size_m: [0.0829, 0.0923]}    # 右肩正前方
+    b2: {table_cm: [-18.9, 12.0], size_m: [0.0494, 0.0780]}   # 左肩正前方
+    b3: {table_cm: [35.0, 12.0], size_m: [0.0449, 0.0899]}    # b1 右邊 16 cm（抓 b1 時的障礙物）
+    b4: {table_cm: [-35.0, 12.0], size_m: [0.0379, 0.0792]}   # b2 左邊 16 cm（抓 b2 時的障礙物）
   step_s: 0.5
   fail: 'hold'              # 模擬失敗：'' / detect / arm / grip / hold

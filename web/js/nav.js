@@ -24,6 +24,7 @@ window.ROBOT_NAV_MENUS = {
     // 這個順序呈現出來（左→右）是：logo ... Tools, Hand, ImageProcess, Motion, Walking
     main: [
         { logo: true },
+        { label: 'SP3Task', href: 'SP3TaskInterface.html' },
         { label: 'Motion', href: 'MotionControlInterface.html' },
         { label: 'ImageProcess', href: 'ImageProcessInterface.html' },
         {

@@ -7,7 +7,8 @@
 | 名稱 | 型別 | 說明 |
 |---|---|---|
 | `/manip/pick_place` | Action `interfaces/action/ExecuteTaskPlan`（主控的型別） | 取放任務 |
-| `/manip/status` | `std_msgs/String`（JSON），1 Hz | `state`：IDLE / BUSY / ERROR / ESTOP，另有 task_id、stage、last_error |
+| `/manip/target` | `std_msgs/String`（JSON），1 Hz | 要抓的藥瓶（給 RobotViewer 畫，不是障礙物）：`{"class", "objects": [stick]}`，空 = 沒有 |
+| `/manip/status` | `std_msgs/String`（JSON），1 Hz＋每次 feedback | `state`：IDLE / BUSY / ERROR / ESTOP，另有 task_id、stage、last_error、feedback（最新一筆 feedback.status）、last_message（上一個任務的 result.message） |
 | `/estop` | `std_msgs/Bool` | True = 急停（測試平台用，正式型別待定） |
 
 ### Goal：parameter_keys / parameter_values

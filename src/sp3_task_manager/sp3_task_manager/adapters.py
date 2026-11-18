@@ -65,14 +65,19 @@ class VisionClient:
 
 
 class DryVisionClient:
+    """設定檔 dry_run.bottles 的假藥瓶：要抓的是目標，其他的當障礙物（同 VisionClient 的回傳格式）。"""
+
     def __init__(self, node, cfg, cb_group):
         self.cfg = cfg['dry_run']
+        self.dets = gp.dry_bottles(cfg)
 
     def locate(self, task, bottle_class):
         task.sleep(self.cfg['step_s'])
-        if self.cfg['fail'] == 'detect':
+        if self.cfg['fail'] == 'detect' or bottle_class not in self.dets:
             raise TaskError(BOTTLE_NOT_FOUND, f'（dry_run）看不到 {bottle_class}')
-        return np.array(self.cfg['bottle_base_link_m']), np.array(self.cfg['bottle_size_m']), []
+        xyz, size = self.dets[bottle_class]
+        others = [(c, p, s) for c, (p, s) in sorted(self.dets.items()) if c != bottle_class]
+        return xyz, size, others
 
 
 # ======================================================================
@@ -102,6 +107,10 @@ class ArmClient:
         self.scene_confirm = cfg['obstacles']['scene_confirm_s']
         from moveit_msgs.srv import GetPlanningScene
         self._scene_cli = node.create_client(GetPlanningScene, '/get_planning_scene', callback_group=cb_group)
+        # 最後一次 set_obstacles 的物體，每秒重發一次：/arm_ik_obstacles 不是 latched，網頁（RobotViewer）晚開也看得到。
+        # 內容一樣時 moveit_bridge 不會重送 MoveIt
+        self._objs = None
+        node.create_timer(1.0, self._republish, callback_group=cb_group)
         self._result = None        # (收到時間, dict)：最後一筆指令結果（cmd 不是 None）
         self.stage_text = ''
         self._joint_t = None       # driver 最後一次發 /joint_states 的時間
@@ -178,6 +187,7 @@ class ArmClient:
         發完去問 MoveIt 確認真的套用了（沒有就重發）；確認不了就不動手臂。"""
         end = time.monotonic() + self.scene_confirm
         missing = extra = None
+        self._objs = objs
         while True:
             self.pub_obstacles.publish(String(data=json.dumps({'source': 'sp3', 'objects': objs})))
             task.sleep(self.scene_wait)
@@ -190,6 +200,10 @@ class ArmClient:
                 why = ('問不到 MoveIt 的場景（/get_planning_scene，MoveIt 有開嗎？）' if have is None else
                        f'MoveIt 場景少了 {sorted(missing)}、多了 {sorted(extra)}')
                 raise TaskError(GRASP_FAILED, f'障礙物沒有套用到 MoveIt，不動手臂：{why}')
+
+    def _republish(self):
+        if self._objs is not None:
+            self.pub_obstacles.publish(String(data=json.dumps({'source': 'sp3', 'objects': self._objs})))
 
     def attach(self, task, arm, obj):
         """夾起來的藥瓶掛到手上（obj = /arm_ik_obstacles 的 stick 格式），之後規劃會算它、跟著手移動。"""

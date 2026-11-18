@@ -161,7 +161,41 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
 - **給手臂負責人的清單（2026-11-17 整理給使用者轉）**：①下垂補償只在終點、只看前 → 要用到整段路徑、看離肩水平距離
   ②_sync_scene 服務沒 ready 直接 return 不重試 ③左手從站姿規劃約一半失敗（14 次失敗 6）、中線左右不對稱
   ④路徑往旁邊甩到右 −55～−67 ⑤right_arm_controller spawner 競爭。已確認不用改：MEAS_ORIGIN、重開跟隨不會衝。
-- dry_run 假藥瓶已移到右肩正前方桌緣往前 12 cm、桌面上 4 cm（原本的位置會被 workspace 擋掉）。
+- **完整流程模擬（2026-11-18）**：.11 上用 `~/sp3_flow_test.yaml`（主設定檔副本：required false、fail ''、tray_1 = [32.4, 25.0, 93.2]）
+  ＋`dry_run:=vision,hand`，手臂在 MoveIt 裡動：**成功**（右手 b1 → tray_1，87 秒），第一次移到預抓位置失敗、重試一次後成功（原因待查）。
+  踩到：①driver 啟動時馬達沒上電 → /joint_states 名稱空的 → MAN-E-005（要先上電再開 nstc.launch；required false 時是否跳過此檢查待決定）
+  ②預設 timeout_s 30 不夠（只到預抓就 17 秒），送任務要給 150；預設值是 S3-05 的，要改得連文件一起改。
+  網頁橘色半透明手臂 = MoveIt 模擬（moveit_bridge 轉 /ik_viewer/joint_state，只有手臂關節，手指不會動）；藍色 = /joint_commands。
+- **子三任務網頁 `web/SP3TaskInterface.html`（2026-11-18，使用者要的，暫代總計畫主控）**：導覽列加了 SP3Task（js/nav.js）。
+  不用 roslib：web/js/roslib 是 1.2.0 沒有 ROS 2 action；1.4.1 也沒有，2.x 改成 ES module，換掉會壞其他 5 頁 → 直接講 rosbridge 2.0 JSON。
+  rosbridge 坑：①`send_action_goals_in_new_thread` 預設 false → 送 goal 的那條連線卡到任務結束，所以狀態／急停／取消走常駐連線、
+  每個任務另開一條（取消用 goal id，rosbridge 的 client_handler_list 是類別共用的，跨連線可取消）
+  ②goal 被拒絕或 server 沒開時 rosbridge 卡死在等結果、不回任何東西（那條 thread 洩漏）→ 網頁 5 秒沒 feedback 就判定沒被接受；
+  送出前看 /manip/status 是 BUSY／ESTOP 就不給按。已測：訂閱 /manip/status OK、headless 載入無 JS 錯誤；**送任務、取消還沒實測**。
+  使用者決定：不做原始 keys／values 欄位；急停不確認、解除要確認；總計畫 demo 不動。
+- 網頁看得到 client_gui 送的任務：**rosbridge 訂不到 action 的 feedback topic**（它只在 `interfaces.msg` 找型別，
+  `ExecuteTaskPlan_FeedbackMessage` 在 interfaces.action，log：Unable to import msg class）→ 任務管理把 `feedback`（最新 status 字串）、
+  `last_message`（上一個 result.message）加進 /manip/status，每次 feedback 立刻發一筆（2026-11-18）。**S3-05 的狀態欄位要跟著對。**
+  網頁用 /manip/status 看別人的任務（不能取消）。本機私有 rosbridge（domain 91、port 9097）＋headless Chrome（CDP）模擬狀態序列測過。
+- 任務管理每秒重發自己的障礙物（adapters `_republish`）：/arm_ik_obstacles 不是 latched，RobotViewer 晚開會看不到。
+  RobotViewer 顯示功能本機測過正常；使用者第一次沒看到 = 頁面開在任務發障礙物之後。
+- **RobotViewer 顯示別的來源的障礙物（2026-11-18，使用者跟手臂負責人談過、同意改）**：樣板加 `startExtObstacles()`，訂 /arm_ik_obstacles，
+  `{source, objects}` 且 source ≠ web 的畫成半透明青色；放在獨立的 `extObsRoot`（位姿抄 base_link），**不掛進機器人底下**
+  （幽靈手臂 clone 整個 worldGroup 會被複製、網頁碰撞檢查也會掃到）。HUD 多一行。本機 headless 測過（WebGL 要 `--use-angle=swiftshader
+  --enable-unsafe-swiftshader`）。RobotViewer.html 要使用者在 .11 跑 build_viewer.py 重新產生。夾在手上的（/arm_attach）沒畫。
+- **手臂負責人 2026-11-18 的修改（已拉回本機）**：spawn_controllers 改成一個 spawner 依序開、call timeout 30（⑤）；
+  每個動作前 `_ensure_scene` 確認場景真的在 MoveIt（②）；**真正穿過桌子的原因：Humble MoveIt 不檢查規劃出來的路線**，
+  現在 `_plan_checked` 逐點查、撞到 -13 重規劃；移到預備點／回站姿多一種「先往正上方抬過物體（物體最高點 +10／18 cm）再直接轉」
+  的路（④，也應該改善③）；結果 note 會寫「路線：…」。**①下垂補償（整段路徑、看側伸距離）沒改**，③左右不對稱沒處理。
+- **要抓的藥瓶另外顯示（2026-11-18）**：任務管理發 `/manip/target`（JSON {class, objects:[stick]}，跟 /manip/status 一起每秒發，
+  任務結束 10 秒後清空），RobotViewer 畫亮綠色；障礙物青色。不能借 /object_position（網頁會把 trackedProp 當自己的物體發給 MoveIt）。
+  RobotViewer 兩種都「內容沒變不重畫」。本機私有 rosbridge＋CDP 測過。
+- 黃色手指要動（使用者問）：網頁幽靈手臂吃 `/ik_viewer/joint_state` 任何 URDF 關節名，模擬手時任務管理可以發手指角度到那裡（不用改網頁）——還沒做。
+  網頁顯示 sp3 障礙物、真手時黃色手指跟著動：要改 RobotViewer，使用者要先跟手臂負責人討論。
+- **假藥瓶改成每類一瓶（2026-11-18）**：`dry_run.bottles`（桌面座標 [右, 前]＋[直徑, 高]，立在桌面上）；要抓的是目標、其他的當障礙物。
+  b1 右肩正前方、b2 左肩正前方（前 12）、b3／b4 各在外側 16 cm。取代舊的 bottle_base_link_m／bottle_size_m。
+- **tray_2（左手）**：place_targets 改成 tray_1 = 桌面 右 25、前 15、掌心離桌 12（右手），tray_2 = 鏡像（左手），都還是暫定。
+  任務管理選手時只留「藥瓶和放置點都搆得到」的手（抓起來不換手），沒有就 MAN-E-002。b1 → tray_2 會被擋。
 
 ## 還沒做的
 

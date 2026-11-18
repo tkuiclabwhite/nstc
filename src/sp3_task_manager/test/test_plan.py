@@ -162,9 +162,18 @@ def test_held_obstacle():
     assert o['b'][2] - o['a'][2] == pytest.approx(0.08)
 
 
-def test_dry_bottle_reachable():
-    center = grasp_plan.to_meas(CFG['dry_run']['bottle_base_link_m'], CFG['frames'])
-    assert 'right' in grasp_plan.reachable_arms(center, CFG)
+def test_dry_bottles():
+    dets = grasp_plan.dry_bottles(CFG)
+    reach = {c: grasp_plan.reachable_arms(grasp_plan.to_meas(p, CFG['frames']), CFG) for c, (p, s) in dets.items()}
+    assert 'right' in reach['b1'] and 'left' in reach['b2']
+    p, s = dets['b1']
+    assert p == pytest.approx([0.28, -0.189, (81.2 - 120.2 + 9.23 / 2) / 100], abs=1e-6)   # 立在桌面上
+    assert s[2] == pytest.approx(0.0923)
+
+
+def test_place_targets_reachable():
+    reach = {k: grasp_plan.reachable_arms(t['pos_cm'], CFG) for k, t in CFG['place_targets'].items()}
+    assert reach['tray_1'] == ['right'] and reach['tray_2'] == ['left']
 
 
 def test_clearance_distance():
