@@ -206,6 +206,31 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
   桌板 72～80 離地，試過 `table.bottom_cm: 72` 只畫桌板 → 站姿的手在桌板下，規劃讓手指從桌板下往前伸、實機撞桌 → **改回實心到地板**；大桌前後加厚 2（margin_cm [2, 3, 3]；0 時手貼桌緣邊舉邊往前，3 會讓站姿碰到）；桌板下面空了，站姿手在桌板下（掌心離地 67）。
   桌面座標原點跟著往後 4 → workspace「前」全部 +4、front_min 6；tray 的 pos_cm 是量測座標沒變（桌面座標前 19）；
   假藥瓶照桌面座標寫，實際往身體靠 4。站姿離加厚後的桌子 0.6、離小桌子 2.6（URDF 算）。
+- **任務第 0 步、第 6 步改回 ready pose（2026-11-19 使用者：「直接改回 ready」，不要退回 stand 的備案）**：`arm.ready()`；
+  手臂端還沒有 /arm_ready 前任務會在第 0 步 MAN-E-007。launch 加 `real_arm:=true/false`（覆蓋 real_arm.required；false 也不檢查
+  driver /joint_states），**不再需要 ~/sp3_flow_test.yaml**；主設定檔 `dry_run.fail` 改回 ''。
+- **SP3Task 網頁改版（2026-11-19，使用者要的）**：上方控制列（急停、Stand、Ready pose、狀態）；右上原本的狀態區改成「測試」：
+  移到座標（桌面／base_link）、移到影像某瓶上方，**由任務管理執行**（使用者選，帶場景與實機檢查），`/manip/test_cmd` →
+  `/manip/test_result`，解析在 `try_cmd.py`；失敗把 `[reason]` 翻白話（unreachable／joint_limit = 到不了、plan_failed = 找不到路）。
+  「座標」區吃 `/manip/pose`（URDF FK 算掌心，`ArmShape(meshes=False)`；實機用 arm_config 換刻度），base_link 與桌面座標並列。
+  Ready 按鈕送 `/arm_ready`（**格式我們先定：std_msgs/String {"arm": "both|left|right"}，結果 cmd = ready**），
+  沒人訂閱就回「手臂端還沒有 /arm_ready」（使用者選）。測試結果附「可及範圍表：範圍內／外」= 驗證 workspace 表。
+  本機：dry_run 實跑 test 指令＋headless 網頁對假任務管理測過；.11 上還沒實測。
+  待做：reach_test scan 改從 ready 出發、plan_failed 重試、分開記「IK 到不了／找不到路」（等 ready 做好）。
+- **SP3Task 速度欄位（2026-11-19，使用者要的；launch 參數不要）**：控制列「速度」（Dynamixel 單位 1～50）→ `/manip/speed`
+  std_msgs/Float64 → 任務管理記在 `arm.speed`、馬上轉送 `/arm_speed_cmd`，之後的任務、測試、Stand、Ready 都用它；
+  `/manip/status` 多 `speed` 欄位，網頁欄位跟著它。重開任務管理回到設定檔 `grasp.arm_speed`（30）。
+  moveit_bridge 只有一個速度，最後送的人贏（RobotViewer、reach_test 送的會被下一個任務／測試蓋回）。
+- **11/19 使用者說手臂負責人改好了，但 .11 與 GitHub 都沒有**：.11 跑的是 `~/nstc/src/armpackage`（不是 ros2_adult），
+  moveit_bridge.py 最後改 11/18 16:58、沒有 /arm_ready；ros2_adult GitHub 最後 11/13。已請使用者叫他放上 .11 再看。
+- **2026-11-19 開會決定：stand／ready pose 兩種姿勢**：stand = 現在手放下的站姿；ready = 雙手舉到桌子上方準備。
+  只有第一次跑任務前 stand → ready，任務之間都回 ready。側舉只用在 stand ↔ ready，其他移動照常規劃（moveit_bridge 兩種走法）。
+  手臂負責人還沒動 11/18 的清單 → 依這個決定重新整理給他（11/19）。任務管理（主控）要怎麼改使用者等等再說，**先不改**。
+- **2026-11-18 收工時已整理給手臂負責人（第二批，使用者轉）**：①「先往上抬」高度算太高（旁邊藥瓶、小桌子都算、圓柱多算半徑）
+  ②加小桌子後只剩 MoveIt 隨機規劃 → 要固定「側舉預備姿勢」③站姿手指朝前、離真的桌角幾 cm，實機離開／回站姿手指撞桌
+  ④起點碰到的物體整段不算 → 限制加厚 ⑤實機掌心偏移（前 +4、左不夠 2，影像準）待 `reach_test bottle --fingers 0/90` 分辨
+  ⑥下垂補償還沒改（待子三多點量測）。也告知他 RobotViewer 樣板加了障礙物、目標顯示。
+  子三待辦：--fingers 測偏移、多點下垂、放置高度（等使用者選 A）、retries.grasp 改 2？、告知 bottle_localization 119.5。
 - **給手臂負責人的第二批（使用者說晚點一起整理，2026-11-18 累積）**：①「先往上抬」_obstacle_top 把旁邊的藥瓶、後面的小桌子都算進
   「路線下方」→ 要抬到 103～118.5 cm，左右手都抬不上去；直立圓柱最高點多算半徑 ②加了小桌子後「先往上抬」一定撞小桌，
   只剩 MoveIt 隨機規劃，左手約一半失敗（規劃結果無效、繞遠路 >30°、路線撞到）→ 希望固定的「側舉預備姿勢」（站姿每顆馬達直接轉過去、
@@ -223,7 +248,7 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
 
 ## 還沒做的
 
-1. task_manager.yaml 調完（見上一節）。**`dry_run.fail` 目前是 `'hold'`（測試用），commit 前改回 `''`**。
+1. task_manager.yaml 調完（見上一節）。`dry_run.fail` 已改回 `''`（2026-11-19）。
 2. sp3_task_manager、ros2_task_plan_demo、COMMANDS.md、CLAUDE.md 尚未 commit（2026-11-17 15:08 本機已同步到 .11，由使用者 commit）。
 3. 實機跑一次完整取放（流程見 COMMANDS.md「子三任務管理／接實機」）。
 4. 使用者的「修改主計畫主控模擬」任務還沒開始（先問清楚要改什麼）。

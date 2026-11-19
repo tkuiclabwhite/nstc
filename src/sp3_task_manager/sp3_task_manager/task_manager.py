@@ -5,6 +5,14 @@
                        goal 的 keys/values 欄位見 goal.py
     /manip/status      std_msgs/String（JSON），1 Hz：state IDLE / BUSY / ERROR / ESTOP
     /estop             std_msgs/Bool，True = 急停（測試平台用；正式型別待定）
+給網頁（SP3TaskInterface）
+    /manip/test_cmd    std_msgs/String（JSON）：測試區指令（回站姿、預備姿勢、移到某點、移到某瓶上方），格式見 try_cmd.py
+    /manip/test_result std_msgs/String（JSON）：{"id", "cmd", "ok", "message"}
+    /manip/pose        std_msgs/String（JSON），2 Hz：左右手掌心（模擬、實機）、要抓的藥瓶、最後的掌心目標，
+                       各有 base_link（m）與桌面座標（cm）
+    /manip/target      std_msgs/String（JSON）：要抓的藥瓶（RobotViewer 畫綠色）
+    /manip/speed       std_msgs/Float64：手臂速度（Dynamixel 單位，1～50），之後的任務、測試都用這個；
+                       馬上轉送 /arm_speed_cmd。/manip/status 的 speed 是現在的值
 
 流程階段（S3-05 feedback.stage）：0 辨識、1 規劃、2 接近、3 抓取、4 驗證、5 放置、6 退回。
 Feedback.status 格式：'<階段號> <階段名>｜retry=<n>｜<說明>'，progress = 完成的階段 / 7。
@@ -23,22 +31,25 @@ import time
 
 import rclpy
 import yaml
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from interfaces.action import ExecuteTaskPlan
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Float64, String
 
 from sp3_task_manager.adapters import LATCHED_QOS
-from sp3_task_manager import adapters, dry_run as dry_mod, goal as goal_mod, grasp_plan
+from sp3_task_manager import adapters, dry_run as dry_mod, goal as goal_mod, grasp_plan, try_cmd
+from sp3_task_manager.arm_shape import ArmShape, real_ticks_converter
 from sp3_task_manager.errors import (ESTOP, GRASP_FAILED, OK, OUT_OF_RANGE, TIMEOUT,
                                      TaskError, code_text)
 
 SWITCH_ARM = (GRASP_FAILED, OUT_OF_RANGE)    # 這隻手到不了或規劃失敗：換另一隻手試
 
+SPEED_MAX = 50.0   # 實機最多 50（Dynamixel 單位）
 STAGES = ['辨識', '規劃', '接近', '抓取', '驗證', '放置', '退回']
 
 
@@ -60,6 +71,13 @@ class TaskManager(Node):
         if dry in ('', 'config'):      # launch 沒給 → 用設定檔
             dry = self.cfg['dry_run'].get('modules')
         self.dry_run = dry_mod.parse(dry)
+        # real_arm：true / false 覆蓋設定檔的 real_arm.required（launch real_arm:=false = 只測 MoveIt，不用另一份設定檔）
+        self.declare_parameter('real_arm', 'config', ParameterDescriptor(dynamic_typing=True))
+        real = str(self.get_parameter('real_arm').value).strip().lower()
+        if real in ('true', 'false'):
+            self.cfg.setdefault('real_arm', {})['required'] = real == 'true'
+        elif real not in ('', 'config'):
+            raise ValueError(f'real_arm 只接受 true / false / config，收到 {real!r}')
 
         self.state = 'IDLE'
         self.task_id = ''
@@ -73,6 +91,7 @@ class TaskManager(Node):
         self._gh = None
         self._deadline = float('inf')
         self._arm_used = None
+        self._test_cancel = False   # 網頁測試區按了取消
 
         # 執行中的任務要一邊等其他 topic，所以訂閱放另一個 callback group、用多執行緒 executor
         sub_group = MutuallyExclusiveCallbackGroup()
@@ -92,6 +111,16 @@ class TaskManager(Node):
         self._target_until = float('inf')
         self.create_timer(1.0, self._publish_status, callback_group=sub_group)
 
+        # 網頁測試區、座標顯示
+        self.create_subscription(String, '/manip/test_cmd', self._test_cb, 10, callback_group=sub_group)
+        self.create_subscription(Float64, '/manip/speed', self._speed_cb, 10, callback_group=sub_group)
+        self.pub_test = self.create_publisher(String, '/manip/test_result', 10)
+        self.pub_pose = self.create_publisher(String, '/manip/pose', 10)
+        self._shape, self._ticks_to_q = self._load_fk()
+        self._q_sim, self._q_real = {}, (0.0, {})     # 模擬的關節角；(收到時間, 實機馬達刻度)
+        self.create_subscription(JointState, '/joint_states', self._joint_cb, 10, callback_group=sub_group)
+        self.create_timer(0.5, self._publish_pose, callback_group=sub_group)
+
         self._server = ActionServer(
             self, ExecuteTaskPlan, '/manip/pick_place',
             execute_callback=self._execute,
@@ -99,7 +128,8 @@ class TaskManager(Node):
             cancel_callback=lambda _: CancelResponse.ACCEPT,
             callback_group=ReentrantCallbackGroup())
         dry = '、'.join(m for m in dry_mod.MODULES if m in self.dry_run)
-        self.get_logger().info(f'等待取放任務：/manip/pick_place{f"（模擬：{dry}）" if dry else ""}')
+        real = '要實機跟隨' if self.cfg.get('real_arm', {}).get('required', True) else '只看 MoveIt，不管實機'
+        self.get_logger().info(f'等待取放任務：/manip/pick_place{f"（模擬：{dry}）" if dry else ""}（手臂：{real}）')
 
     # ------------------------------------------------------------------
     # 狀態
@@ -108,7 +138,8 @@ class TaskManager(Node):
         d = {'state': self.state, 'task_id': self.task_id,
              'stage': self.stage, 'stage_name': STAGES[self.stage] if self.stage >= 0 else '',
              'last_error': self.last_error, 'feedback': self.feedback_text, 'last_message': self.last_message,
-             'dry_run': [m for m in dry_mod.MODULES if m in self.dry_run], 'stamp': time.time()}
+             'dry_run': [m for m in dry_mod.MODULES if m in self.dry_run], 'speed': self.arm.speed,
+             'stamp': time.time()}
         self.pub_status.publish(String(data=json.dumps(d, ensure_ascii=False)))
         if self._target is not None and time.monotonic() > self._target_until:
             self._target = None
@@ -132,10 +163,10 @@ class TaskManager(Node):
     def _check(self):
         if self.estop:
             raise TaskError(ESTOP, '急停中')
-        if self._gh is not None and self._gh.is_cancel_requested:
+        if (self._gh is not None and self._gh.is_cancel_requested) or self._test_cancel:
             raise Canceled()
         if time.monotonic() > self._deadline:
-            raise TaskError(TIMEOUT, f'超過任務時限（階段：{STAGES[self.stage]}）')
+            raise TaskError(TIMEOUT, f'超過任務時限（階段：{STAGES[self.stage] if self.stage >= 0 else self.task_id}）')
 
     def sleep(self, sec):
         end = time.monotonic() + sec
@@ -232,17 +263,168 @@ class TaskManager(Node):
             self._publish_status()
         return result
 
+    def _speed_cb(self, msg):
+        v = float(msg.data)
+        if not 1.0 <= v <= SPEED_MAX:
+            self.get_logger().warn(f'速度 {v:g} 不在 1～{SPEED_MAX:g}，不理它')
+            return
+        self.arm.set_speed(v)
+        self.get_logger().info(f'手臂速度改成 {v:g}')
+        self._publish_status()
+
+    # ------------------------------------------------------------------
+    # 網頁測試區（不跑完整流程）：跟取放任務共用 _busy，同時只做一件事
+    # ------------------------------------------------------------------
+    def _test_cb(self, msg):
+        try:
+            c = try_cmd.parse(msg.data, self.cfg)
+        except ValueError as e:
+            try:
+                d = json.loads(msg.data)
+                c = {'id': d.get('id', ''), 'cmd': d.get('cmd', '?')}
+            except (ValueError, AttributeError):
+                c = {'id': '', 'cmd': '?'}
+            self._test_result(c, False, f'指令格式不對：{e}')
+            return
+        if c['cmd'] == 'cancel':
+            if self._busy and self.task_id == 'TEST':
+                self._test_cancel = True
+            return
+        with self._lock:
+            reason = '急停中' if self.estop else (f'{self.task_id or "任務"} 還在執行' if self._busy else '')
+            if not reason:
+                self._busy = True
+        if reason:
+            self._test_result(c, False, f'沒有執行：{reason}')
+            return
+        threading.Thread(target=self._run_test, args=(c,), daemon=True).start()
+
+    def _test_status(self, text):
+        self.feedback_text = text
+        self._publish_status()
+        self.get_logger().info(f'[TEST] {text}')
+
+    def _run_test(self, c):
+        t0 = time.monotonic()
+        self.task_id, self.state, self.stage, self.last_error = 'TEST', 'BUSY', -1, ''
+        self._test_cancel = False
+        self._deadline = t0 + self.cfg['timeouts'].get('test_s', 120.0)
+        ok, text = False, ''
+        try:
+            self.arm.set_speed()
+            if c['cmd'] == 'stand':
+                self._test_status('回站姿')
+                self.arm.stand(self)
+                text = '回到站姿'
+            elif c['cmd'] == 'ready':
+                self._test_status(f'回預備姿勢（{c["arm"]}）')
+                self.arm.ready(self, c['arm'])
+                text = '回到預備姿勢'
+            elif c['cmd'] == 'move':
+                tf = try_cmd.both_frames(c['pos_cm'], self.cfg)['table']
+                self._test_status(f'移到 桌面 右 {tf[0]}、前 {tf[1]}、上 {tf[2]}（{c["arm"]}、{c["approach"]}）')
+                self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
+                arm = self.arm.move(self, c['pos_cm'], c['approach'], c['arm'], '測試：移到指定點')
+                text = f'{arm} 手到了' + self._reach_note(c['pos_cm'], arm)
+            else:   # bottle
+                self._test_status(f'找 {c["cls"]}')
+                xyz, size, others = self.vision.locate(self, c['cls'])
+                self._target = {'class': c['cls'],
+                                'objects': [grasp_plan.bottle_obstacle(c['cls'], xyz, size, 0.0, oid='sp3_target')]}
+                self._target_until = float('inf')
+                pos = try_cmd.above_bottle(xyz, size, c['above'], self.cfg['frames'])
+                self._test_status(f'移到 {c["cls"]} 瓶頂上方 {c["above"]:g} cm')
+                self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, others))
+                arm = self.arm.move(self, pos, 'top', c['arm'], f'測試：移到 {c["cls"]} 上方')
+                text = f'{arm} 手到了 {c["cls"]} 瓶頂上方 {c["above"]:g} cm' + self._reach_note(
+                    grasp_plan.to_meas(xyz, self.cfg['frames']), arm)
+            ok = True
+            self.state = 'IDLE'
+        except Canceled:
+            self.arm.stop('網頁測試取消')
+            text, self.state = '已取消', 'IDLE'
+        except TaskError as e:
+            text, self.last_error = str(e), code_text(e.code)
+            self.state = 'ESTOP' if self.estop else 'ERROR'
+        except Exception as e:      # noqa: BLE001  程式錯誤也要回報，不能卡在 BUSY
+            self.get_logger().error(f'[TEST] 未預期的錯誤：{e!r}')
+            text, self.state = f'程式錯誤：{e!r}', 'ERROR'
+        finally:
+            text += f' duration_s={time.monotonic() - t0:.1f}'
+            self.last_message = text
+            self._target_until = time.monotonic() + 10.0
+            self._deadline = float('inf')
+            with self._lock:
+                self._busy = False
+            self._test_result(c, ok, text)
+            self._publish_status()
+
+    def _reach_note(self, pos_cm, arm):
+        """workspace 表（設定檔的可及範圍）算不算得到：測試時順便驗證表對不對。"""
+        inside = arm in grasp_plan.reachable_arms(pos_cm, self.cfg)
+        return f'（可及範圍表：{"範圍內" if inside else "範圍外"}）'
+
+    def _test_result(self, c, ok, text):
+        self.get_logger().info(f'[TEST] 結果：{"OK" if ok else "失敗"} {text}')
+        self.pub_test.publish(String(data=json.dumps(
+            {'id': c.get('id', ''), 'cmd': c.get('cmd'), 'ok': ok, 'message': text}, ensure_ascii=False)))
+
+    # ------------------------------------------------------------------
+    # 座標顯示（/manip/pose）：掌心用 URDF 算（只讀關節，不讀 STL），實機用馬達刻度經 arm_config 換算
+    # ------------------------------------------------------------------
+    def _load_fk(self):
+        try:
+            urdf = os.path.join(get_package_share_directory('seven_axis_arm_urdf'), 'urdf',
+                                'seven_axis_arm_urdf.urdf')
+            shape = ArmShape(urdf, get_package_share_directory, meshes=False)
+        except Exception as e:      # noqa: BLE001
+            self.get_logger().warning(f'讀不到手臂 URDF，網頁不顯示掌心座標：{e}')
+            return None, None
+        try:
+            conv = real_ticks_converter(os.path.join(get_package_prefix('armpackage'), 'lib', 'armpackage'))
+        except Exception:           # noqa: BLE001
+            conv = None
+        return shape, conv
+
+    def _joint_cb(self, msg):
+        if not msg.name:
+            return
+        if msg.name[0].isdigit():   # driver：馬達 ID、刻度
+            self._q_real = (time.monotonic(), {int(n): p for n, p in zip(msg.name, msg.position)})
+        else:                       # MoveIt：關節名、rad
+            self._q_sim.update(zip(msg.name, msg.position))
+
+    def _publish_pose(self):
+        d = {'palm': {}, 'target': None, 'goal': None, 'stamp': time.time()}
+        if self._shape is not None:
+            t_real, ticks = self._q_real
+            q_real = self._ticks_to_q(ticks) if self._ticks_to_q and ticks and time.monotonic() - t_real < 1.0 else {}
+            for arm in ('left', 'right'):
+                d['palm'][arm] = {
+                    k: try_cmd.both_frames(grasp_plan.to_meas(self._shape.palm(q, arm), self.cfg['frames']), self.cfg)
+                    if q else None for k, q in (('sim', self._q_sim), ('real', q_real))}
+        if self._target and self._target['objects']:
+            o = self._target['objects'][0]
+            c = [(a + b) / 2 for a, b in zip(o['a'], o['b'])]
+            d['target'] = dict(try_cmd.both_frames(grasp_plan.to_meas(c, self.cfg['frames']), self.cfg),
+                               **{'class': self._target['class']})
+        goal = getattr(self.arm, 'last_goal', None)
+        if goal is not None:
+            d['goal'] = dict(try_cmd.both_frames(goal[0], self.cfg), arm=goal[1], what=goal[2])
+        self.pub_pose.publish(String(data=json.dumps(d, ensure_ascii=False)))
+
     # ------------------------------------------------------------------
     # 取放流程
     # ------------------------------------------------------------------
     def _run(self, g):
         gc = self.cfg['grasp']
         max_retry = self.cfg['retries']['grasp']
-        # 先回站姿：手臂從哪裡開始都一樣，也不會擋住相機。場景先放桌子
-        self._feedback(0, 0, '回站姿')
+        # 先回預備姿勢（ready pose，2026-11-19 決定）：第一個任務從 stand 舉上來，之後本來就在 ready（手臂端直接回成功）。
+        # 手臂端還沒有 /arm_ready 時這裡會失敗（MAN-E-007）。場景先放桌子
+        self._feedback(0, 0, '回預備姿勢')
         self.arm.set_speed()
         self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
-        self.arm.stand(self)
+        self.arm.ready(self)
         for retry in range(max_retry + 1):
             try:
                 poses = self._pick(g, retry)
@@ -264,8 +446,8 @@ class TaskManager(Node):
             self.arm.detach(self)
             self.arm.move(self, above, approach, poses.arm, '放下後抬起')
 
-        self._feedback(6, 0, '回站姿')
-        self.arm.stand(self)
+        self._feedback(6, 0, '回預備姿勢')      # 任務之間停在 ready，收工才按 Stand
+        self.arm.ready(self)
         held = '' if g.place_target else '（沒有放置點，藥瓶還在手上）'
         return f'{poses.arm} 手 {g.bottle_class} → {g.place_target or "—"}{held}'
 

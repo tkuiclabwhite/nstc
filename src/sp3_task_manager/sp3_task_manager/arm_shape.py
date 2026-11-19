@@ -54,19 +54,28 @@ def load_stl(path):
     return d['v'].reshape(-1, 3).astype(float)
 
 
+# 掌心點在手掌 link（rh_ / lh_hand_base_link）裡的位置（m），同 armpackage arm_config.TOOL_OFFSET
+TOOL_OFFSET = np.array([0.02, 0.0, 0.07])
+
+
 class ArmShape:
-    def __init__(self, urdf_path, resolve, per_link=400):
-        """resolve(package_name) → 該套件的 share 目錄（解析 package://）。per_link：每個 link 最多留幾個頂點。"""
+    def __init__(self, urdf_path, resolve, per_link=400, meshes=True):
+        """resolve(package_name) → 該套件的 share 目錄（解析 package://）。per_link：每個 link 最多留幾個頂點。
+        meshes=False：只讀關節（算 FK、掌心位置用），不讀 STL。"""
         root = ET.parse(urdf_path).getroot()
         self.joints = {}           # child link → (parent, origin, 類型, 軸, 關節名)
+        self.limits = {}           # 關節名 → (下限, 上限) rad（URDF 的 <limit>）
         for j in root.findall('joint'):
+            lim = j.find('limit')
+            if lim is not None and lim.get('lower') is not None and lim.get('upper') is not None:
+                self.limits[j.get('name')] = (float(lim.get('lower')), float(lim.get('upper')))
             ax = j.find('axis')
             self.joints[j.find('child').get('link')] = (
                 j.find('parent').get('link'), _origin(j.find('origin')), j.get('type'),
                 _vec(ax.get('xyz') if ax is not None else None, '1 0 0'), j.get('name'))
         self.meshes = {}           # link → 頂點（link 座標，m）
         rng = np.random.default_rng(0)
-        for link in root.findall('link'):
+        for link in (root.findall('link') if meshes else []):
             pts = []
             for c in link.findall('collision') or link.findall('visual'):
                 m = c.find('geometry/mesh')
@@ -98,6 +107,11 @@ class ArmShape:
             if kind in ('revolute', 'continuous'):
                 T = T @ _axis_rot(axis, q.get(name, 0.0))
         return T
+
+    def palm(self, q, arm):
+        """掌心點（base_link，m）。"""
+        T = self.link_T(HAND_BASE[arm], q)
+        return T[:3, :3] @ TOOL_OFFSET + T[:3, 3]
 
     def points(self, q, arm):
         """這隻手（手臂 + 手）所有 link 的頂點（base_link，m）。"""
@@ -148,3 +162,23 @@ def distance(points, ob):
         return None, None
     i = int(np.argmin(d))
     return float(d[i]), p[i]
+
+
+def real_ticks_converter(lib_dir):
+    """實機馬達刻度 → 關節角的換算（armpackage 的 arm_config：stand.ini 的偏移、轉向）。
+    lib_dir = armpackage 的 lib/armpackage；讀不到回傳 None。回傳 f({馬達 ID: 刻度}) → {關節名: rad}。"""
+    try:
+        import sys
+        if lib_dir not in sys.path:
+            sys.path.insert(0, lib_dir)
+        import arm_config
+    except Exception:                                        # noqa: BLE001
+        return None
+
+    def conv(ticks):
+        q = {}
+        for arm, a in arm_config.ARMS.items():
+            if all(m in ticks for m in a['motors']):
+                q.update(zip(a['joints'], arm_config.ticks_to_rad(arm, [ticks[m] for m in a['motors']])))
+        return q
+    return conv

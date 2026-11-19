@@ -96,6 +96,28 @@
 		table.hist td.msg { text-align: left; }
 
 		#connected { color: #00D600; display: none; font-size: 20px; margin: 0; }
+
+		/* 上方控制列 */
+		#ctrlbar { margin: 10px 8px 0 8px; float: left; width: 1416px; border: 1px #FFF solid; padding: 8px 0; }
+		#ctrlbar td { padding: 0 10px; vertical-align: middle; }
+		#ctrlbar #estop { width: 180px; height: 60px; font-size: 26px; }
+		.PoseBtn { height: 44px; padding: 0 22px; font-size: 18px; border-radius: 6px; border: none; cursor: pointer; }
+		#btn-stand { background: #455a64; color: white; }
+		#btn-ready { background: #1565c0; color: white; }
+		.PoseBtn:disabled { opacity: 0.4; cursor: default; }
+		#speed { width: 64px; font-size: 18px; }
+
+		/* 測試區 */
+		#t-result { margin: 8px 12px; min-height: 60px; white-space: pre-wrap; text-align: left; font-size: 15px;
+		            background: #222; border: 1px #666 solid; padding: 6px; }
+		.why { color: #ffd54f; font-weight: bold; }
+
+		/* 座標 */
+		table.pose { border-collapse: collapse; margin: 6px auto; }
+		table.pose th { background-color: #000080; border: 1px white solid; padding: 3px 10px; }
+		table.pose td { border: 1px #777 solid; padding: 3px 10px; text-align: right; font-family: monospace; font-size: 15px; }
+		table.pose td.name { text-align: left; font-family: inherit; }
+		table.pose tr.target td { color: #66ff33; }
 	</style>
 </head>
 
@@ -124,6 +146,23 @@
 	</div>
 
 	<div id="container">
+
+		<!-- ================= 控制列：急停、站姿、預備姿勢、狀態 ================= -->
+		<div id="ctrlbar">
+			<table align="center"><tr>
+				<td><button type="button" id="estop" onclick="estop(true)">急停</button></td>
+				<td><input type="button" id="estop-release" class="Button" value="解除急停" onclick="estop(false)"></td>
+				<td style="padding-left:30px;"><button type="button" id="btn-stand" class="PoseBtn" onclick="testCmd({cmd:'stand'})">Stand（手放下）</button></td>
+				<td><button type="button" id="btn-ready" class="PoseBtn" onclick="testCmd({cmd:'ready', arm:'both'})">Ready pose（舉到桌上）</button></td>
+				<td style="padding-left:30px;" title="Dynamixel 單位，1～50（實機最多 50）。改了之後的任務、測試、Stand、Ready 都用這個；重開任務管理會回到設定檔的值">
+					速度 <input type="number" id="speed" min="1" max="50" step="1" onchange="setSpeed()">
+					<span id="speed-now" class="dim"></span></td>
+				<td style="padding-left:20px;"><span id="state" class="st-OFF">沒有資料</span></td>
+				<td><div id="status-line" class="dim" style="max-width:520px;">—</div></td>
+			</tr></table>
+		</div>
+
+		<div style="clear: both;"></div>
 
 		<!-- ================= 送任務 ================= -->
 		<section class="half" align="center">
@@ -164,15 +203,71 @@
 			<div class="dim" id="send-hint" style="margin-top:6px;"></div>
 		</section>
 
-		<!-- ================= 狀態與急停 ================= -->
+		<!-- ================= 測試（不跑完整流程） ================= -->
 		<section class="half" align="center">
-			<b><h align="center" style="font-size: 23px">任務管理狀態（/manip/status）</h></b>
-			<div style="margin: 10px 0;"><span id="state" class="st-OFF">沒有資料</span></div>
-			<div id="status-line" class="dim">—</div>
-			<div style="margin-top: 12px;">
-				<button type="button" id="estop" onclick="estop(true)">急停</button><br>
-				<input type="button" id="estop-release" class="Button" value="解除急停" onclick="estop(false)">
+			<b><h align="center" style="font-size: 23px">測試（不跑完整流程，/manip/test_cmd）</h></b>
+			<table class="control">
+				<tr>
+					<td class="label">做什麼</td>
+					<td align="left" colspan="3">
+						<label><input type="radio" name="t-mode" value="move" checked onchange="testModeChanged()"> 移到座標</label>
+						<label style="margin-left:14px;"><input type="radio" name="t-mode" value="bottle" onchange="testModeChanged()"> 移到藥瓶上方（影像）</label>
+					</td>
+				</tr>
+				<tr class="t-move">
+					<td class="label">座標系</td>
+					<td align="left" colspan="3">
+						<select id="t-frame" onchange="testFrameChanged()">
+							<option value="table">桌面（cm）：右、前、上</option>
+							<option value="base_link">base_link（m）：x 前、y 左、z 上</option>
+						</select>
+					</td>
+				</tr>
+				<tr class="t-move">
+					<td class="label" id="t-axes">右／前／上</td>
+					<td align="left" colspan="3">
+						<input type="number" id="t-x" value="-18.9" step="any" style="width:80px">
+						<input type="number" id="t-y" value="12" step="any" style="width:80px">
+						<input type="number" id="t-z" value="10" step="any" style="width:80px">
+						<span class="dim" id="t-axes-hint">掌心位置</span>
+					</td>
+				</tr>
+				<tr class="t-move">
+					<td class="label">掌心方向</td>
+					<td align="left"><select id="t-approach"><option>top</option><option>front</option><option>side</option></select></td>
+				</tr>
+				<tr class="t-bottle" style="display:none;">
+					<td class="label">藥瓶</td>
+					<td align="left"><select id="t-class"><option>b1</option><option>b2</option><option>b3</option><option>b4</option></select></td>
+					<td class="label">瓶頂上方</td>
+					<td align="left"><input type="number" id="t-above" value="10" step="any" style="width:70px"> cm</td>
+				</tr>
+				<tr>
+					<td class="label">手</td>
+					<td align="left"><select id="t-arm"><option>auto</option><option>left</option><option>right</option></select></td>
+				</tr>
+			</table>
+			<div style="margin-top:6px;">
+				<input type="button" id="t-run" class="Button" value="執行" onclick="runTest()">
+				<input type="button" id="t-cancel" class="Button" value="停止" onclick="testCmd({cmd:'cancel'})" disabled>
 			</div>
+			<div id="t-result" class="dim">要開著任務管理（ros2 launch sp3_task_manager task_manager.launch.py）</div>
+		</section>
+
+		<div style="clear: both;"></div>
+
+		<!-- ================= 座標 ================= -->
+		<section class="wide" align="center">
+			<b><h align="center" style="font-size: 23px">座標（/manip/pose）</h></b>
+			<table class="pose">
+				<thead>
+					<tr><th rowspan="2"></th><th colspan="3">base_link（m）</th><th colspan="3">桌面（cm）</th></tr>
+					<tr><th>x 前</th><th>y 左</th><th>z 上</th><th>右</th><th>前</th><th>上</th></tr>
+				</thead>
+				<tbody id="pose"></tbody>
+			</table>
+			<div class="dim">桌面座標：原點 = 桌緣上正對 base_link 中線、桌面高。掌心點 = 手掌面上、左右置中、離手掌底部 7 cm。
+				實機 = 馬達讀數經 URDF 算的（看不到機構下垂）</div>
 		</section>
 
 		<div style="clear: both;"></div>
@@ -238,6 +333,10 @@
                 setConn(true);
                 ws.send(JSON.stringify({ op: 'advertise', topic: '/estop', type: 'std_msgs/Bool' }));
                 ws.send(JSON.stringify({ op: 'subscribe', topic: '/manip/status', type: 'std_msgs/String' }));
+                ws.send(JSON.stringify({ op: 'advertise', topic: '/manip/test_cmd', type: 'std_msgs/String' }));
+                ws.send(JSON.stringify({ op: 'advertise', topic: '/manip/speed', type: 'std_msgs/Float64' }));
+                ws.send(JSON.stringify({ op: 'subscribe', topic: '/manip/test_result', type: 'std_msgs/String' }));
+                ws.send(JSON.stringify({ op: 'subscribe', topic: '/manip/pose', type: 'std_msgs/String' }));
             };
             ws.onmessage = function (ev) {
                 var m = JSON.parse(ev.data);
@@ -246,6 +345,10 @@
                     try { lastStatus = JSON.parse(m.msg.data); lastStatusT = Date.now(); } catch (e) { }
                     renderStatus();
                     observeStatus();
+                } else if (m.topic === '/manip/test_result') {
+                    try { onTestResult(JSON.parse(m.msg.data)); } catch (e) { }
+                } else if (m.topic === '/manip/pose') {
+                    try { renderPose(JSON.parse(m.msg.data)); } catch (e) { }
                 }
             };
             ws.onclose = function () {
@@ -296,12 +399,36 @@
                 if (s.task_id) parts.push('task_id ' + s.task_id);
                 if (s.stage >= 0) parts.push('階段 ' + s.stage + ' ' + s.stage_name);
                 if (s.dry_run && s.dry_run.length) parts.push('模擬：' + s.dry_run.join('、'));
+                if (s.state === 'BUSY' && s.feedback) parts.push(s.feedback);
                 if (s.last_error) parts.push('上次錯誤：' + s.last_error);
                 line.textContent = parts.join('　｜　') || '—';
             }
+            renderSpeed();
             renderButtons();
         }
         setInterval(renderStatus, 1000);
+
+        // 速度：送 /manip/speed，任務管理記住、之後每個任務和測試都用；欄位沒在編輯時跟著 /manip/status 的 speed
+        var SPEED_MIN = 1, SPEED_MAX = 50;
+
+        function renderSpeed() {
+            var el = document.getElementById('speed'), now = document.getElementById('speed-now');
+            var v = statusFresh() && lastStatus.speed != null ? lastStatus.speed : null;
+            now.textContent = v == null ? '' : '（目前 ' + v + '）';
+            if (v != null && document.activeElement !== el) el.value = v;
+        }
+
+        function setSpeed() {
+            var el = document.getElementById('speed'), v = Number(el.value);
+            if (!(v >= SPEED_MIN && v <= SPEED_MAX)) {
+                alert('速度要在 ' + SPEED_MIN + '～' + SPEED_MAX + '（Dynamixel 單位）');
+                el.value = statusFresh() && lastStatus.speed != null ? lastStatus.speed : '';
+                return;
+            }
+            if (!statusFresh()) { alert('任務管理沒開，速度沒送出'); return; }
+            if (!ctrlSend({ op: 'publish', topic: '/manip/speed', msg: { data: v } })) alert('沒連上 rosbridge，速度沒送出');
+            el.blur();
+        }
 
         function estop(on) {
             if (!on && !confirm('確定解除急停？')) return;
@@ -336,6 +463,104 @@
             document.getElementById('btn-send').disabled = busy || st === 'ESTOP' || st === 'BUSY';
             document.getElementById('btn-cancel').disabled = !(busy && task.accepted);
             document.getElementById('send-hint').textContent = hint;
+            // 測試區、站姿／預備姿勢：任務管理閒著才能按；測試中可以停止
+            var idle = !busy && st && st !== 'ESTOP' && st !== 'BUSY';
+            ['t-run', 'btn-stand', 'btn-ready'].forEach(function (id) { document.getElementById(id).disabled = !idle; });
+            document.getElementById('t-cancel').disabled = !(st === 'BUSY' && lastStatus.task_id === 'TEST');
+        }
+
+        // ===================================================================
+        // 測試區（/manip/test_cmd → 任務管理做，結果 /manip/test_result）
+        // ===================================================================
+        var testSeq = 0, testPending = null;
+        var REASON_TEXT = {        // moveit_bridge 的 reason（錯誤訊息裡 [xxx]）→ 白話
+            unreachable: 'IK 解不到：手到不了這個位置／姿態',
+            joint_limit: '關節極限：手到不了（或太靠身體）',
+            plan_failed: '找不到路：目標姿勢算得到，但規劃不出路線（規劃結果無效、繞遠路、路線會撞到）',
+            collision: '目標姿勢本身會撞到東西',
+            exec_failed: '執行失敗（控制器）', canceled: '被取消', busy: '手臂還在做上一個動作',
+            moveit_down: 'MoveIt 沒開', bad_request: '指令格式不對', internal: '手臂端程式錯誤'
+        };
+
+        function testCmd(c) {
+            if (c.cmd !== 'cancel') {
+                c.id = 'web' + (++testSeq);
+                testPending = c.id;
+                var el = document.getElementById('t-result');
+                el.className = ''; el.textContent = '送出：' + JSON.stringify(c);
+            }
+            if (!ctrlSend({ op: 'publish', topic: '/manip/test_cmd', msg: { data: JSON.stringify(c) } }))
+                alert('沒連上 rosbridge，指令沒送出');
+            else log('測試：' + JSON.stringify(c));
+        }
+
+        function runTest() {
+            var mode = document.querySelector('input[name=t-mode]:checked').value;
+            var arm = document.getElementById('t-arm').value;
+            if (mode === 'move') {
+                var pos = ['t-x', 't-y', 't-z'].map(function (id) { return Number(document.getElementById(id).value); });
+                if (pos.some(isNaN)) { alert('座標要填數字'); return; }
+                testCmd({ cmd: 'move', frame: document.getElementById('t-frame').value, pos: pos, arm: arm,
+                          approach: document.getElementById('t-approach').value });
+            } else {
+                testCmd({ cmd: 'bottle', 'class': document.getElementById('t-class').value,
+                          above: Number(document.getElementById('t-above').value) || 10, arm: arm });
+            }
+        }
+
+        function onTestResult(r) {
+            var el = document.getElementById('t-result');
+            el.className = '';
+            el.innerHTML = '';
+            var head = document.createElement('div');
+            head.innerHTML = (r.ok ? '<span class="ok">✓ ' : '<span class="ng">✗ ') + r.cmd + '</span>'
+                + (r.id && r.id !== testPending ? ' <span class="dim">（不是這頁最後送的那筆）</span>' : '');
+            el.appendChild(head);
+            var why = (r.message.match(/\[(\w+)\]/) || [])[1];
+            if (!r.ok && REASON_TEXT[why]) {
+                var w = document.createElement('div');
+                w.className = 'why'; w.textContent = '→ ' + REASON_TEXT[why];
+                el.appendChild(w);
+            }
+            el.appendChild(document.createTextNode(r.message));
+            log('測試結果：' + (r.ok ? 'OK ' : '失敗 ') + r.message.split('\n')[0]);
+        }
+
+        function testModeChanged() {
+            var mode = document.querySelector('input[name=t-mode]:checked').value;
+            [].forEach.call(document.querySelectorAll('.t-move'), function (e) { e.style.display = mode === 'move' ? '' : 'none'; });
+            [].forEach.call(document.querySelectorAll('.t-bottle'), function (e) { e.style.display = mode === 'bottle' ? '' : 'none'; });
+        }
+
+        function testFrameChanged() {
+            var table = document.getElementById('t-frame').value === 'table';
+            document.getElementById('t-axes').textContent = table ? '右／前／上' : 'x／y／z';
+            document.getElementById('t-axes-hint').textContent = table ? '掌心位置（cm）' : '掌心位置（m）';
+        }
+
+        // ===================================================================
+        // 座標（/manip/pose）
+        // ===================================================================
+        function renderPose(d) {
+            var rows = [];
+            if (d.target) rows.push(['要抓的 ' + d.target['class'] + '（瓶身中心）', d.target, 'target']);
+            if (d.goal) rows.push(['最後的掌心目標（' + d.goal.arm + '：' + d.goal.what + '）', d.goal, '']);
+            ['left', 'right'].forEach(function (arm) {
+                var p = (d.palm || {})[arm] || {};
+                var name = arm === 'left' ? '左手掌心' : '右手掌心';
+                rows.push([name + '（模擬）', p.sim, '']);
+                rows.push([name + '（實機）', p.real, '']);
+            });
+            var tb = document.getElementById('pose');
+            tb.innerHTML = '';
+            rows.forEach(function (r) {
+                var tr = tb.insertRow(-1);
+                tr.className = r[2];
+                var td = tr.insertCell(-1); td.className = 'name'; td.textContent = r[0];
+                var b = r[1] ? r[1].base_link : null, t = r[1] ? r[1].table : null;
+                for (var i = 0; i < 3; i++) tr.insertCell(-1).textContent = b ? b[i].toFixed(3) : '—';
+                for (var j = 0; j < 3; j++) tr.insertCell(-1).textContent = t ? t[j].toFixed(1) : '—';
+            });
         }
 
         function sendTask() {
@@ -410,6 +635,7 @@
         function observeStatus() {
             var s = lastStatus;
             if (!s || ownActive()) return;
+            if (s.task_id === 'TEST') return;          // 測試區的指令不算任務
             if (s.state === 'BUSY') {
                 if (!observed || observed.done) {
                     if (Date.now() - ownFinishedAt < 2000) return;     // 自己剛結束的任務，晚到的舊狀態

@@ -61,6 +61,31 @@ def meas_to_table(p_cm, table, frames):
     return np.array([float(p_cm[1]) - o[1], float(p_cm[0]) - o[0], float(p_cm[2]) - o[2]])
 
 
+READY_VIA = ('path', 'move', 'arm_ready')
+
+
+def ready_targets(cfg):
+    """設定檔 ready_pose → (via, approach, {'left': 量測座標 cm, 'right': 量測座標 cm})。格式不對丟 ValueError。"""
+    rp = cfg.get('ready_pose') or {}
+    via = rp.get('via', 'move')
+    if via not in READY_VIA:
+        raise ValueError(f'ready_pose.via 只接受 {"/".join(READY_VIA)}，收到 {via!r}')
+    approach = rp.get('approach', 'top')
+    if approach not in AXES:
+        raise ValueError(f'ready_pose.approach 只接受 {"/".join(AXES)}，收到 {approach!r}')
+    pos = {}
+    for arm in ('left', 'right'):
+        p = rp.get(arm)
+        if p is None:
+            continue
+        if len(p) != 3:
+            raise ValueError(f'ready_pose.{arm} 要三個數字（桌面座標 右、前、上 cm）')
+        pos[arm] = table_to_meas(p, cfg['table'], cfg['frames'])
+    if via in ('path', 'move') and set(pos) != {'left', 'right'}:
+        raise ValueError(f'ready_pose.via = {via} 時要有 left、right 兩個點（桌面座標 右、前、上 cm）')
+    return via, approach, pos
+
+
 def reach_front(lateral_cm, ws):
     """離中線往這隻手那一側 lateral_cm 時，掌心最遠能到桌緣往前多少（cm，內插）；表外回 None。"""
     rows = sorted(ws['reach_front_cm'])

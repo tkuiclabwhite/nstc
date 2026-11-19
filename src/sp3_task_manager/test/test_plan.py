@@ -206,6 +206,21 @@ def test_place_targets_reachable():
     assert reach['tray_1'] == ['right'] and reach['tray_2'] == ['left']
 
 
+def test_ready_pose():
+    via, approach, pos = grasp_plan.ready_targets(CFG)
+    assert via == 'path' and approach == 'top'
+    # 桌面座標 (∓50, 15, 20) → 量測座標 前 28.35（桌緣 12 + base_link 在立柱前 1.35 + 15）、右 ∓50、高 101.2
+    assert pos['left'] == pytest.approx([28.35, -50.0, 101.2])
+    assert pos['right'] == pytest.approx([28.35, 50.0, 101.2])
+    assert grasp_plan.reachable_arms(pos['left'], CFG) == ['left']
+    assert grasp_plan.reachable_arms(pos['right'], CFG) == ['right']
+    with pytest.raises(ValueError):
+        grasp_plan.ready_targets(dict(CFG, ready_pose={'via': 'move', 'left': [-25, 15, 10]}))   # 少右手
+    assert grasp_plan.ready_targets(dict(CFG, ready_pose={'via': 'arm_ready'}))[0] == 'arm_ready'
+    with pytest.raises(ValueError):
+        grasp_plan.ready_targets(dict(CFG, ready_pose={'via': 'path', 'right': [35, 15, 15]}))   # path 也要兩隻手
+
+
 def test_clearance_distance():
     from sp3_task_manager.arm_shape import distance
     box = {'type': 'box', 'c': [0, 0, 0], 'R': np.eye(3).tolist(), 'h': [0.1, 0.1, 0.05]}

@@ -185,6 +185,7 @@ class SweepWriter:
             'size': np.asarray(snap.size, dtype=np.int32),
             'joints': np.asarray(snap.joints, dtype=np.float64).reshape(-1, 3),
             'imu': np.asarray(snap.imu, dtype=np.float64).reshape(-1, 9),
+            'roll': np.asarray(snap.roll, dtype=np.float64).reshape(-1, 2),
             'detections': np.asarray(json.dumps([d for _, d in snap.detections], ensure_ascii=False)),
         }
         if depth is not None:
@@ -338,6 +339,7 @@ def format_summary(rows, bottle_rows):
         way = '往左轉' if s > 0.5 else '往右轉' if s < -0.5 else '方向不明'
         lines.append(f'pan：刻度變大 → {way}（瓶子方位角變化 / pan 角度變化 = {s:+.2f}，'
                      f'{d["pan_n"]} 筆；相機往下看，所以會比 1 小一點）')
+    lines += roll_check(rows)
 
     r = core.repeatability(rows, bottle_rows)
     if r is None:
@@ -363,6 +365,24 @@ def format_summary(rows, bottle_rows):
     else:
         lines.append('  頭尾一致，中間沒有東西動過')
     return lines
+
+
+# 歪頭（30 號）整個過程應該停在同一個刻度；馬達抖動約 1～2 格
+ROLL_DRIFT_TICKS = 3
+
+
+def roll_check(rows):
+    """新平台：檢查歪頭（30 號）在收集過程中有沒有動。沒有 30 號的資料（舊機器人）就不印。"""
+    lo = [r['roll_min'] for r in rows if core._finite(r.get('roll_min'))]
+    hi = [r['roll_max'] for r in rows if core._finite(r.get('roll_max'))]
+    if not lo:
+        return []
+    span = max(hi) - min(lo)
+    line = f'歪頭（30 號）：{min(lo):.0f}～{max(hi):.0f}（變化 {span:.0f} 格）'
+    if span > ROLL_DRIFT_TICKS:
+        return [line, f'  ⚠ 歪頭在收集中動了超過 {ROLL_DRIFT_TICKS} 格：模型假設歪頭固定，'
+                      '確認沒有其他程式在發 /Head_Topic、30 號扭力有開']
+    return [line + '，沒有動']
 
 
 def config_dict(cfg):

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """頭部掃描資料收集工具：把頭轉到一組刻度，每個姿勢記錄馬達刻度、桌面、IMU、瓶子。
 
-收到的資料用來擬合「頭部刻度 -> 相機外參」的模型（下一階段）。在機器人上執行：
+新平台（三軸脖子）：轉頭（28 號）和低頭（29 號），歪頭（30 號）不轉、只記錄。
+基準刻度和範圍讀 config/neck_head.yaml（--config），預設姿勢 = 允許範圍的網格。收到的資料用
+tools/check_neck_model.py 驗證頭部模型。在機器人上執行：
 
-    ros2 run head_tf head_sweep sweep_01                 # 預設網格：pan 3 個 x tilt 5 個
-    ros2 run head_tf head_sweep sweep_02 --pan 1934 2048 2162 --tilt 2243 2300 2357
-    ros2 run head_tf head_sweep sweep_03 --manual        # 自己轉頭，按 Enter 記錄
+    ros2 run head_tf head_sweep neck_01                  # 預設網格：轉頭 3 個 x 低頭 5 個
+    ros2 run head_tf head_sweep neck_02 --pan 1962 2047 2133 --tilt 1651 1708 1765
+    ros2 run head_tf head_sweep neck_03 --manual         # 自己轉頭，按 Enter 記錄
 
 開始前：
-- camera.launch.py（ZED 和馬達 driver）和 bottle_detect_v2 要開著，策略不能跑（會搶頭部）。
-- 機器人站好、頭部扭力開著；桌上放 2~4 個藥罐，整個過程不要動機器人、桌子和瓶子。
+- nstc.launch.py（ZED 和馬達 driver）和 bottle_detect_v2 要開著。
+  任務管理（sp3_task_manager）不要開、網頁的頭部拉條不要動，它們會搶頭部。
+- 頭部扭力開著、歪頭在基準刻度；桌上放 2~4 個藥罐，整個過程不要動機器人、桌子和瓶子。
 - 畫面下方中間那塊（桌面擬合區）盡量只有桌面。
 
 資料存在 ~/head_sweeps/<名稱>/，格式見 README.md。工具結束或按 Ctrl+C 時，頭會回到開始時的刻度。
@@ -34,11 +37,12 @@ from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import CameraInfo, Image, Imu, JointState
 from std_msgs.msg import String
 
+from head_tf import neck_model
 from head_tf import sweep_core as core
 from head_tf import sweep_runner as runner
 
-DEFAULT_PAN = [1934, 2048, 2162]                 # 2048 ± 114 格（±10°）
-DEFAULT_TILT = [2186, 2243, 2300, 2357, 2414]    # 2300 ± 114 格，每 57 格（5°）一個
+# 舊機器人（兩軸頭）用的是 pan 1934 2048 2162、tilt 2186~2414、基準 2048 2300（sweep_01）。
+# 新平台的預設從 neck_head.yaml 算（neck_model.sweep_plan）。
 # bottle_localization 的設定檔一起複製進資料夾，下一階段要用當時的外參當起點
 ROBOT_CONFIG_FILES = ['camera_extrinsics.yaml', 'robot_reference.yaml', 'params.yaml', 'bottle_dims.yaml']
 
@@ -55,6 +59,7 @@ class SweepNode(Node):
         self.opts = opts
         self._lock = threading.Lock()
         self._joints = deque(maxlen=5000)
+        self._roll = deque(maxlen=5000)
         self._imu = deque(maxlen=8000)
         self._dets = deque(maxlen=500)
         # 深度圖很大（960x600 float32 約 2.3 MB），只每隔一段時間留一張，記錄期間平均分布
@@ -83,8 +88,15 @@ class SweepNode(Node):
             tilt = msg.position[msg.name.index(core.TILT_JOINT)]
         except (ValueError, IndexError):
             return
+        try:
+            roll = float(msg.position[msg.name.index(core.ROLL_JOINT)])
+        except (ValueError, IndexError):
+            roll = None
+        now = time.monotonic()
         with self._lock:
-            self._joints.append((time.monotonic(), float(pan), float(tilt)))
+            self._joints.append((now, float(pan), float(tilt)))
+            if roll is not None:
+                self._roll.append((now, roll))
 
     def _on_depth(self, msg):
         now = time.monotonic()
@@ -136,6 +148,10 @@ class SweepNode(Node):
         with self._lock:
             return sum(1 for s in self._imu if s[0] >= t)
 
+    def latest_roll(self):
+        with self._lock:
+            return self._roll[-1][1] if self._roll else None
+
     def latest_labels(self, seconds=1.0):
         now = time.monotonic()
         with self._lock:
@@ -155,7 +171,10 @@ class SweepNode(Node):
 
     # ---------------- 頭部指令 ----------------
     def make_head_publisher(self):
-        from tku_msgs.msg import HeadPackage
+        try:
+            from nstc_msgs.msg import HeadPackage
+        except ImportError:     # 舊機器人（ros2_adult）
+            from tku_msgs.msg import HeadPackage
         self._head_cls = HeadPackage
         self._head_pub = self.create_publisher(HeadPackage, self.opts.head_topic, 10)
 
@@ -185,6 +204,7 @@ class SweepNode(Node):
         with self._lock:
             depth_msgs = [m for t, m in self._depth if t0 <= t <= t1][-max_frames:]
             joints = [s for s in self._joints if t0 <= s[0] <= t1]
+            roll = [s for s in self._roll if t0 <= s[0] <= t1]
             imu = [s for s in self._imu if t0 <= s[0] <= t1]
             dets = [d for d in self._dets if t0 <= d[0] <= t1]
             color = self._color
@@ -200,7 +220,19 @@ class SweepNode(Node):
         else:
             size = camera[1]
         return core.Snapshot(depth_frames=frames, k=camera[0], size=size, frame_id=camera[2],
-                             color=bgr, joints=joints, imu=imu, detections=dets)
+                             color=bgr, joints=joints, roll=roll, imu=imu, detections=dets)
+
+
+def default_config():
+    """neck_head.yaml：先找安裝的 share，找不到用原始碼旁邊的。"""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        path = Path(get_package_share_directory('head_tf')) / 'config' / 'neck_head.yaml'
+        if path.exists():
+            return str(path)
+    except Exception:
+        pass
+    return str(Path(__file__).resolve().parents[1] / 'config' / 'neck_head.yaml')
 
 
 def parse_args(argv):
@@ -208,10 +240,14 @@ def parse_args(argv):
         prog='head_sweep', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('name', help='這次收集的名稱，資料存在 <--out>/<name>/')
     ap.add_argument('--out', default='~/head_sweeps', help='資料的上層資料夾（預設 ~/head_sweeps）')
-    ap.add_argument('--pan', type=int, nargs='+', default=DEFAULT_PAN, help='pan（28 號）要量的刻度')
-    ap.add_argument('--tilt', type=int, nargs='+', default=DEFAULT_TILT, help='tilt（29 號）要量的刻度')
-    ap.add_argument('--reference', type=int, nargs=2, default=list(core.REFERENCE_TICKS),
-                    metavar=('PAN', 'TILT'), help='基準姿勢（頭尾各量一次），預設是外參校正時的 2048 2300')
+    ap.add_argument('--config', default=None,
+                    help='頭部設定（基準刻度、允許範圍），預設是 head_tf 的 config/neck_head.yaml')
+    ap.add_argument('--pan', type=int, nargs='+', default=None,
+                    help='轉頭（28 號）要量的刻度，預設是允許範圍兩端和基準')
+    ap.add_argument('--tilt', type=int, nargs='+', default=None,
+                    help='低頭（29 號）要量的刻度，預設在允許範圍內平均取 5 個')
+    ap.add_argument('--reference', type=int, nargs=2, default=None, metavar=('PAN', 'TILT'),
+                    help='基準姿勢（頭尾各量一次），預設是 neck_head.yaml 的 reference_ticks（外參校正時的刻度）')
     ap.add_argument('--manual', action='store_true', help='自己轉頭，按 Enter 記錄；工具不會發頭部指令')
     ap.add_argument('--speed', type=int, default=runner.SweepConfig.speed, help='頭部轉速（1~200，預設 40）')
     ap.add_argument('--settle', type=float, default=runner.SweepConfig.settle, help='停穩後再等幾秒才記錄')
@@ -246,7 +282,7 @@ def wait_inputs(node, opts):
     wait_for(lambda: node.latest_joint() and node.camera() and node.have_depth(), opts.wait)
     missing = []
     if node.latest_joint() is None:
-        missing.append(f'{opts.joint_topic}（28、29 號馬達）：camera.launch.py 的馬達 driver 有開嗎？')
+        missing.append(f'{opts.joint_topic}（28、29 號馬達）：nstc.launch.py 的馬達 driver 有開嗎？')
     if node.camera() is None:
         missing.append(f'{opts.info_topic}：ZED 有在跑嗎？')
     if not node.have_depth():
@@ -268,16 +304,19 @@ def wait_inputs(node, opts):
     return True
 
 
-def copy_robot_config(out_dir):
-    """把機器人當下的 bottle_localization 設定檔複製一份。用 bottle_tuner 改過的值不會在檔案裡。"""
+def copy_robot_config(out_dir, neck_config):
+    """把機器人當下的 bottle_localization 設定檔和 neck_head.yaml 複製一份。用 bottle_tuner 改過的值不會在檔案裡。"""
+    dst = Path(out_dir) / 'robot_config'
+    dst.mkdir(exist_ok=True)
+    copied = []
+    if neck_config and Path(neck_config).exists():
+        shutil.copy2(neck_config, dst / 'neck_head.yaml')
+        copied.append('neck_head.yaml')
     try:
         from ament_index_python.packages import get_package_share_directory
         src = Path(get_package_share_directory('bottle_localization')) / 'config'
     except Exception as e:  # 套件沒裝也照樣收集
-        return f'找不到 bottle_localization 的設定檔（{e}），沒有複製'
-    dst = Path(out_dir) / 'robot_config'
-    dst.mkdir(exist_ok=True)
-    copied = []
+        return f'找不到 bottle_localization 的設定檔（{e}），只複製了 {", ".join(copied) or "無"}'
     for name in ROBOT_CONFIG_FILES:
         if (src / name).exists():
             shutil.copy2(src / name, dst / name)
@@ -285,7 +324,7 @@ def copy_robot_config(out_dir):
     return f'已複製 {", ".join(copied)} 到 robot_config/' if copied else f'{src} 裡沒有設定檔'
 
 
-def build_meta(opts, cfg, node, postures, start):
+def build_meta(opts, cfg, node, postures, start, plan=None):
     k, size, frame_id, k_full, p_full = node.camera()
     return {
         'name': opts.name,
@@ -296,9 +335,12 @@ def build_meta(opts, cfg, node, postures, start):
         'host': socket.gethostname(),
         'reference_ticks': list(opts.reference),
         'start_ticks': [start[1], start[2]],
+        'start_roll': node.latest_roll(),
+        'neck_config': opts.config,
+        'limits': {k: list(plan[k]) for k in ('pan_limits', 'tilt_limits', 'roll_limits')} if plan else None,
         'postures': [list(p) for p in postures] if postures else None,
         'deg_per_tick': core.DEG_PER_TICK,
-        'joints': {'pan': core.PAN_JOINT, 'tilt': core.TILT_JOINT},
+        'joints': {'pan': core.PAN_JOINT, 'tilt': core.TILT_JOINT, 'roll': core.ROLL_JOINT},
         'camera': {'k': list(k), 'size': list(size), 'frame_id': frame_id,
                    'K': k_full, 'P': p_full, 'depth_encoding': node.depth_encoding},
         'config': runner.config_dict(cfg),
@@ -323,15 +365,17 @@ def return_head(node, ticks, cfg):
 
 
 def print_plan(opts, cfg, node, postures, start):
-    print(f'目前頭部刻度：pan {start[1]:.0f}、tilt {start[2]:.0f}')
+    roll = node.latest_roll()
+    print(f'目前頭部刻度：轉頭（28）{start[1]:.0f}、低頭（29）{start[2]:.0f}、'
+          f'歪頭（30）{"沒收到" if roll is None else f"{roll:.0f}"}')
     if postures:
         per = 1.0 + cfg.still_window + cfg.settle + cfg.capture + 1.0
         print(f'要量 {len(postures)} 個姿勢（頭尾各一次基準 {opts.reference[0]}/{opts.reference[1]}），'
               f'預估 {len(postures) * per / 60:.1f} 分鐘')
-        print(f'  pan ： {" ".join(str(p) for p in sorted(set(opts.pan)))}'
+        print(f'  轉頭（28）：{" ".join(str(p) for p in sorted(set(opts.pan)))}'
               f'（{core.ticks_to_deg(min(opts.pan) - opts.reference[0]):+.1f}° ~ '
               f'{core.ticks_to_deg(max(opts.pan) - opts.reference[0]):+.1f}°）')
-        print(f'  tilt： {" ".join(str(t) for t in sorted(set(opts.tilt)))}'
+        print(f'  低頭（29）：{" ".join(str(t) for t in sorted(set(opts.tilt)))}'
               f'（{core.ticks_to_deg(min(opts.tilt) - opts.reference[1]):+.1f}° ~ '
               f'{core.ticks_to_deg(max(opts.tilt) - opts.reference[1]):+.1f}°）')
         print(f'  速度 {cfg.speed}，停穩後等 {cfg.settle:g} 秒、記錄 {cfg.capture:g} 秒')
@@ -358,11 +402,24 @@ def main(argv=None):
     cfg = runner.SweepConfig(speed=opts.speed, settle=opts.settle, capture=opts.capture,
                              max_depth_frames=opts.frames)
     postures = None
+    opts.config = opts.config or default_config()
+    try:
+        plan = neck_model.sweep_plan(neck_model.load_config(opts.config))
+    except (OSError, KeyError, ValueError) as e:
+        print(f'讀不到頭部設定 {opts.config}：{e}')
+        return 2
+    if (str(plan['pan_id']), str(plan['tilt_id']), str(plan['roll_id'])) != (
+            core.PAN_JOINT, core.TILT_JOINT, core.ROLL_JOINT):
+        print(f'{opts.config} 的馬達 ID 和工具不一致（工具固定用 28 轉頭、29 低頭、30 歪頭）')
+        return 2
+    opts.pan = opts.pan or plan['pan']
+    opts.tilt = opts.tilt or plan['tilt']
+    opts.reference = opts.reference or list(plan['reference'])
     try:
         cfg.validate()
         if not opts.manual:
             postures = core.build_postures(opts.pan, opts.tilt, opts.reference)
-            core.check_postures(postures)
+            core.check_postures(postures, plan['pan_limits'], plan['tilt_limits'])
     except ValueError as e:
         print(f'參數錯誤：{e}')
         return 2
@@ -390,11 +447,18 @@ def main(argv=None):
         if not wait_inputs(node, opts):
             return 1
         start = node.latest_joint()
+        roll = node.latest_roll()
+        lo, hi = plan['roll_limits']
+        if roll is None or not lo <= roll <= hi:
+            got = '沒收到' if roll is None else f'{roll:.0f}'
+            print(f'歪頭（30 號）是 {got}，要在 {lo}～{hi}（基準 {plan["roll_reference"]}）。'
+                  '頭部模型假設歪頭固定在基準，先把 30 號轉回基準再跑')
+            return 1
         if not opts.manual:
             others = node.other_head_publishers()
             if others and not opts.force:
                 print(f'還有其他程式在發 {opts.head_topic}：{", ".join(others)}')
-                print('它們會跟這支工具搶頭部（例如策略），先關掉再跑；確定它們不會動頭的話加 --force')
+                print('它們會跟這支工具搶頭部（例如任務管理、網頁），先關掉再跑；確定它們不會動頭的話加 --force')
                 return 1
             node.make_head_publisher()
         print_plan(opts, cfg, node, postures, start)
@@ -406,8 +470,8 @@ def main(argv=None):
                 return 1
         start = node.latest_joint()
         writer = runner.SweepWriter(out_dir)
-        writer.write_meta(build_meta(opts, cfg, node, postures, start))
-        print(copy_robot_config(out_dir))
+        writer.write_meta(build_meta(opts, cfg, node, postures, start, plan))
+        print(copy_robot_config(out_dir, opts.config))
         if opts.manual:
             rows, bottles = runner.run_manual(node, cfg, writer)
         else:

@@ -11,7 +11,10 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>seven_axis_arm_urdf</exec_depend>   <!-- /manip/pose 算掌心（URDF FK） -->
   <exec_depend>moveit_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>   <!-- ready 路線直接送 MoveIt /execute_trajectory -->
+  <exec_depend>builtin_interfaces</exec_depend>
   <exec_depend>interfaces</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-numpy</exec_depend>

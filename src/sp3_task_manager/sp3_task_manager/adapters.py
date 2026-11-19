@@ -95,6 +95,7 @@ class ArmClient:
 
     def __init__(self, node, cfg, cb_group):
         self.node, self.cfg = node, cfg['grasp']
+        self.speed = float(self.cfg['arm_speed'])     # 網頁 /manip/speed 可以改，重開任務管理回到設定檔的值
         self.timeouts = cfg['timeouts']
         self.require_real = bool((cfg.get('real_arm') or {}).get('required', True))
         self._real = None          # (收到時間, dict)：real_arm_bridge 最後一筆 /arm_real_status
@@ -102,6 +103,10 @@ class ArmClient:
                                  callback_group=cb_group)
         self.pub_move = node.create_publisher(String, '/arm_move', 10)
         self.pub_stand = node.create_publisher(Bool, '/arm_stand', 10)
+        # 預備姿勢（ready pose，2026-11-19 決定）：手臂端還沒做；格式先定 std_msgs/String {"arm": "both" / "left" / "right"}，
+        # 結果同 /arm_ik_status、cmd = ready。沒有人訂閱 = 手臂端還沒做
+        self.pub_ready = node.create_publisher(String, '/arm_ready', 10)
+        self.last_goal = None      # 最後送出的掌心目標（量測座標 cm）、用哪隻手：給網頁顯示
         self.pub_speed = node.create_publisher(Float64, '/arm_speed_cmd', 10)
         self.pub_real_enable = node.create_publisher(Bool, '/arm_real_enable', 10)
         self.pub_obstacles = node.create_publisher(String, '/arm_ik_obstacles', LATCHED_QOS)
@@ -147,6 +152,8 @@ class ArmClient:
             pass
 
     def check_joint_states(self):
+        if not self.require_real:      # 只測 MoveIt：馬達可以不上電（driver 沒找到馬達時名稱是空的）
+            return
         stale = self.timeouts['joint_states_stale_s']
         if self._joint_t is None or time.monotonic() - self._joint_t > stale:
             raise TaskError(JOINT_STATE_LOST,
@@ -168,8 +175,10 @@ class ArmClient:
                             f'{head}實機跟隨不是開著的（{d.get("state")}）：{d.get("msg", "")}'
                             '｜網頁 IK 面板按「實機跟隨」，或送 /arm_real_enable true')
 
-    def set_speed(self):
-        self.pub_speed.publish(Float64(data=float(self.cfg['arm_speed'])))
+    def set_speed(self, speed=None):
+        if speed is not None:
+            self.speed = float(speed)
+        self.pub_speed.publish(Float64(data=self.speed))
 
     def _scene_ids(self, task):
         """MoveIt 場景裡現在有哪些物體（id 集合）；問不到回 None。"""
@@ -259,7 +268,7 @@ class ArmClient:
         self.check_real(what)
         t0 = time.monotonic()
         publish()
-        self._moving = cmd in ('move', 'stand')   # 從這裡到實機停穩之間被打斷，才需要叫實機停
+        self._moving = cmd in ('move', 'stand', 'ready')   # 從這裡到實機停穩之間被打斷，才需要叫實機停
 
         def moveit_done():
             self.check_real(what)        # 移動中實機跟隨被停掉（卡住、超出限制）就不用再等 MoveIt
@@ -275,7 +284,7 @@ class ArmClient:
             self._moving = reason in ('exec_failed', 'canceled')
             raise TaskError(ARM_REASON_CODE.get(reason, GRASP_FAILED),
                             f'{what}：[{reason}] {res.get("note", "")}')
-        if cmd in ('move', 'stand'):
+        if cmd in ('move', 'stand', 'ready'):
             self._wait_settled(task, what)
         self.check_joint_states()
         return res
@@ -301,6 +310,7 @@ class ArmClient:
         """arm = right / left / auto（auto 由 moveit_bridge 選）。回傳實際用的那隻手。"""
         d = {'pos': [round(float(v), 1) for v in pos_cm], 'dir': approach,
              'fingers': self.cfg['fingers'], 'arm': arm}
+        self.last_goal = (np.array(pos_cm, dtype=float), arm, what)
         res = self._send_and_wait(
             task, lambda: self.pub_move.publish(String(data=json.dumps(d))), what, cmd='move')
         return res.get('arm') or arm
@@ -308,14 +318,23 @@ class ArmClient:
     def stand(self, task):
         self._send_and_wait(task, lambda: self.pub_stand.publish(Bool(data=True)), '回站姿', cmd='stand')
 
+    def ready(self, task, arm='both'):
+        if self.pub_ready.get_subscription_count() == 0:
+            raise TaskError(DRIVER_ERROR, '手臂端還沒有 /arm_ready（預備姿勢），等手臂負責人做好')
+        self._send_and_wait(task, lambda: self.pub_ready.publish(String(data=json.dumps({'arm': arm}))),
+                            '回預備姿勢', cmd='ready')
+
 
 class DryArmClient:
     def __init__(self, node, cfg, cb_group):
         self.cfg = cfg['dry_run']
         self.stage_text = ''
+        self.last_goal = None
+        self.speed = float(cfg['grasp']['arm_speed'])
 
-    def set_speed(self):
-        pass
+    def set_speed(self, speed=None):
+        if speed is not None:
+            self.speed = float(speed)
 
     def set_obstacles(self, task, objs):
         pass
@@ -329,6 +348,7 @@ class DryArmClient:
             raise TaskError(OUT_OF_RANGE, f'（dry_run）{what}：[unreachable] 到不了')
         if arm == 'auto':      # 模擬 moveit_bridge 的 auto：藥瓶在右邊（右 ≥ 0）用右手
             arm = 'right' if pos_cm[1] >= 0 else 'left'
+        self.last_goal = (np.array(pos_cm, dtype=float), arm, what)
         return arm
 
     def attach(self, task, arm, obj):
@@ -343,6 +363,9 @@ class DryArmClient:
     def stand(self, task):
         task.sleep(self.cfg['step_s'])
         return '（dry_run）回站姿'
+
+    def ready(self, task, arm='both'):
+        task.sleep(self.cfg['step_s'])
 
 
 # ======================================================================

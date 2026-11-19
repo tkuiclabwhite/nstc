@@ -148,7 +148,9 @@ ros2 launch sp3_task_manager task_manager.launch.py
 - 任務管理會把桌子和其他藥瓶發到 `/arm_ik_obstacles`（來源 sp3）給 MoveIt 避開，跟網頁加的物體分開、不會互相蓋掉。
   夾住的藥瓶會掛到手上（`/arm_attach`）。armpackage 要用 2026-11-17 之後的版本（.11 上的），舊版不認這些格式。
 - 急停或任務中斷時，任務管理會取消 MoveIt 軌跡（`/arm_stop`）並關掉實機跟隨；再跑任務前要重新執行第 3 步。
-- 只測 MoveIt、不動實機：`task_manager.yaml` 的 `real_arm.required: false`。
+- 只測 MoveIt、不動實機：`ros2 launch sp3_task_manager task_manager.launch.py real_arm:=false`
+  （不看實機跟隨、也不看馬達 driver，馬達可以不上電；可以再加 `dry_run:=hand` 讓手也模擬）。
+- 任務第 0 步、第 6 步都回 **ready pose**（`/arm_ready`）；手臂端還沒做 /arm_ready 時任務會在第 0 步失敗（MAN-E-007）。
 
 ```bash
 # 看任務管理送給 MoveIt 的障礙物、手臂每一步的結果（cmd / arm / reason）
@@ -195,6 +197,15 @@ ros2 run sp3_task_manager reach_test bottle --bottle b1 --arm left --real --spee
 輸出會印路徑。看圖：在 AGX 用 `eog <路徑>`，或拿回桌機 `scp iclab@172.17.121.11:<路徑> .`。
 
 ### 網頁送任務（暫代總計畫主控）
+
+上方控制列：急停、解除急停、**Stand**（手放下）、**Ready pose**（舉到桌上；手臂端做好 /arm_ready 才能用）。
+右上「測試」：不跑完整流程，**由任務管理執行**（要開著），帶同樣的場景（桌子、小桌子、其他藥瓶）與實機跟隨檢查：
+移到座標（桌面 cm 或 base_link m）、移到影像看到的某瓶瓶頂上方。失敗時會把手臂端的原因翻成白話
+（IK 到不了／找不到路／目標會撞到），結果也會寫「可及範圍表：範圍內／外」，順便驗證設定檔的可及範圍。
+控制列「速度」（Dynamixel 單位 1～50，實機最多 50）：改了按 Enter 或點別處就送出，之後的任務、測試、Stand、Ready 都用它，
+旁邊「（目前 N）」是任務管理現在用的值。重開任務管理會回到設定檔 `grasp.arm_speed`（30）。
+RobotViewer IK 面板或 reach_test 改的速度，會在下一個任務／測試開始時被這個值蓋回。
+「座標」區：要抓的藥瓶中心、最後的掌心目標、左右手掌心（模擬、實機），各列 base_link 與桌面座標。
 
 `web/SP3TaskInterface.html`（導覽列 SP3Task）：送任務（task_id 空白自動產生 T-年月日-時分、timeout_s 預設 150）、看各階段進度與結果、
 `/manip/status`、取消、急停／解除急停。要先開 nstc.launch（rosbridge 9090）與任務管理。

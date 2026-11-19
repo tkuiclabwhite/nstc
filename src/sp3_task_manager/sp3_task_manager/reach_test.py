@@ -36,7 +36,7 @@ from std_msgs.msg import Bool, Float64, String
 
 from sp3_task_manager import grasp_plan as gp
 from sp3_task_manager.adapters import LATCHED_QOS
-from sp3_task_manager.arm_shape import ARM_PREFIX, ArmShape, distance
+from sp3_task_manager.arm_shape import ARM_PREFIX, ArmShape, distance, real_ticks_converter
 
 SOURCE = 'reach_test'      # 場景來源：跟任務管理（sp3）、網頁（web）分開，測完清掉。不能叫 sp3_xxx：MoveIt 的 id 會是 html_sp3_xxx_…，
                            # 任務管理會當成自己的（它認 html_sp3_ 開頭），2026-11-18 用 sp3_test 時任務管理說「多了」而不動手臂
@@ -299,22 +299,13 @@ def to_table(P, cfg):
 
 
 def real_ticks_to_q():
-    """回傳 f({馬達 ID: 刻度}) → {關節名: rad}，用 armpackage 的 arm_config（stand.ini 的偏移、轉向）。
-    讀不到就回 None（只畫模擬的路徑）。"""
+    """回傳 f({馬達 ID: 刻度}) → {關節名: rad}（arm_shape.real_ticks_converter）。讀不到就回 None（只畫模擬的路徑）。"""
     try:
-        import sys
-        sys.path.insert(0, os.path.join(get_package_prefix('armpackage'), 'lib', 'armpackage'))
-        import arm_config
-    except Exception as e:                                   # noqa: BLE001
-        print(f'（讀不到 armpackage 的 arm_config，只看模擬的路徑：{e}）')
-        return None
-
-    def conv(ticks):
-        q = {}
-        for arm, a in arm_config.ARMS.items():
-            if all(m in ticks for m in a['motors']):
-                q.update(zip(a['joints'], arm_config.ticks_to_rad(arm, [ticks[m] for m in a['motors']])))
-        return q
+        conv = real_ticks_converter(os.path.join(get_package_prefix('armpackage'), 'lib', 'armpackage'))
+    except PackageNotFoundError:
+        conv = None
+    if conv is None:
+        print('（讀不到 armpackage 的 arm_config，只看模擬的路徑）')
     return conv
 
 
@@ -339,12 +330,10 @@ def path_frames(path, kind, conv, n=60):
 def path_clearance(shape, frames, arm, objs, cfg):
     """每一格算手臂離物體多近。回傳 (最近 (秒, id, cm), 那一刻的手臂頂點, 掌心走過的點 base_link)。"""
     best, ghost, trail, best_q = None, None, [], None
-    palm = np.array([0.02, 0.0, 0.07, 1.0])                 # arm_config.TOOL_OFFSET（手掌 link 座標）
-    hand_base = 'rh_hand_base_link' if arm == 'right' else 'lh_hand_base_link'
     for t, q in frames:
         if not q:
             continue
-        trail.append((shape.link_T(hand_base, q) @ palm)[:3])
+        trail.append(shape.palm(q, arm))
         pts = shape.points(q, arm)
         for oid, d, _ in clearances(pts, objs):
             if best is None or d < best[2]:

@@ -9,6 +9,39 @@ place_targets:
   tray_1: {pos_cm: [32.4, 25.0, 93.2], approach: top}    # 右手：桌面座標 右 25、前 19、掌心離桌 12（暫定）
   tray_2: {pos_cm: [32.4, -25.0, 93.2], approach: top}   # 左手：tray_1 的鏡像（暫定）
 
+# 預備姿勢（ready pose）：任務開始前、夾完（放完）之後都回這裡，網頁 Ready pose 按鈕也是。
+# 桌面座標 [右, 前, 上]（cm）= 掌心位置，掌心朝下（top）。2026-11-19 使用者先在網頁測試區抓 (±25, 15, 10)，
+# 實機測過太低（手最低在掌心下 4.5、往身體那側垂下來，會壓到下面的藥瓶），改成 (±35, 15, 15)；
+# 錄路線實機測過後再改成左右 50、高再 +5（使用者 2026-11-19）。
+# 掌心離桌 20 → 手最低離桌約 15.5 cm（最高的 b1 9.2）。量測座標 = 前 28.4、右 ±50、高 101.2。
+# 可及範圍表在左右 50 最遠只到前 18（掌心離桌 10 量的），前 15 在範圍內但靠近邊；到不了的話錄的時候會失敗
+# via：path = 照錄好的路線走（2026-11-19 使用者要的）：兩隻手同時走、每次路線一樣，回站姿倒過來走（見 ready_path.py）。
+#             還沒錄、位置改了、路線會撞到時，改用 move。錄：手在站姿時按網頁「錄 ready 路線」
+#      move = 用 /arm_move 依序把兩隻手的掌心移到這兩點（MoveIt 一般規劃，左手再右手，路線每次不一樣）
+#      arm_ready = 交給手臂端的 /arm_ready（手臂負責人還沒做；做好後它的 ready 要對到這兩點）
+ready_pose:
+  via: path
+  approach: top
+  left: [-50.0, 15.0, 20.0]
+  right: [50.0, 15.0, 20.0]
+  speed: 50            # 照錄好的路線走（站姿 ↔ ready）的速度，Dynamixel 單位（實機上限 50）。2026-11-19 使用者：30 → 50。
+                       # 走的時候實機馬達速度（/arm_speed_cmd）也切到這個，走完切回 grasp.arm_speed：馬達比軌跡慢的話實機會跟不上、抄近路
+  path_file: ~/nstc/src/sp3_task_manager/config/ready_path.yaml   # 錄好的路線存在這裡（重錄會蓋掉）
+  # 兩隻手都用這隻手錄到的路線（null = 各用各的）。URDF 左右鏡像：同一組關節角 = 左右相反的姿勢，left、right 要左右對稱。
+  # 2026-11-19 實機：左手自己錄到的路線舉到掌心高 83 就往前，越過桌緣時手最低只比桌面高約 4 cm，實機拇指擦到桌角；
+  # 右手的路線先舉到掌心高 113 才往前（越過桌緣時離桌面 30 cm 以上）→ 兩隻手都用右手的。錄的時候也只舉這隻手
+  mirror: right
+  # 只改某隻手的路線（不用重錄）：掌心平移、姿態不變，逐點逆解（ready_path.adjust）。量測座標的位移 [前, 右, 上] cm。
+  #   edge：只在經過桌角那段（路程 24%→31% 加上、維持到 45%、58% 前拿掉），起點、終點不變
+  #   end ：從 45% 起加上、一直到 ready（ready 也跟著移）
+  # 2026-11-19 實機：左手比右手低約 1 cm（馬達讀數一樣 = 機構），共用右手路線時左手拇指經過桌角擦到（路線在 34% 拇指只比
+  # 桌面高 1.8、在桌緣後 2.9 cm）。那段往上抬很貴（1 cm 要轉 10～13°），往後便宜 → 經過桌角時往後 2、往上 1
+  # （URDF 算：離真的桌子 3.2 → 5.5 cm；往後 3 逆解不到），ready 往上 1 跟右手一樣高
+  adjust_cm:
+    left: {edge: [-2.0, 0.0, 1.0], end: [0.0, 0.0, 1.0]}
+  real_z_comp: 0.17    # 錄的時候實機跟隨沒開：目標自己往上補 這個 × 前（同 moveit_bridge REAL_Z_COMP），
+                       # 錄到的關節角才會跟開實機跟隨時一樣（實機掌心比模擬低約 0.17 × 前）
+
 # base_link（m）→ 量測座標 [前, 右, 高]（cm）。要跟 armpackage arm_config.py 的 MEAS_ORIGIN 一模一樣
 # （任務管理換成 cm 送出、moveit_bridge 用同一組換回 base_link），不要單獨改。2026-11-17 確認一致。
 frames:
@@ -86,7 +119,8 @@ grasp:
 real_arm:
   # true：每一步移動前、移動中都要實機跟隨開著（/arm_real_status 的 state = follow），不然回 MAN-E-007；
   #       MoveIt 到了之後等 real_arm_bridge 回報實機停穩（settled）才往下。
-  # false：不看實機，只測 MoveIt（模擬）流程用；MoveIt 到了固定等 grasp.arm_settle_s。
+  # false：不看實機（也不看馬達 driver），只測 MoveIt（模擬）流程用；MoveIt 到了固定等 grasp.arm_settle_s。
+  # launch 給 real_arm:=true / false 時以 launch 為準（不用另一份設定檔）
   required: true
 
 hand:
@@ -103,6 +137,7 @@ retries:
 
 timeouts:
   task_s: 30.0          # 主控沒給 timeout_s 時的預設（S3-01：任務 ≤ 30 秒）
+  test_s: 120.0         # 網頁測試區一個指令最多做多久
   task_max_s: 300.0
   detect_s: 5.0
   arm_move_s: 20.0
@@ -125,4 +160,4 @@ dry_run:
     b3: {table_cm: [35.0, 12.0], size_m: [0.0449, 0.0899]}    # b1 右邊 16 cm（抓 b1 時的障礙物）
     b4: {table_cm: [-35.0, 12.0], size_m: [0.0379, 0.0792]}   # b2 左邊 16 cm（抓 b2 時的障礙物）
   step_s: 0.5
-  fail: 'hold'              # 模擬失敗：'' / detect / arm / grip / hold
+  fail: ''                  # 模擬失敗：'' / detect / arm / grip / hold

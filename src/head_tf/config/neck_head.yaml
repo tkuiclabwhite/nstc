@@ -1,0 +1,43 @@
+# 新平台三軸脖子的頭部模型設定（head_tf/neck_model.py 用）。舊機器人兩軸頭的設定是 head_axes.yaml、head_model.yaml，和這個無關。
+#
+# 相機在頭上的位置不在這裡：用 bottle_localization/config/camera_extrinsics.yaml（在基準刻度校正好的外參）反推，
+# 所以重新校正外參時，要同時更新下面的 reference_ticks（校正當時三顆馬達的刻度）。
+
+# ---- URDF 連桿：base_link -> head_Link ----
+# 抄自 seven_axis_arm_head_urdf/urdf/seven_axis_arm_head_urdf.urdf（SolidWorks 7-arm 匯出，2026-11-13）。
+# test_neck_model.py 會拿 URDF 原檔比對（桌機有 ~/nstc_ws/seven_axis_arm_head_urdf 才比）。
+# 正方向（URDF 定義）：neckYaw 往左轉、neckPitch 低頭、headRoll 頭往右歪。
+chain:
+  - {name: neck_base_joint, type: fixed,    xyz: [0.00875, 0.0, -0.022], rpy: [0.0, 0.0, 0.0]}
+  - {name: neckYawJoint,    type: revolute, xyz: [0.0, 0.0, 0.039],      rpy: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], limit: [-0.965, 0.965]}
+  - {name: neckPitchJoint,  type: revolute, xyz: [0.0, 0.0, 0.035],      rpy: [0.0, 0.0, 0.0], axis: [0.0, 1.0, 0.0], limit: [-0.588, 1.873]}
+  - {name: headRollJoint,   type: revolute, xyz: [0.0, 0.0, 0.038],      rpy: [0.0, 0.0, 0.0], axis: [1.0, 0.0, 0.0], limit: [-0.699, 0.699]}
+
+# URDF 的 zed_camera_center（前玻璃中心）在 head_Link 的位置，只拿來檢查反推出的相機位置合不合理
+camera_center_in_head: [0.0531714209, 0.0000847796, 0.0761467857]
+
+# ---- 馬達對應 ----
+# head_id = nstc_msgs/HeadPackage 的 id（driver_node 的 head_map：1 -> 28、2 -> 29、3 -> 30）。
+# 關節角 = sign × (刻度 − zero_tick) × 360° / 4096。sign 是 2026-11-18 實測：
+#   28 號刻度變大往左轉（= URDF 正方向，+1）
+#   29 號刻度變小往下看（URDF 正方向是低頭，-1）
+#   30 號刻度變大往左歪（URDF 正方向是往右歪，-1）
+# zero_tick：網頁「回正」按鈕把三顆都轉到 2048。29 號在 1708 時相機 pitch 實測 30.4°（換算 29.9°），對得起來。
+motors:
+  neckYawJoint:   {motor_id: 28, head_id: 1, sign: 1,  zero_tick: 2048}
+  neckPitchJoint: {motor_id: 29, head_id: 2, sign: -1, zero_tick: 2048}
+  headRollJoint:  {motor_id: 30, head_id: 3, sign: -1, zero_tick: 2048}
+
+# ---- 基準刻度：camera_extrinsics.yaml 校正當時的刻度（2026-11-18 /joint_states）----
+reference_ticks:
+  28: 2047
+  29: 1708
+  30: 2024
+
+# ---- 允許範圍（刻度，含兩端）：超出就不發可用的外參 ----
+# 2026-11-18 和使用者定：歪頭固定、轉頭左右 15°、低頭 20°～40°。抓取時頭不動，這是為了之後的場景先做。
+# 驗證（階段 3）過再考慮放大。
+allowed_ticks:
+  28: [1877, 2218]   # 2048 ± 15° / 0.0879°
+  29: [1594, 1820]   # 低頭 40° ～ 20°
+  30: [2014, 2034]   # 固定在 2024，留 ±10 格（±0.9°）給馬達抖動

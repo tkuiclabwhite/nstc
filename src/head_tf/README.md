@@ -1,16 +1,92 @@
 # head_tf：由頭部馬達刻度計算相機外參
 
-現在的 `bottle_localization/config/camera_extrinsics.yaml` 是頭在 **pan 2048、tilt 2300** 時量的，頭一轉外參就不對了。
-這個套件的目標：讀頭部馬達刻度（28 號 pan、29 號 tilt），算出當下的相機外參，發布成動態 TF。
+`bottle_localization/config/camera_extrinsics.yaml` 是頭在某一組刻度時校正的，頭一轉外參就不對了。
+這個套件的目標：讀頭部馬達刻度，算出當下的相機外參，發布成動態 TF。
 
-進度：
+2026-11-16 起 ZED 裝在**新平台**（seven_axis_arm_head_urdf，三軸脖子：28 轉頭、29 低頭、30 歪頭），
+見下一節。之後的「為什麼要用刻度算」以下是**舊機器人**（兩軸頭，28 pan、29 tilt）時寫的，
+收集工具的用法和輸出格式兩邊共用，舊機器人的模型（head_model.py、fit_head_model.py、sweep_01）留著當紀錄。
+
+新平台進度：
 
 | 階段 | 內容 | 狀態 |
 |---|---|---|
-| 1 | 決定刻度範圍、手量兩個轉軸的位置 | **完成**（`config/head_axes.yaml`） |
-| 2 | 資料收集工具 `head_sweep` | **完成**（sweep_01：17 個姿勢，2026-11-10） |
-| 3 | 用收到的資料擬合頭部模型（轉軸位置、方向、刻度比例） | **完成**（`config/head_model.yaml`，見下面「階段 3」） |
+| 1 | 確認刻度和 URDF 角度的對應（零點、正負號） | **完成**（2026-11-18，`config/neck_head.yaml`） |
+| 2 | 頭部模型：URDF 連桿 + 由外參反推的相機固定位置 | **完成**（`head_tf/neck_model.py`） |
+| 3 | 改 head_sweep 支援三軸、驗證工具 `check_neck_model.py` | 工具完成，**等機器人上收資料** |
 | 4 | 動態 TF 節點，接到 bottle_localization | 還沒開始（改 launch 前會先列出要改什麼） |
+
+## 新平台（三軸脖子）
+
+### 模型
+
+```
+相機姿態(刻度) = FK(關節角) · M
+關節角 = sign × (刻度 − 2048) × 360° / 4096
+M = FK(基準刻度)⁻¹ · camera_extrinsics.yaml
+```
+
+- FK 是 URDF 從 `base_link` 經 neck_base → neckYaw → neckPitch → headRoll 到 `head_Link` 的連桿，數字抄在
+  `config/neck_head.yaml`（測試會拿 URDF 原檔比對）。
+- M 是相機固定在頭上的位置，用基準刻度時校正好的外參反推，所以**在基準刻度時結果和 camera_extrinsics.yaml 完全一樣**，
+  頭轉了才用 URDF 算相對的移動。相機實際裝得和 URDF 設計值不同也沒關係。
+- **重新校正外參時，要同時把 neck_head.yaml 的 `reference_ticks` 改成校正當時的刻度。**
+- 零點的影響：歪頭固定時，歪頭、低頭的零點完全不影響；轉頭零點差 1°，允許範圍角落約差 0.16°、1 mm。
+
+| 馬達 | URDF 關節 | 刻度變大 | sign | 基準刻度 | 允許範圍 |
+|---|---|---|---|---|---|
+| 28（HeadPackage id 1） | neckYawJoint | 往左轉 | +1 | 2047 | 1877～2218（±15°） |
+| 29（id 2） | neckPitchJoint | 往上看 | −1 | 1708（低頭 29.9°） | 1594～1820（低頭 40°～20°） |
+| 30（id 3） | headRollJoint | 往左歪 | −1 | 2024 | 2014～2034（固定） |
+
+正負號是 2026-11-18 用眼睛看的；29 號用 table_plane 量到的相機 pitch 30.4° 對過（換算 29.9°）。
+範圍是 2026-11-18 和使用者定的：抓取時頭不動，這是為了之後的場景先做。
+
+檢查設定：`python3 -m head_tf.neck_model`（在 head_tf 資料夾）印出基準姿勢、相機裝在頭上的位置和 URDF 設計值的差、
+允許範圍四個角的相機姿態。2026-11-18：位置差 3 mm 內、roll −1.86°（30 號零點或相機裝歪，歪頭固定所以不影響）、pitch +0.49°。
+
+### 在機器人上收資料
+
+```bash
+# 桌機：把套件同步到 .11
+rsync -av --exclude __pycache__ --exclude .pytest_cache ~/nstc_ws/nstc/src/head_tf iclab@172.17.121.11:~/nstc/src/
+
+# .11：建置（nstc 有自己的 nstc_msgs，不用 source ros2_adult）
+source /opt/ros/humble/setup.bash
+cd ~/nstc && colcon build --symlink-install --packages-select head_tf && source install/setup.bash
+
+# .11：nstc.launch.py 和 bottle_detect_v2 開著，任務管理不要開、網頁頭部拉條不要動
+ros2 run head_tf head_sweep neck_01
+
+# 桌機：傳回來
+scp -r iclab@172.17.121.11:~/head_sweeps/neck_01 ~/nstc_ws/head_sweeps/
+```
+
+- 預設姿勢從 `neck_head.yaml` 算：轉頭 1877 / 2047 / 2218 × 低頭 1594 / 1651 / 1708 / 1764 / 1820，頭尾加量基準，共 17 個，約 2 分鐘。
+  `--pan`、`--tilt`、`--reference` 可以改，但不能超出允許範圍。
+- 開始前 30 號要在 2014～2034，不在就不跑（模型假設歪頭固定）。30 號不轉，只記錄；收集中變了超過 3 格會在結束時警告。
+- 網頁（ImageProcessInterface）開著時 rosbridge 也算 `/Head_Topic` 的發布者，工具會拒絕；確定沒人會動頭就加 `--force`。
+- 結束時的快速檢查在新平台應該是「tilt：刻度變大 → 往上看」「pan：刻度變大 → 往左轉」。
+
+### 驗證（桌機）
+
+```bash
+cd ~/nstc_ws/nstc/src/head_tf
+env -u PYTHONPATH ~/nstc_ws/nstc/foundationpose_trial/.venv/bin/python tools/check_neck_model.py ~/nstc_ws/head_sweeps/neck_01
+```
+
+設定檔用資料夾裡 `robot_config/` 的（收集當時機器人上的），沒有才用 repo 的。都和頭尾的基準姿勢比
+（外參本身的誤差、IMU 裝歪、桌子微斜相減就消掉），印每個姿勢和整體的：
+
+| 項目 | 看什麼 |
+|---|---|
+| 藥罐水平位置（動態 TF / 固定外參） | 同一個藥罐在各姿勢算出的位置和基準差幾 mm，直接是抓取會差多少。固定外參 = 沒有動態 TF 的對照 |
+| IMU roll / pitch 殘差 | pitch 對不上 = 低頭角度不準；轉頭時 roll 跟著變 = 轉頭軸不鉛直（支架歪） |
+| 桌面高度殘差 | 相機上下位置不準 |
+
+結論用藥罐位置的 95 百分位：≤ 5 mm 直接用、≤ 10 mm 堪用、更大要修正。**模型完全正確也不會是 0**：
+bottle_localization 的中心算法在藥罐位於畫面不同位置時本身有幾 mm 偏差，模擬中（轉頭 15°、低頭 ±10°）
+95% 約 4 mm、最大約 6 mm，大瓶子在畫面邊緣最明顯。IMU 和桌面高度殘差不受這個影響。
 
 ## 為什麼要用刻度算，以及精度要求
 
@@ -38,9 +114,9 @@ pan 軸、tilt 軸的位置和方向先用捲尺量（`config/head_axes.yaml`：
 之後 ZED 搬到新手臂平台（seven_axis_arm_urdf_v2）時，現在的 `base_link` 就是新 URDF 的 `Rarm_base_link`，
 只要多一段固定平移 (0, −0.1454, 0)，頭的參數重新量、重新收資料就好。
 
-## 刻度與角度
+## 刻度與角度（舊機器人）
 
-馬達一圈 4096 格，1 格 = 0.088°，2048 是正中間。
+馬達一圈 4096 格，1 格 = 0.088°，2048 是正中間。新平台見上面「新平台」。
 
 | 馬達 | 基準 | 抓取時允許的範圍 | 收集工具預設量的刻度 |
 |---|---|---|---|
@@ -51,33 +127,25 @@ pan 軸、tilt 軸的位置和方向先用捲尺量（`config/head_axes.yaml`：
 
 ## 建置（機器人上）
 
-```bash
-# 桌機：把套件傳到機器人
-scp -r ~/nstc_ws/nstc/src/head_tf iclab@172.17.121.10:~/nstc/src/
-
-# 機器人：要先 source ros2_adult（需要 tku_msgs）
-source /opt/ros/humble/setup.bash
-source ~/ros2_adult/install/setup.bash
-cd ~/nstc && colcon build --symlink-install --packages-select head_tf
-source install/setup.bash
-```
+見上面「新平台 / 在機器人上收資料」。頭部指令用 `nstc_msgs/HeadPackage`（找不到才用舊機器人的 `tku_msgs`），
+nstc 不用再 source ros2_adult。
 
 ## head_sweep：收集校正資料
 
 ### 開始前
 
-1. 開 `camera.launch.py`（ZED 和馬達 driver）和 `bottle_detect_v2`。`bottle_localization` 開著沒關係。
-2. **策略不能跑**：它也會發 `/Head_Topic`，工具偵測到會拒絕執行。
-3. 機器人站好、頭部扭力開著。整個過程**不要動機器人、桌子和瓶子**。
+1. 開 `nstc.launch.py`（ZED 和馬達 driver）和 `bottle_detect_v2`。`bottle_localization` 開著沒關係。
+2. **任務管理（sp3_task_manager）不要開、網頁的頭部拉條不要動**：它們也會發 `/Head_Topic`，工具偵測到會拒絕執行。
+3. 頭部扭力開著、歪頭（30 號）在基準刻度。整個過程**不要動機器人、桌子和瓶子**。
 4. 桌上放 2～4 個藥罐，分散在畫面中間附近，頭轉到範圍邊緣時也要看得到。
 5. 畫面下方那塊（深度圖高 60～98%、寬 20～80%）是桌面擬合區，瓶子的框會自動挖掉，但盡量不要有滑鼠、鍵盤、手臂或桌緣。
 
 ### 執行
 
 ```bash
-ros2 run head_tf head_sweep sweep_01                    # 預設：pan 3 個 x tilt 5 個，頭尾加量基準，共 17 個姿勢，約 2 分鐘
-ros2 run head_tf head_sweep sweep_02 --tilt 2243 2300 2357 --note "瓶子 b1 b2 b4，桌高 74.5"
-ros2 run head_tf head_sweep sweep_03 --manual           # 工具不轉頭，自己轉好按 Enter 記錄，q 結束
+ros2 run head_tf head_sweep neck_01                     # 預設：轉頭 3 個 x 低頭 5 個，頭尾加量基準，共 17 個姿勢，約 2 分鐘
+ros2 run head_tf head_sweep neck_02 --tilt 1651 1708 1764 --note "瓶子 b1 b2 b4，桌高 80.5"
+ros2 run head_tf head_sweep neck_03 --manual            # 工具不轉頭，自己轉好按 Enter 記錄，q 結束
 ros2 run head_tf head_sweep --help                      # 全部參數
 ```
 
@@ -105,8 +173,9 @@ ros2 run head_tf head_sweep --help                      # 全部參數
 ### 結束時的快速檢查
 
 ```
-tilt：刻度變大 → 往下看（桌面 pitch 變化 / tilt 角度變化 = +1.00，17 個姿勢；理想值 ±1）
-pan：刻度變大 → 往左轉（瓶子方位角變化 / pan 角度變化 = +0.95，51 筆；相機往下看，所以會比 1 小一點）
+tilt：刻度變大 → 往上看（桌面 pitch 變化 / tilt 角度變化 = -1.00，17 個姿勢；理想值 ±1）
+pan：刻度變大 → 往左轉（瓶子方位角變化 / pan 角度變化 = +0.90，51 筆；相機往下看，所以會比 1 小一點）
+歪頭（30 號）：2024～2024（變化 0 格），沒有動
 頭尾基準姿勢的差：IMU pitch +0.13° roll +0.07°，桌面高度 +0.4 mm（桌面角度 pitch +0.21°，只供參考），瓶子 b1 2.1 mm …
   頭尾一致，中間沒有東西動過
 ```
@@ -120,7 +189,7 @@ pan：刻度變大 → 往左轉（瓶子方位角變化 / pan 角度變化 = +0
 
 ```bash
 mkdir -p ~/nstc_ws/head_sweeps
-scp -r iclab@172.17.121.10:~/head_sweeps/sweep_01 ~/nstc_ws/head_sweeps/
+scp -r iclab@172.17.121.11:~/head_sweeps/neck_01 ~/nstc_ws/head_sweeps/
 ```
 
 資料不要放進 `nstc/`（`git_sync.sh` 會整包加進 git），一次約 26 MB。
@@ -134,9 +203,9 @@ scp -r iclab@172.17.121.10:~/head_sweeps/sweep_01 ~/nstc_ws/head_sweeps/
 | `meta.json` | 參數、相機內參（K、P、尺寸、frame）、開始時刻度、姿勢清單、狀態（finished / interrupted / error） |
 | `postures.csv` | 每個姿勢一列，欄位見下 |
 | `bottles.csv` | 每個姿勢每個瓶子一列 |
-| `posture_XX.npz` | `depth`（深度中位數圖，公尺，float32）、`k`、`size`、`joints`（記錄期間每筆 t, pan, tilt）、`imu`（t, roll, pitch, ax, ay, az, wx, wy, wz）、`detections`（YOLO 原始 JSON） |
+| `posture_XX.npz` | `depth`（深度中位數圖，公尺，float32）、`k`、`size`、`joints`（記錄期間每筆 t, pan, tilt）、`roll`（t, 30 號刻度；新平台）、`imu`（t, roll, pitch, ax, ay, az, wx, wy, wz）、`detections`（YOLO 原始 JSON） |
 | `posture_XX.png` | 彩色影像（沒有 OpenCV 時改存在 npz 的 `color`） |
-| `robot_config/` | 當下 bottle_localization 的 camera_extrinsics.yaml、robot_reference.yaml、params.yaml、bottle_dims.yaml（用 bottle_tuner 改過、沒存檔的值不在裡面） |
+| `robot_config/` | 當下 bottle_localization 的 camera_extrinsics.yaml、robot_reference.yaml、params.yaml、bottle_dims.yaml（用 bottle_tuner 改過、沒存檔的值不在裡面），和 head_tf 的 neck_head.yaml |
 
 `postures.csv` 主要欄位：
 
@@ -145,6 +214,7 @@ scp -r iclab@172.17.121.10:~/head_sweeps/sweep_01 ~/nstc_ws/head_sweeps/
 | `kind` | `ref`（基準姿勢）、`grid`、`manual` |
 | `pan_cmd`、`tilt_cmd` | 下的刻度（手動模式是 nan） |
 | `pan_mean`、`tilt_mean`（和 std / min / max） | 記錄期間實際讀到的刻度 |
+| `roll_mean`、`roll_min`、`roll_max` | 歪頭（30 號）的刻度（新平台；舊機器人是 nan） |
 | `reached`、`still`、`move_s` | 有沒有到目標、有沒有停穩、轉頭花幾秒 |
 | `table_roll_deg`、`table_pitch_deg`、`table_height_m` | 相機相對桌面的姿態和光心高度（同 table_plane.py 的慣例，往下看 pitch 為正） |
 | `normal_x/y/z`、`plane_inliers`、`plane_rms_mm` | 桌面法向量（optical frame）、擬合品質 |
@@ -153,7 +223,7 @@ scp -r iclab@172.17.121.10:~/head_sweeps/sweep_01 ~/nstc_ws/head_sweeps/
 `bottles.csv`：框的中位數 `x1 y1 x2 y2`、表面點 `x y z`（optical frame，公尺）、`bearing_deg`（往右為正）、`elevation_deg`（往下為正）。
 表面點和 bottle_localization 一樣是「框內縮 1/4、深度中位數 ±3 cm 的點取中位數」，在弧面上會落在瓶身正面後方 1～4 mm。
 
-## 階段 3：擬合頭部模型（桌機）
+## 舊機器人階段 3：擬合頭部模型（桌機）
 
 ```bash
 cd ~/nstc_ws/nstc/src/head_tf
@@ -232,6 +302,15 @@ env -u PYTHONPATH ~/nstc_ws/nstc/foundationpose_trial/.venv/bin/python -B -m pyt
 - Ctrl+C、SIGTERM、還有別的程式在發 `/Head_Topic`、沒有 ZED、參數錯誤都處理正確。
 - 中斷後頭都會轉回開始的刻度。
 
+新平台（2026-11-18）：
+
+- `test/test_neck_model.py`：URDF 連桿和設定檔一致、零位和 URDF README 的相機位置一致、基準刻度重現外參、
+  正負號、轉頭 / 低頭繞正確的軸、零點的影響、範圍檢查、實際設定檔的一致性（左眼離桌 52.4 cm）。
+- `test/sim_neck.py` + `test/test_check_neck_model.py`：相機姿態由「真的」脖子模型決定的模擬器跑完整收集流程，
+  驗證工具在模型正確時判「可以直接用」（藥罐 95% 4 mm 內，固定外參差 20 公分），支架往前傾 2° 時 IMU roll 殘差抓得到；
+  30 號有記錄、動了會警告；sweep_plan 的姿勢和範圍。
+- 用真的 ROS topic 和假機器人（發 28、29、30）跑完 17 個姿勢、頭轉回原位，驗證工具讀得到輸出；30 號不在基準時拒絕執行。
+
 ## 檔案
 
 | 檔案 | 內容 |
@@ -239,8 +318,11 @@ env -u PYTHONPATH ~/nstc_ws/nstc/foundationpose_trial/.venv/bin/python -B -m pyt
 | `head_tf/sweep_core.py` | 純計算：姿勢清單、深度轉換、桌面擬合、瓶子表面點、IMU、快速檢查（不依賴 ROS） |
 | `head_tf/sweep_runner.py` | 流程：轉頭、等停穩、記錄、存檔（不依賴 ROS，透過 io 介面） |
 | `head_tf/head_sweep.py` | ROS 節點與指令列 |
-| `head_tf/head_model.py` | 頭部模型：刻度 -> zed_camera_link 的姿態（純 numpy，機器人上的節點也用） |
+| `head_tf/head_model.py` | 舊機器人的頭部模型：刻度 -> zed_camera_link 的姿態（純 numpy） |
+| `head_tf/neck_model.py` | 新平台的頭部模型（URDF 三軸脖子）、`sweep_plan()`（head_sweep 的預設姿勢） |
+| `tools/check_neck_model.py` | 新平台：用收集的資料驗證頭部模型（桌機，需要 scipy） |
+| `config/neck_head.yaml` | 新平台：URDF 連桿、馬達對應、基準刻度、允許範圍 |
 | `tools/fit_head_model.py` | 擬合頭部模型（桌機，需要 scipy） |
-| `config/head_axes.yaml` | 手量的轉軸位置（擬合的起始值） |
-| `config/head_model.yaml` | 擬合出來的頭部模型 |
+| `config/head_axes.yaml` | 舊機器人：手量的轉軸位置（擬合的起始值） |
+| `config/head_model.yaml` | 舊機器人：擬合出來的頭部模型 |
 | `test/` | 單元測試與模擬器 |

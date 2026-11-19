@@ -22,17 +22,20 @@ import numpy as np
 TICKS_PER_REV = 4096
 DEG_PER_TICK = 360.0 / TICKS_PER_REV
 
-# /Head_Topic（HeadPackage）的 id；driver_node 的 head_map 把 1 -> 28 號、2 -> 29 號
+# /Head_Topic（HeadPackage）的 id；driver_node 的 head_map 把 1 -> 28 號、2 -> 29 號（新平台還有 3 -> 30 號）
 HEAD_PAN_ID = 1
 HEAD_TILT_ID = 2
 # /joint_states 的 name 是馬達 ID 字串，position 是原始刻度
 PAN_JOINT = '28'
 TILT_JOINT = '29'
+# 新平台的歪頭（30 號）：收集時不轉，只記錄刻度，確認它真的沒動
+ROLL_JOINT = '30'
 
-# 現在的 camera_extrinsics.yaml 是在這個頭部刻度校正的
+# 舊機器人（兩軸頭）的 camera_extrinsics.yaml 是在這個刻度校正的。下面的 PAN_LIMITS、TILT_LIMITS 也是舊機器人的。
+# 新平台（三軸脖子）的基準刻度和範圍在 config/neck_head.yaml，head_sweep 用 neck_model.sweep_plan() 讀。
 REFERENCE_TICKS = (2048, 2300)
 
-# 收集工具允許下達的刻度：基準 ±341 格（約 ±30°）。打錯數字時擋下來，避免頭撞到機構。
+# 收集工具允許下達的刻度（舊機器人）：基準 ±341 格（約 ±30°）。打錯數字時擋下來，避免頭撞到機構。
 LIMIT_HALF_TICKS = 341
 PAN_LIMITS = (REFERENCE_TICKS[0] - LIMIT_HALF_TICKS, REFERENCE_TICKS[0] + LIMIT_HALF_TICKS)
 TILT_LIMITS = (REFERENCE_TICKS[1] - LIMIT_HALF_TICKS, REFERENCE_TICKS[1] + LIMIT_HALF_TICKS)
@@ -312,6 +315,7 @@ class Snapshot:
     frame_id: str = ''
     color: Optional[np.ndarray] = None            # BGR
     joints: list = field(default_factory=list)    # [(t, pan, tilt)]
+    roll: list = field(default_factory=list)      # [(t, 30 號刻度)]，新平台才有
     imu: list = field(default_factory=list)       # [(t, roll, pitch, ax, ay, az, wx, wy, wz)]
     detections: list = field(default_factory=list)  # [(t, YOLO 的 JSON dict)]
 
@@ -320,6 +324,7 @@ POSTURE_FIELDS = [
     'index', 'kind', 'pan_cmd', 'tilt_cmd', 'reached', 'still', 'move_s',
     'pan_mean', 'pan_std', 'pan_min', 'pan_max',
     'tilt_mean', 'tilt_std', 'tilt_min', 'tilt_max', 'joint_n',
+    'roll_mean', 'roll_min', 'roll_max',
     'depth_frames', 'plane_points', 'plane_inliers', 'plane_rms_mm',
     'table_roll_deg', 'table_pitch_deg', 'table_height_m', 'normal_x', 'normal_y', 'normal_z',
     'imu_n', 'imu_roll_deg', 'imu_pitch_deg', 'imu_roll_std_deg', 'imu_pitch_std_deg',
@@ -377,6 +382,11 @@ def analyze_capture(snap, plane_rows=PLANE_ROWS, plane_cols=PLANE_COLS,
     算不出來的欄位填 NaN，不丟例外：資料照樣存下來，離線再看。
     """
     row = dict(joint_stats(snap.joints))
+    if snap.roll:
+        r = np.asarray(snap.roll, dtype=np.float64)[:, 1]
+        row.update(roll_mean=float(r.mean()), roll_min=float(r.min()), roll_max=float(r.max()))
+    else:
+        row.update(roll_mean=NAN, roll_min=NAN, roll_max=NAN)
     row['depth_frames'] = len(snap.depth_frames)
     depth = median_depth(snap.depth_frames) if snap.depth_frames else None
 
