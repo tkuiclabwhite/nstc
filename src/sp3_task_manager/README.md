@@ -7,7 +7,7 @@
 | 名稱 | 型別 | 說明 |
 |---|---|---|
 | `/manip/pick_place` | Action `interfaces/action/ExecuteTaskPlan`（主控的型別） | 取放任務 |
-| `/manip/test_cmd` | `std_msgs/String`（JSON） | 網頁測試區指令：stand / ready / move / bottle / cancel（格式見 `try_cmd.py`），不跑完整流程 |
+| `/manip/test_cmd` | `std_msgs/String`（JSON） | 網頁測試區指令：stand / ready / record_ready / move / bottle / cancel（格式見 `try_cmd.py`），不跑完整流程 |
 | `/manip/speed` | `std_msgs/Float64` | 手臂速度（Dynamixel 單位 1～50），之後的任務、測試都用；馬上轉送 `/arm_speed_cmd`，`/manip/status` 的 `speed` 是現在的值 |
 | `/manip/test_result` | `std_msgs/String`（JSON） | 測試結果 `{"id", "cmd", "ok", "message"}` |
 | `/manip/pose` | `std_msgs/String`（JSON），2 Hz | 左右手掌心（模擬、實機）、要抓的藥瓶、最後的掌心目標，各有 base_link（m）與桌面座標（cm） |
@@ -42,7 +42,7 @@
 | 轉接 | 用到的介面 |
 |---|---|
 | VisionClient | `/bottle_detections_3d`（bottle_localization，base_link，m） |
-| ArmClient | `/arm_move`、`/arm_stand`、`/arm_speed_cmd`、`/arm_ik_obstacles`、`/arm_attach`、`/arm_stop`、`/arm_ik_status`（armpackage 的 moveit_bridge，只認 `cmd` 對得上的結果）；`/joint_states` 檢查 driver 還活著；`/arm_real_status`（real_arm_bridge）：實機跟隨不是 follow 就回 MAN-E-007，MoveIt 到了之後等 `settled` 才往下（設定檔 `real_arm.required: false` 或 launch `real_arm:=false` 可以只測 MoveIt，也不檢查 driver）；`/arm_ready`：任務第 0、6 步回預備姿勢 |
+| ArmClient | `/arm_move`、`/arm_stand`、`/arm_speed_cmd`、`/arm_ik_obstacles`、`/arm_attach`、`/arm_stop`、`/arm_ik_status`（armpackage 的 moveit_bridge，只認 `cmd` 對得上的結果）；`/joint_states` 檢查 driver 還活著；`/arm_real_status`（real_arm_bridge）：實機跟隨不是 follow 就回 MAN-E-007，MoveIt 到了之後等 `settled` 才往下（設定檔 `real_arm.required: false` 或 launch `real_arm:=false` 可以只測 MoveIt，也不檢查 driver）；任務第 0、6 步回預備姿勢：設定檔 `ready_pose`，`via: path` 照錄好的路線（`ready_path.py`）兩隻手一起走、回站姿倒過來，直接交給 MoveIt `/execute_trajectory`，走之前用 `/check_state_validity` 檢查；不能用就改 `via: move`（`/arm_move` 一隻一隻移）；`via: arm_ready` 交給手臂端 `/arm_ready` |
 | 急停／中斷 | 急停時、手臂移動中被取消／逾時／狀態中斷時送 `/arm_stop`（取消 MoveIt 軌跡）＋`/arm_real_enable false`（實機停在最後的目標）；之後要重新打開實機跟隨 |
 | HandClient | `/hand/cmd`、`/hand/status`（handpackage）；夾到「壓力到門檻」才算抓到 |
 

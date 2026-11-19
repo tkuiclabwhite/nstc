@@ -119,8 +119,8 @@ def test_meas_table_roundtrip():
 
 def test_reach_front_interp():
     ws = CFG['workspace']
-    assert grasp_plan.reach_front(18.9, ws) == pytest.approx(28.0)
-    assert grasp_plan.reach_front(5.0, ws) == pytest.approx(23.0)      # 0 → 20、10 → 26 中間
+    assert grasp_plan.reach_front(18.9, ws) == pytest.approx(34.0)
+    assert grasp_plan.reach_front(5.0, ws) == pytest.approx(31.0)      # 0 → 28、10 → 34 中間
     assert grasp_plan.reach_front(-1.0, ws) is None                    # 跨到另一側
     assert grasp_plan.reach_front(51.0, ws) is None
 
@@ -130,11 +130,18 @@ def test_reachable_arms():
     assert grasp_plan.reachable_arms(t(0, 10), CFG) == ['left', 'right']     # 中線、近：兩隻都可以
     assert grasp_plan.reachable_arms(t(-40, 8), CFG) == ['left']             # 左邊：只有左手
     assert grasp_plan.reachable_arms(t(40, 8), CFG) == ['right']
-    assert grasp_plan.reachable_arms(t(-40, 5), CFG) == []                   # 太靠身體（front_min 6）
-    assert grasp_plan.reachable_arms(t(18.9, 28), CFG) == ['right']          # 肩膀前方的極限
-    assert grasp_plan.reachable_arms(t(18.9, 29), CFG) == []
-    assert grasp_plan.reachable_arms(t(0, 21), CFG) == []                    # 中線最遠 20
-    assert grasp_plan.reachable_arms(t(30, 1), CFG) == []                    # 太靠身體
+    assert grasp_plan.reachable_arms(t(-40, 0), CFG) == ['left']             # 外側靠身體也可以（2026-11-19 量：40 → 0）
+    assert grasp_plan.reachable_arms(t(18.9, 34), CFG) == ['right']          # 肩膀前方的極限
+    assert grasp_plan.reachable_arms(t(18.9, 35), CFG) == []
+    assert grasp_plan.reachable_arms(t(0, 29), CFG) == []                    # 中線最遠 28
+    assert grasp_plan.reachable_arms(t(30, 5), CFG) == []                    # 太靠身體（30 → 6）
+    assert grasp_plan.reachable_arms(t(35, 5), CFG) == []                    # 30、40 中間取遠的 6，不內插
+    assert grasp_plan.reachable_arms(t(18.9, 7), CFG) == []                  # 肩膀前方最近 8
+
+
+def test_reach_near_fallback():
+    ws = {'reach_front_cm': CFG['workspace']['reach_front_cm'], 'front_min_cm': 6.0}
+    assert grasp_plan.reach_near(40.0, ws) == 6.0
 
 
 def test_dry_run_parse():
@@ -199,6 +206,28 @@ def test_table_slab():
     assert (slab['c'][2] - slab['h'][2]) * 100 + 120.2 == pytest.approx(72.0 - m)
     floor = grasp_plan.table_obstacle(dict(CFG['table'], bottom_cm=0.0), CFG['frames'])   # 沒設底 = 貼地，下面不加厚
     assert (floor['c'][2] - floor['h'][2]) * 100 + 120.2 == pytest.approx(0.0)
+
+
+def test_place_height_follows_bottle():
+    # 放開時瓶底在放置面上方 place_gap_cm：掌心 = 放置面 + 瓶高 + palm_gap + place_gap，高的瓶子掌心就高
+    tgt = CFG['place_targets']['tray_1']
+    gc = CFG['grasp']
+    for size in ([0.0829, 0.0829, 0.0923], [0.0494, 0.0494, 0.0780]):
+        above, place = grasp_plan.place_poses(tgt, gc, size, 'top')
+        bottom = place[2] - gc['palm_gap_cm'] - size[2] * 100
+        assert bottom - tgt['pos_cm'][2] == pytest.approx(gc['place_gap_cm'])
+        assert above[2] - place[2] == pytest.approx(gc['lift_cm'])
+        assert place[:2] == pytest.approx(tgt['pos_cm'][:2])
+
+
+def test_place_table_margin():
+    # 放下那一步桌子上方加厚改小，其他方向不變
+    normal = grasp_plan.scene(CFG, [])[0]
+    low = grasp_plan.scene(CFG, [], table_top_margin_cm=0.5)[0]
+    top = lambda o: o['c'][2] + o['h'][2]
+    assert (top(normal) - top(low)) * 100 == pytest.approx(3.0 - 0.5)
+    assert low['h'][:2] == pytest.approx(normal['h'][:2])
+    assert low['c'][:2] == pytest.approx(normal['c'][:2])
 
 
 def test_place_targets_reachable():

@@ -150,7 +150,28 @@ ros2 launch sp3_task_manager task_manager.launch.py
 - 急停或任務中斷時，任務管理會取消 MoveIt 軌跡（`/arm_stop`）並關掉實機跟隨；再跑任務前要重新執行第 3 步。
 - 只測 MoveIt、不動實機：`ros2 launch sp3_task_manager task_manager.launch.py real_arm:=false`
   （不看實機跟隨、也不看馬達 driver，馬達可以不上電；可以再加 `dry_run:=hand` 讓手也模擬）。
-- 任務第 0 步、第 6 步都回 **ready pose**（`/arm_ready`）；手臂端還沒做 /arm_ready 時任務會在第 0 步失敗（MAN-E-007）。
+- 任務第 0 步、第 6 步都回 **ready pose**：`task_manager.yaml` 的 `ready_pose`（桌面座標 左 (−50, 15, 20)、右 (50, 15, 20)，
+  掌心朝下）。`via: path`（2026-11-19）：照**錄好的路線**兩隻手同時走（速度 `ready_pose.speed` 50，走的時候實機馬達速度也切到 50、
+  走完切回 `grasp.arm_speed`），回站姿倒過來走；
+  路線存在 `ready_pose.path_file`（`src/sp3_task_manager/config/ready_path.yaml`）。
+  - 錄（網頁按鈕 2026-11-19 確認後拿掉了）：兩隻手在站姿時
+    `ros2 topic pub --once -w 1 /manip/test_cmd std_msgs/msg/String "{data: '{\"cmd\": \"record_ready\"}'}"`：
+    用原本的方法（`/arm_move` 左手再右手，MoveIt 規劃）舉到 ready，途中的路線存起來，蓋掉舊的。
+    實機跟隨沒開時目標自己往上補 0.17×前（同 moveit_bridge 的高度補償），只看模擬時 ready 會比設定的高約 4.8 cm。
+  - `ready_pose.mirror: right`：兩隻手都用右手的路線（URDF 左右鏡像，同一組關節角 = 左右相反的姿勢），錄的時候只舉右手。
+    2026-11-19 左手自己錄的路線越過桌緣太低（手最低只比桌面高約 4 cm），實機拇指擦到桌角；右手的先舉到掌心高 113 才往前。
+  - `ready_pose.adjust_cm`：只改某隻手的路線，不用重錄（掌心平移、姿態不變，逐點逆解）。`edge` 只在經過桌角那段、`end` 一直到 ready。
+    現在左手 `edge: [-2, 0, 1]`（往後 2、往上 1）、`end: [0, 0, 1]`：實機左手比右手低約 1 cm，經過桌角時拇指擦到。
+    套不上（逆解不到等）時不照路線走，結果會寫原因。
+  - 還沒錄、設定檔 ready 的位置改了（要重錄）、路線會撞到（走之前每 1.5° 問 MoveIt）時，自動改回一隻一隻移（`via: move`），
+    回站姿改回 moveit_bridge 的 `/arm_stand`；網頁測試結果會寫用了哪一種、為什麼。
+  - 手不在站姿也不在 ready（例如放完藥瓶）：先每顆馬達直接轉到 ready，回站姿再接倒過來的路線。
+  - 這兩段是任務管理直接交給 MoveIt（`/execute_trajectory`），不經 moveit_bridge；手臂端做好 `/arm_ready` 後可改 `via: arm_ready`。
+  - 走之前的碰撞檢查：一開始（路程前 5%）就碰到的物體（例如站姿時左手拇指在桌子的加厚裡）先不算，分開後就算；路程前 20% 還沒分開就不走。
+- 放置（2026-11-19 改）：`place_targets` 的「高」是放置面（tray 底面）離地多高，掌心高度依手上藥瓶的高度算，
+  放開時瓶底在放置面上方 `grasp.place_gap_cm`（1 cm，實機）。放下那一步桌子上方加厚暫時改成 `grasp.place_table_margin_cm`（0.5），
+  抬起後改回（實機跟隨開著時 moveit_bridge 也檢查實機的位置）。
+- 某隻手另外補高度：`grasp.arm_z_offset_cm`（2026-11-19 尺量後兩隻手都是 0；ready 路線另外用 `ready_pose.adjust_cm`）。只看模擬時任務管理每一步移動都自己補 0.17×前（實機跟隨開著時 moveit_bridge 會補），模擬的位置、可及範圍跟開實機跟隨時一樣。
 
 ```bash
 # 看任務管理送給 MoveIt 的障礙物、手臂每一步的結果（cmd / arm / reason）
@@ -160,11 +181,18 @@ ros2 topic echo /arm_ik_status
 
 ### 可及範圍與避障測試（reach_test）
 
-不經任務管理，直接對 moveit_bridge 下移動指令看結果。要先開 moveit_bridge（第 1 步的 nstc.launch.py），**任務管理不要開**。
+不經任務管理，直接對 moveit_bridge 下移動指令看結果。要先開 moveit_bridge（第 1 步的 nstc.launch.py）；除了 scan，**任務管理不要開**。
 先在實機跟隨**關著**時跑（只動模擬，在 RViz／網頁看）；實機跟隨開著時要加 `--real` 才會執行。
 
+scan（量可及範圍，2026-11-19 改）：**任務管理可以開著**，開著時先請它照錄好的路線回 ready，沒開就用 /arm_move 把這隻手移到 ready
+（`--start stand` 改回從站姿出發的舊做法）。每一列先回 ready 再往前試；`plan_failed`（到得了、這次沒找到路）先回 ready 再重試，
+預設 2 次（`--retry`）。結果分開標：✓ 到了（+ = 重試幾次才到）、✗ 到不了（IK／關節極限）、C 目標會撞到、P 重試後還是找不到路。
+最後印出「最近到了／最遠到了／IK 最遠」和可以直接貼進 `task_manager.yaml` 的 `workspace`；每一點存在 `~/reach_test_out/<時間>_scan_<手>/scan.csv`。
+最後一點都還到得了會提醒加大 `--beyond`。
+只舉測的那隻手（另一隻留在站姿），**測完會回站姿**：手舉著不動馬達會過熱（2026-11-19 右手過熱）。動實機要加 `--real`。
+
 ```bash
-# 實際極限：每個左右位置從桌緣往前每 2 cm 試一次，印出「模型最遠前 / 實際最遠前」
+# 實際極限：每個左右位置從桌緣往前每 2 cm 試一次
 ros2 run sp3_task_manager reach_test scan                       # 右手、從上方、掌心離桌 10 cm（b1 頂上 1 cm）
 ros2 run sp3_task_manager reach_test scan --arm left
 ros2 run sp3_task_manager reach_test scan --up 9                # 矮的藥瓶（b2、b4 約 7.8 cm 高）
@@ -198,7 +226,9 @@ ros2 run sp3_task_manager reach_test bottle --bottle b1 --arm left --real --spee
 
 ### 網頁送任務（暫代總計畫主控）
 
-上方控制列：急停、解除急停、**Stand**（手放下）、**Ready pose**（舉到桌上；手臂端做好 /arm_ready 才能用）。
+上方控制列：急停、解除急停、**Stand**（手放下）、**Ready pose**（兩隻手移到設定檔 `ready_pose` 的位置）。
+Stand、Ready 都會先把桌子、小桌子放進場景再動。錄好路線後兩隻手一起照錄好的路線走（每次一樣）；沒錄時是 MoveIt 一般規劃
+（左手再右手、每次路線不一樣），實機要放慢。
 右上「測試」：不跑完整流程，**由任務管理執行**（要開著），帶同樣的場景（桌子、小桌子、其他藥瓶）與實機跟隨檢查：
 移到座標（桌面 cm 或 base_link m）、移到影像看到的某瓶瓶頂上方。失敗時會把手臂端的原因翻成白話
 （IK 到不了／找不到路／目標會撞到），結果也會寫「可及範圍表：範圍內／外」，順便驗證設定檔的可及範圍。

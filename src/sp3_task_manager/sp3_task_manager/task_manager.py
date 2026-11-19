@@ -91,6 +91,7 @@ class TaskManager(Node):
         self._gh = None
         self._deadline = float('inf')
         self._arm_used = None
+        self._others = []            # 這次任務的其他藥瓶（場景用）
         self._test_cancel = False   # 網頁測試區按了取消
 
         # 執行中的任務要一邊等其他 topic，所以訂閱放另一個 callback group、用多執行緒 executor
@@ -314,12 +315,16 @@ class TaskManager(Node):
             self.arm.set_speed()
             if c['cmd'] == 'stand':
                 self._test_status('回站姿')
-                self.arm.stand(self)
-                text = '回到站姿'
+                self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))   # 場景先放桌子、小桌子再動
+                text = f'回到站姿（{self.arm.stand(self)}）'
             elif c['cmd'] == 'ready':
                 self._test_status(f'回預備姿勢（{c["arm"]}）')
-                self.arm.ready(self, c['arm'])
-                text = '回到預備姿勢'
+                self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
+                text = f'回到預備姿勢（{self.arm.ready(self, c["arm"])}）'
+            elif c['cmd'] == 'record_ready':
+                self._test_status('錄 ready 路線：左手、右手依序舉到 ready')
+                self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
+                text = self.arm.record_ready(self)
             elif c['cmd'] == 'move':
                 tf = try_cmd.both_frames(c['pos_cm'], self.cfg)['table']
                 self._test_status(f'移到 桌面 右 {tf[0]}、前 {tf[1]}、上 {tf[2]}（{c["arm"]}、{c["approach"]}）')
@@ -420,14 +425,14 @@ class TaskManager(Node):
         gc = self.cfg['grasp']
         max_retry = self.cfg['retries']['grasp']
         # 先回預備姿勢（ready pose，2026-11-19 決定）：第一個任務從 stand 舉上來，之後本來就在 ready（手臂端直接回成功）。
-        # 手臂端還沒有 /arm_ready 時這裡會失敗（MAN-E-007）。場景先放桌子
+        # 位置在設定檔 ready_pose（via = path：照錄好的路線兩隻手一起走；move：/arm_move 移過去；arm_ready：手臂端 /arm_ready）。場景先放桌子
         self._feedback(0, 0, '回預備姿勢')
         self.arm.set_speed()
         self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
-        self.arm.ready(self)
+        self.get_logger().info(f'[{g.task_id}] 回到預備姿勢：{self.arm.ready(self)}')
         for retry in range(max_retry + 1):
             try:
-                poses = self._pick(g, retry)
+                poses, size = self._pick(g, retry)
                 break
             except TaskError as e:
                 if e.code != GRASP_FAILED or retry == max_retry:
@@ -437,17 +442,22 @@ class TaskManager(Node):
 
         if g.place_target:
             tgt = self.cfg['place_targets'][g.place_target]
-            above, place = grasp_plan.place_poses(tgt, gc)
             approach = tgt.get('approach', 'top')
+            above, place = grasp_plan.place_poses(tgt, gc, size, approach)
             self._feedback(5, 0, f'移到 {g.place_target} 上方')
             self.arm.move(self, above, approach, poses.arm, '移到放置點上方')
+            # 放下那一步桌子上方的加厚暫時改小：實機跟隨開著時 moveit_bridge 也檢查實機的位置（比模擬低 0.17 × 前），
+            # 實機瓶底離桌 place_gap_cm（1）一定在加厚（3）裡面（2026-11-19 實機三次都 collision）。抬起後改回來
+            self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, self._others,
+                                                          table_top_margin_cm=gc['place_table_margin_cm']))
             self.arm.move(self, place, approach, poses.arm, '放下')
             self.hand.open(self, poses.arm)
             self.arm.detach(self)
             self.arm.move(self, above, approach, poses.arm, '放下後抬起')
+            self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, self._others))
 
         self._feedback(6, 0, '回預備姿勢')      # 任務之間停在 ready，收工才按 Stand
-        self.arm.ready(self)
+        self.get_logger().info(f'[{g.task_id}] 回到預備姿勢：{self.arm.ready(self)}')
         held = '' if g.place_target else '（沒有放置點，藥瓶還在手上）'
         return f'{poses.arm} 手 {g.bottle_class} → {g.place_target or "—"}{held}'
 
@@ -476,6 +486,7 @@ class TaskManager(Node):
         self._feedback(1, retry, f'{g.bottle_class} 在 {center.round(1).tolist()} cm，'
                                  f'障礙物：桌子{"、" + "、".join(o[0] for o in others) if others else ""}')
         self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, others))
+        self._others = others        # 放置時要重發場景（桌子加厚改小）
         self.arm.set_speed()
 
         # 選手（S3-01：運動規劃負責）：主控有指定就用那隻；auto 時兩隻手算出來的位置一樣（top / front）
@@ -513,7 +524,7 @@ class TaskManager(Node):
         self._feedback(4, retry, f'抬起 {self.cfg["grasp"]["lift_cm"]:g} cm 確認夾住')
         self.arm.move(self, poses.lift, poses.approach, arm, '抬起')
         self.hand.holding(self, arm)
-        return poses
+        return poses, size
 
     def _back_off(self):
         """重試前：剛剛用的那隻手張開。手臂留在原地，下一輪會先移到預抓位置。"""

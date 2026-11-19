@@ -7,6 +7,7 @@
 這兩個會順便檢查取消、急停與任務逾時，所以任何一步都能被中斷。
 """
 import json
+import os
 import time
 
 import numpy as np
@@ -16,8 +17,12 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 # （網頁經 rosbridge 發的 /arm_ik_obstacles 就是）會用 TRANSIENT_LOCAL 訂，VOLATILE 的發布者就收不到（QoS 不相容）。
 # TRANSIENT_LOCAL 發布者兩種訂閱都相容，晚開的網頁也會先收到最後一筆
 LATCHED_QOS = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+START_TOUCH_FRAC = 0.2   # 錄好的路線：起點就碰到的物體，只在路程前這麼多內放行（之後還碰到 = 一路貼著，不走）
+START_WINDOW_FRAC = 0.05  # 「起點就碰到」算到路程前這麼多：站姿左手拇指離加厚的桌子只有 0.6，差零點幾度就變成第 2 點才碰到
+                          # （2026-11-19 22:27：第 2/85 點 lh_thumb_distal↔桌子，起點沒碰到 → 整條不走）
 
 from sp3_task_manager import grasp_plan as gp
+from sp3_task_manager import ready_path as rp
 from sp3_task_manager.errors import (BOTTLE_NOT_FOUND, DRIVER_ERROR, GRASP_FAILED,
                                      HAND_STATE_LOST, JOINT_STATE_LOST, OUT_OF_RANGE, TaskError)
 
@@ -92,9 +97,11 @@ class ArmClient:
     """MoveIt 回報到了不代表實機到了：實機跟隨沒開、或中途被 real_arm_bridge 停掉時，模擬照樣會動完。
     所以 real_arm.required = true 時，每一步移動前、移動中都要實機跟隨是 follow，
     MoveIt 到了之後再等 real_arm_bridge 回報實機停穩（settled），不是固定等幾秒。"""
+    IN_FLIGHT = 8              # 路線碰撞檢查同時最多送幾個請求（服務佇列 10 筆）
 
     def __init__(self, node, cfg, cb_group):
         self.node, self.cfg = node, cfg['grasp']
+        self.full_cfg = cfg          # auto 一隻一隻試時要看可及範圍表
         self.speed = float(self.cfg['arm_speed'])     # 網頁 /manip/speed 可以改，重開任務管理回到設定檔的值
         self.timeouts = cfg['timeouts']
         self.require_real = bool((cfg.get('real_arm') or {}).get('required', True))
@@ -103,9 +110,29 @@ class ArmClient:
                                  callback_group=cb_group)
         self.pub_move = node.create_publisher(String, '/arm_move', 10)
         self.pub_stand = node.create_publisher(Bool, '/arm_stand', 10)
-        # 預備姿勢（ready pose，2026-11-19 決定）：手臂端還沒做；格式先定 std_msgs/String {"arm": "both" / "left" / "right"}，
-        # 結果同 /arm_ik_status、cmd = ready。沒有人訂閱 = 手臂端還沒做
+        # 預備姿勢（ready pose，2026-11-19 決定）：設定檔 ready_pose。
+        # via = path：照錄好的路線，兩隻手同時走（ready_path.py；MoveIt /execute_trajectory，不經 moveit_bridge），
+        #             回站姿倒過來走；還沒錄、位置改了、會撞到時改用 move
+        # via = move：用 /arm_move 一隻一隻移到設定檔的兩點
+        # via = arm_ready：交給手臂端 /arm_ready（還沒做；格式先定 std_msgs/String {"arm": "both" / "left" / "right"}，
+        #                  結果同 /arm_ik_status、cmd = ready。沒有人訂閱 = 手臂端還沒做）
+        self.ready_via, self.ready_approach, self.ready_pos = gp.ready_targets(cfg)
+        self.ready_cfg = cfg.get('ready_pose') or {}
+        self.ready_file = os.path.expanduser(self.ready_cfg.get('path_file', ''))
+        self.ready_speed = float(self.ready_cfg.get('speed', self.cfg['arm_speed']))
+        rp.mirror_src(self.ready_cfg)              # ready_pose.mirror 設錯就不開（同 ready_targets）
         self.pub_ready = node.create_publisher(String, '/arm_ready', 10)
+        from moveit_msgs.action import ExecuteTrajectory
+        from moveit_msgs.srv import GetStateValidity
+        from rclpy.action import ActionClient
+        self._exec_ac = ActionClient(node, ExecuteTrajectory, '/execute_trajectory', callback_group=cb_group)
+        self._valid_cli = node.create_client(GetStateValidity, '/check_state_validity', callback_group=cb_group)
+        self._exec_gh = None       # 照路線走時 MoveIt 執行中的 goal（急停要取消）
+        self._q_sim = {}           # MoveIt（假硬體）的關節角 {關節名: rad}
+        self._rec = None           # 錄路線時：[{手: 7 軸}]
+        self.frames = cfg['frames']
+        self._fk_shape = None      # URDF FK（ready_pose.adjust_cm 改路線用，第一次用到才讀）
+        self._adj_cache = None     # (檔案時間 + adjust_cm, 改好的路線)
         self.last_goal = None      # 最後送出的掌心目標（量測座標 cm）、用哪隻手：給網頁顯示
         self.pub_speed = node.create_publisher(Float64, '/arm_speed_cmd', 10)
         self.pub_real_enable = node.create_publisher(Bool, '/arm_real_enable', 10)
@@ -142,8 +169,34 @@ class ArmClient:
 
     def _joint_cb(self, msg):
         # MoveIt 的假硬體也發 /joint_states（名稱是關節名）；driver 的名稱是馬達 ID 數字
-        if msg.name and msg.name[0].isdigit():
+        if not msg.name:
+            return
+        if msg.name[0].isdigit():
             self._joint_t = time.monotonic()
+            return
+        self._q_sim.update(zip(msg.name, msg.position))
+        if self._rec is not None:
+            q = self.q_now()
+            if q is not None:
+                self._rec.append(q)
+
+    def q_now(self):
+        """MoveIt 目前兩隻手的關節角 {手: 7 軸 rad}；還沒收到回 None。"""
+        try:
+            return {a: np.array([self._q_sim[n] for n in rp.joint_names(a)]) for a in rp.ARMS}
+        except KeyError:
+            return None
+
+    def sim_z_comp(self, pos_cm):
+        """實機跟隨沒開時，目標要自己往上補多少 cm（moveit_bridge 只在實機跟隨開著時補 0.17 × 前）：
+        模擬才會停在跟開實機跟隨時一樣的地方（可及範圍一樣、放置時藥瓶底不會插進桌子的加厚）。move 每一步都會加。"""
+        if self.real_following():
+            return 0.0
+        return float(self.ready_cfg.get('real_z_comp', 0.17)) * max(float(pos_cm[0]), 0.0)
+
+    def real_following(self):
+        return self._real is not None and time.monotonic() - self._real[0] < self.timeouts['real_status_stale_s'] \
+            and self._real[1].get('state') == 'follow'
 
     def _real_cb(self, msg):
         try:
@@ -247,6 +300,9 @@ class ArmClient:
         """取消 MoveIt 執行中的軌跡（/arm_stop），並關掉實機跟隨：real_arm_bridge 不再送新指令，
         馬達停在最後送出的目標。之後要再跑任務，得重新打開實機跟隨（網頁 IK 面板或 /arm_real_enable true）。"""
         self.pub_stop.publish(Bool(data=True))
+        gh = self._exec_gh
+        if gh is not None:         # 照錄好的路線走（任務管理自己送給 MoveIt 的軌跡）
+            gh.cancel_goal_async()
         self.pub_real_enable.publish(Bool(data=False))
         self.node.get_logger().warning(f'手臂停止（取消軌跡、關閉實機跟隨）：{why}')
 
@@ -307,22 +363,249 @@ class ArmClient:
                         '（/arm_real_status 沒有 settled 欄位的話，armpackage 要重新 build）')
 
     def move(self, task, pos_cm, approach, arm, what):
-        """arm = right / left / auto（auto 由 moveit_bridge 選）。回傳實際用的那隻手。"""
-        d = {'pos': [round(float(v), 1) for v in pos_cm], 'dir': approach,
+        """arm = right / left / auto（auto 由 moveit_bridge 選）。回傳實際用的那隻手。
+        grasp.arm_z_offset_cm：某隻手的目標高度另外補（左手實機比右手低約 1 cm，機構，2026-11-19）。
+        兩隻手補的不一樣時 auto 不能交給 moveit_bridge 選（它不知道要補），改成照 arm_order 一隻一隻試。"""
+        off = self.cfg.get('arm_z_offset_cm') or {}
+        if arm == 'auto' and float(off.get('left', 0.0)) != float(off.get('right', 0.0)):
+            # 只試可及範圍表裡搆得到的手（都搆不到就兩隻都試，讓 moveit_bridge 說為什麼）；都失敗時每隻手的原因都要講，
+            # 不然只看到最後一隻（2026-11-19：右 30 前 32 回報「左手離肩膀太遠」，右手為什麼失敗看不到）
+            order = gp.arm_order('auto', pos_cm)
+            order = [a for a in order if a in gp.reachable_arms(pos_cm, self.full_cfg)] or order
+            errs = []
+            for a in order:
+                try:
+                    return self.move(task, pos_cm, approach, a, what)
+                except TaskError as e:
+                    if e.code not in (GRASP_FAILED, OUT_OF_RANGE):
+                        raise
+                    errs.append((a, e))
+            if len(errs) == 1:
+                raise errs[0][1]
+            raise TaskError(errs[0][1].code, '｜'.join(f'{"左" if a == "left" else "右"}手：{e.detail}' for a, e in errs))
+        self.last_goal = (np.array(pos_cm, dtype=float), arm, what)     # 網頁顯示要的位置（沒補）
+        # 只看模擬（實機跟隨沒開）時自己補 0.17 × 前：可及範圍是開實機跟隨量的（moveit_bridge 有補），
+        # 不補的話模擬的目標比較低、離肩膀比較遠，邊緣的點到不了（2026-11-19 右 30 前 32：離肩膀 56 > 55）
+        target = np.array(pos_cm, dtype=float) + [0.0, 0.0, float(off.get(arm, 0.0)) + self.sim_z_comp(pos_cm)]
+        d = {'pos': [round(float(v), 1) for v in target], 'dir': approach,
              'fingers': self.cfg['fingers'], 'arm': arm}
-        self.last_goal = (np.array(pos_cm, dtype=float), arm, what)
         res = self._send_and_wait(
             task, lambda: self.pub_move.publish(String(data=json.dumps(d))), what, cmd='move')
         return res.get('arm') or arm
 
     def stand(self, task):
+        """回站姿。via = path：照錄好的路線倒過來走（兩隻手一起）；不能用就交給 moveit_bridge（/arm_stand）。回傳說明。"""
+        if self.ready_via == 'path':
+            why = self._path_go(task, 'stand', rp.ARMS)
+            if why is None:
+                return '照錄好的路線倒過來走'
+            self.node.get_logger().warning(f'回站姿不照錄好的路線（{why}），交給 moveit_bridge')
         self._send_and_wait(task, lambda: self.pub_stand.publish(Bool(data=True)), '回站姿', cmd='stand')
+        return 'moveit_bridge 回站姿' + (f'（錄好的路線不能用：{why}）' if self.ready_via == 'path' else '')
 
     def ready(self, task, arm='both'):
+        """回預備姿勢。arm = both / left / right。回傳說明（用了哪種方法）。
+        via = path：照錄好的路線兩隻手一起走；不能用（還沒錄、位置改了、會撞到）就改用 move。
+        via = move：一隻一隻把掌心移到設定檔 ready_pose 的點（已經在那裡的手，moveit_bridge 當微調，很快就回到了）"""
+        arms = rp.ARMS if arm == 'both' else (arm,)
+        why = None
+        if self.ready_via == 'path':
+            why = self._path_go(task, 'ready', arms)
+            if why is None:
+                return '照錄好的路線走（兩隻手一起）'
+            self.node.get_logger().warning(f'回預備姿勢不照錄好的路線（{why}），改成一隻一隻移')
+        if self.ready_via in ('path', 'move'):
+            for a in arms:
+                self.move(task, self.ready_pos[a], self.ready_approach, a,
+                          f'回預備姿勢（{"左" if a == "left" else "右"}手）')
+            return '一隻一隻用 /arm_move 移' + (f'（錄好的路線不能用：{why}）' if why else '')
         if self.pub_ready.get_subscription_count() == 0:
-            raise TaskError(DRIVER_ERROR, '手臂端還沒有 /arm_ready（預備姿勢），等手臂負責人做好')
+            raise TaskError(DRIVER_ERROR, '手臂端還沒有 /arm_ready（預備姿勢），等手臂負責人做好'
+                                          '（或把設定檔 ready_pose.via 改回 move）')
         self._send_and_wait(task, lambda: self.pub_ready.publish(String(data=json.dumps({'arm': arm}))),
                             '回預備姿勢', cmd='ready')
+        return '手臂端 /arm_ready'
+
+    # ---------------- 錄好的 ready 路線（ready_path.py）----------------
+    def record_ready(self, task):
+        """錄站姿 → ready 的路線：兩隻手要在站姿，用 /arm_move 一隻一隻舉到 ready（moveit_bridge 規劃、檢查過碰撞），
+        途中記 MoveIt 的關節角，存到 ready_pose.path_file（蓋掉舊的）。場景（桌子）呼叫前要先放好。回傳說明。"""
+        q0 = self.q_now()
+        if q0 is None:
+            raise TaskError(JOINT_STATE_LOST, '收不到 MoveIt 的 /joint_states（關節名），沒辦法錄')
+        away = [a for a in rp.ARMS if not rp.at(q0[a], np.zeros(7))]
+        if away:
+            raise TaskError(OUT_OF_RANGE, f'{"、".join("左" if a == "left" else "右" for a in away)}手不在站姿，'
+                                          '先按 Stand 回站姿再錄')
+        follow = self.real_following()
+        k = float(self.ready_cfg.get('real_z_comp', 0.17))
+        # 實機跟隨開著時 moveit_bridge 自己會往上補；沒開就自己補，錄到的關節角才會跟實機要的一樣
+        comp = {a: 0.0 if follow else k * max(float(self.ready_pos[a][0]), 0.0) for a in rp.ARMS}
+        src = rp.mirror_src(self.ready_cfg)        # 兩隻手共用一隻手的路線：只舉那隻手
+        self._rec = [q0]
+        try:
+            for a in ((src,) if src else rp.ARMS):
+                # 只看模擬時 move 自己會補 comp（同上面算的）；左手另外 +arm_z_offset_cm
+                self.move(task, self.ready_pos[a], self.ready_approach, a,
+                          f'錄 ready 路線（{"左" if a == "left" else "右"}手）')
+            q1 = self.q_now()
+        finally:
+            rec, self._rec = self._rec, None
+        rec.append(q1)
+        paths = {a: rp.resample(np.array([q[a] for q in rec])) for a in rp.ARMS}
+        if src:
+            paths[rp.other(src)] = paths[src].copy()
+        rp.save(self.ready_file, paths, self.ready_cfg, follow, comp)
+        note = ('實機跟隨開著（moveit_bridge 有補高度）' if follow else
+                f'只有模擬：目標自己往上補了 {comp["left"]:.1f} cm（實機會低這麼多），所以模擬的 ready 會比設定的高')
+        if src:
+            note += f'。只錄了{"左" if src == "left" else "右"}手，另一隻手用同一條（鏡像），還在站姿，按 Ready 會一起走'
+        return f'錄好了：{rp.describe(paths, self.ready_speed)}。{note}。存在 {self.ready_file}'
+
+    def _path_go(self, task, kind, arms):
+        """照錄好的路線走（kind = ready / stand）。走完（或本來就在）回 None；沒動（不能用）回原因；走到一半出錯丟 TaskError。"""
+        rec, why = self._ready_rec()
+        if why:
+            return why
+        q = self.q_now()
+        if q is None:
+            return '收不到 MoveIt 的 /joint_states（關節名）'
+        paths = rp.plan(rec, q, arms, kind)
+        if not paths:
+            return None
+        names, P = rp.merge(paths)
+        P = rp.resample(P, rp.CHECK_STEP)
+        hit = self._path_hits(task, names, P)
+        if hit:
+            return hit
+        self._exec_path(task, names, P, '回站姿（照錄好的路線）' if kind == 'stand' else '回預備姿勢（照錄好的路線）')
+        return None
+
+    def _ready_rec(self):
+        """讀錄好的路線，套上 ready_pose.adjust_cm（只改某隻手，逐點逆解；同一個檔案、同一組設定只算一次）。
+        回傳 (rec, None) 或 (None, 不能用的原因)。"""
+        rec, why = rp.load(self.ready_file, self.ready_cfg)
+        if why or not self.ready_cfg.get('adjust_cm'):
+            return rec, why
+        key = (os.path.getmtime(self.ready_file), json.dumps(self.ready_cfg['adjust_cm'], sort_keys=True))
+        if self._adj_cache is not None and self._adj_cache[0] == key:
+            return self._adj_cache[1], None
+        try:
+            if self._fk_shape is None:
+                from ament_index_python.packages import get_package_share_directory
+                from sp3_task_manager.arm_shape import ArmShape
+                urdf = os.path.join(get_package_share_directory('seven_axis_arm_urdf'), 'urdf', 'seven_axis_arm_urdf.urdf')
+                self._fk_shape = ArmShape(urdf, get_package_share_directory, meshes=False)
+            rec = rp.apply_adjust(rec, self.ready_cfg, self._fk_shape, self.frames)
+        except Exception as e:     # noqa: BLE001  讀不到 URDF、逆解不到：不照路線走（改用 move），說原因
+            return None, f'ready_pose.adjust_cm 套不上：{e}'
+        self._adj_cache = (key, rec)
+        return rec, None
+
+    def _path_hits(self, task, names, P):
+        """路線上每一點問 MoveIt 會不會撞到（場景物體、支架、兩隻手互撞）。沒撞到回 None，撞到回說明。
+        起點（路程前 START_WINDOW_FRAC）就碰到的物體（站姿時左手拇指在桌子的加厚裡，2026-11-19 .11 測到，錄好的路線因此每次都被拒）先不算，
+        跟 moveit_bridge 規劃時一樣；那一對一分開就開始算，而且只在路程前 START_TOUCH_FRAC 內不算。"""
+        from moveit_msgs.srv import GetStateValidity
+        if not self._valid_cli.wait_for_service(timeout_sec=2.0):
+            return '連不到 MoveIt 的 /check_state_validity'
+        # 同時最多 IN_FLIGHT 個請求、回來一個補一個：一點一點等每點至少 20 ms（task.sleep 的間隔）；
+        # 一次全送也不行，服務的佇列只有 10 筆（QoS depth 10），多的會被丟掉、永遠等不到（2026-11-19 本機測到）
+        n = len(P)
+        contacts = [None] * n      # 每一點撞到的 {(物體, 物體)}；None = 還沒回來
+        pending, nxt = {}, 0
+        end = time.monotonic() + 5.0 + 0.05 * n
+        while nxt < n or pending:
+            for i, f in list(pending.items()):
+                if not f.done():
+                    continue
+                del pending[i]
+                res = f.result()
+                if res is None:
+                    return f'路線第 {i}/{n - 1} 點 MoveIt 碰撞檢查沒有結果'
+                contacts[i] = set() if res.valid else \
+                    {tuple(sorted((c.contact_body_1, c.contact_body_2))) for c in res.contacts} or {('?', '?')}
+            while nxt < n and len(pending) < self.IN_FLIGHT:
+                req = GetStateValidity.Request()
+                req.group_name = 'both_arms'
+                req.robot_state.is_diff = True
+                req.robot_state.joint_state.name = list(names)
+                req.robot_state.joint_state.position = [float(v) for v in P[nxt]]
+                pending[nxt] = self._valid_cli.call_async(req)
+                nxt += 1
+            if time.monotonic() > end:
+                raise TaskError(DRIVER_ERROR, 'MoveIt 碰撞檢查（/check_state_validity）沒有回應')
+            task.sleep(0.005)
+        allowed = set(contacts[0])
+        early = set().union(*contacts[:int(START_WINDOW_FRAC * (n - 1)) + 1])
+        if early:
+            self.node.get_logger().info(f'路線一開始就碰到 {"、".join("↔".join(c) for c in sorted(early))}，離開前先不算')
+        for i in range(1, n):
+            if i <= START_WINDOW_FRAC * (n - 1):
+                allowed |= contacts[i]     # 一開始（前 START_WINDOW_FRAC）才碰到的也算「起點就碰到」
+            still = allowed                # 從一開始一路碰到現在、還沒分開的
+            if i > START_TOUCH_FRAC * (n - 1):
+                allowed = set()
+            bad = contacts[i] - allowed
+            if bad:
+                pairs = sorted('↔'.join(c) for c in bad)
+                stuck = f'（一開始就碰到，路程前 {START_TOUCH_FRAC:.0%} 還沒離開）' if bad & still else ''
+                return f'路線第 {i}/{n - 1} 點會撞到：{"、".join(pairs[:3])}{stuck}'
+            allowed &= contacts[i]         # 分開了就不再放行
+        return None
+
+    def _exec_path(self, task, names, P, what):
+        """關節角清單排好時間（ready_pose.speed），交給 MoveIt /execute_trajectory 執行（同 moveit_bridge 回站姿），
+        等 MoveIt 走完、實機停穩。中途被打斷就取消軌跡、關實機跟隨（同 _send_and_wait）。"""
+        from builtin_interfaces.msg import Duration
+        from moveit_msgs.action import ExecuteTrajectory
+        from moveit_msgs.msg import RobotTrajectory
+        from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+        t, V = rp.time_path(P, self.ready_speed)
+        jt = JointTrajectory(joint_names=list(names))
+        for q, v, ti in zip(P, V, t):
+            ns = int(round(float(ti) * 1e9))
+            jt.points.append(JointTrajectoryPoint(
+                positions=[float(x) for x in q], velocities=[float(x) for x in v],
+                time_from_start=Duration(sec=ns // 1000000000, nanosec=ns % 1000000000)))
+        goal = ExecuteTrajectory.Goal()
+        goal.trajectory = RobotTrajectory(joint_trajectory=jt)
+        self.check_joint_states()
+        self.check_real(what)
+        if not self._exec_ac.wait_for_server(timeout_sec=2.0):
+            raise TaskError(DRIVER_ERROR, f'{what}：連不到 MoveIt 的 /execute_trajectory（MoveIt 有開嗎？）')
+        self._moving = False
+        try:
+            # 實機馬達速度跟軌跡一樣（real_arm_bridge 用 /arm_speed_cmd 當 Profile Velocity），走完 finally 切回 grasp.arm_speed
+            self.pub_speed.publish(Float64(data=self.ready_speed))
+            task.sleep(0.2)
+            fut = self._exec_ac.send_goal_async(goal)
+            gh = task.wait_until(lambda: fut.result() if fut.done() else None, 5.0, DRIVER_ERROR,
+                                 f'{what}：MoveIt 5 秒沒有回應')
+            if not gh.accepted:
+                raise TaskError(DRIVER_ERROR, f'{what}：MoveIt 不接受這條軌跡')
+            self._exec_gh, self._moving = gh, True
+            rf = gh.get_result_async()
+
+            def done():
+                self.check_real(what)
+                return rf.result() if rf.done() else None
+
+            limit = float(t[-1]) + 15.0
+            res = task.wait_until(done, limit, GRASP_FAILED, f'{what}：{limit:.0f} 秒還沒走完')
+            code = res.result.error_code.val
+            if code != 1:          # moveit_msgs/MoveItErrorCodes：1 = SUCCESS
+                raise TaskError(GRASP_FAILED, f'{what}：MoveIt 執行失敗（錯誤碼 {code}）')
+            self._wait_settled(task, what)
+            self.check_joint_states()
+        except Exception as e:
+            if self._moving:
+                self.stop(f'{what}中斷：{e!r}')
+            raise
+        finally:
+            self._moving = False
+            self._exec_gh = None
+            self.set_speed()
 
 
 class DryArmClient:
@@ -335,6 +618,9 @@ class DryArmClient:
     def set_speed(self, speed=None):
         if speed is not None:
             self.speed = float(speed)
+
+    def sim_z_comp(self, pos_cm):
+        return 0.0
 
     def set_obstacles(self, task, objs):
         pass
@@ -366,6 +652,11 @@ class DryArmClient:
 
     def ready(self, task, arm='both'):
         task.sleep(self.cfg['step_s'])
+        return '（dry_run）回預備姿勢'
+
+    def record_ready(self, task):
+        task.sleep(self.cfg['step_s'])
+        return '（dry_run）沒有手臂，沒錄'
 
 
 # ======================================================================

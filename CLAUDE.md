@@ -223,6 +223,83 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
   moveit_bridge 只有一個速度，最後送的人贏（RobotViewer、reach_test 送的會被下一個任務／測試蓋回）。
 - **11/19 使用者說手臂負責人改好了，但 .11 與 GitHub 都沒有**：.11 跑的是 `~/nstc/src/armpackage`（不是 ros2_adult），
   moveit_bridge.py 最後改 11/18 16:58、沒有 /arm_ready；ros2_adult GitHub 最後 11/13。已請使用者叫他放上 .11 再看。
+- **ready pose 位置定了（2026-11-19 使用者在網頁測試區抓的，「之後都用這組」）**：桌面座標 左 (−50, 15, 20)、右 (50, 15, 20)，
+  掌心朝下（top）＝量測 前 28.4、右 ±50、高 101.2（先抓的 (±25, 15, 10) 實機太低 → (±35, 15, 15) → 錄路線實機測過後使用者再改成左右 50、高 +5）。寫在 task_manager.yaml `ready_pose`；`via: move` = ArmClient.ready
+  用 /arm_move 依序移左、右手（已在那裡 = bridge 微調），`via: arm_ready` = 手臂端 /arm_ready（做好後切；它的 ready 要對到這兩點）。
+  任務第 0、6 步、網頁 Ready 按鈕都走這個；網頁測試區 stand／ready 前先放場景。掌心離桌 20 → 手最低離桌約 15.5（URDF 算：手最低處在掌心後下方，b1 高 9.2）。
+  .11 上第一次測時：使用者在 RobotViewer 填桌面座標（它是量測座標，高 = 離地）→ 離肩 111 cm，提醒過兩套座標的差別。
+- **ready 路線錄起來、兩隻手同時走（2026-11-19 使用者：「存起來、同時送兩個路徑」，速度 stand↔ready 都 30）**：`via: path`（預設）。
+  為什麼存整條路：只存終點關節角、每顆馬達直接轉，手指會掃進桌子。.11 log（14:26）：一隻手站姿→ready 15～19 秒，
+  其中規劃只 2～4 秒，大部分是 MoveIt 繞路的執行＋最後 10 cm 慢速直線；「先往上抬」要抬到 118.5（小桌子 107＋1.5＋10）撞到 → 只剩 MoveIt。
+  `ready_path.py`（純 numpy，有單元測試）＋ adapters `record_ready`／`_path_go`／`_path_hits`／`_exec_path`：
+  錄 = 手在站姿、/arm_move 左再右、記 MoveIt /joint_states，左右各一段存 `config/ready_path.yaml`（設定檔 `path_file`）；
+  走 = 兩段按進度同步成一條 14 軸軌跡，任務管理**直接**送 MoveIt `/execute_trajectory`（不經 moveit_bridge，同 bridge 回站姿的做法），
+  走前每 1.5° `/check_state_validity`（同時最多 8 個請求：服務佇列只有 10，一次全送會被丟掉——本機測到）；回站姿倒過來；
+  手在別處先直接轉到 ready。不能用（沒錄、位置改了、會撞）→ 退回 move／`/arm_stand`。實機跟隨沒開時錄的目標自己補 0.17×前（`real_z_comp`）。
+  網頁控制列加「錄 ready 路線」（confirm）。本機假 MoveIt 整合測試 7 種情況過（scratchpad sim_ready_path.py）。
+  .11 17:22 錄（只有模擬），實機「快很多」，但**左手越過桌緣時拇指擦到桌角**（右手沒事）：URDF 算左手自己的路線舉到掌心高 83 就往前，
+  越過桌緣時手最低只比桌面高約 4 cm（模擬沒撞，實機左手側伸比模擬低）；右手的先舉到 113 才往前（31 cm）。
+  URDF 左右鏡像（同一組關節角 = 鏡像姿勢，FK 確認；錄到的左右 ready 終點關節角一模一樣）→ 設定檔 `mirror: right` 兩隻手都用右手的路線，
+  舊檔案不用重錄（load 時套用）；錄的時候只舉右手。實機左手側伸會往下垂（約 4 cm 以上），給手臂負責人下垂補償當資料。
+- **ready (±50, 15, 20) 18:30 重錄（實機跟隨開著、只舉右手）**：實機左手拇指又輕碰桌子一下；實機右手 ready 比左手高 1 cm，
+  使用者量右肩馬達比左肩高 0.5。到位紀錄：照馬達讀數算的掌心高 左 104.5、右 104.4（一樣）→ 差的 1 cm 是機構（安裝高度＋變形）。
+  URDF：路線在 34% 拇指只比桌面高 1.8、在桌緣後 2.9（離真的桌子 3.2）。那段手臂幾乎伸直：往上 1 cm 要轉 10～13°、往後只要 2～5°。
+  → `ready_pose.adjust_cm`（ready_path.adjust／apply_adjust，ArmClient._ready_rec 套用、快取）左手 edge [-2, 0, 1]、end [0, 0, 1]：
+  經過桌角離真的桌子 3.2 → 5.5、ready 左手 +1 cm；往後 3 逆解不到。arm_shape 加讀 URDF 關節範圍。
+  實機確認「轉的路線沒問題了」（2026-11-19）→ 網頁「錄 ready 路線」按鈕拿掉（record_ready 指令還在，要重錄用 ros2 topic pub）；
+  `ready_pose.speed` 30 → 50（使用者），_exec_path 走的時候 /arm_speed_cmd 也送 50（實機馬達不能比軌跡慢，不然跟不上、抄近路），
+  走完切回 grasp.arm_speed 30。URDF 算一趟 8.9 → 6.9 秒（加速度也跟著速度比例，所以只快 2 秒）。**速度 50 還沒上實機**。
+  照路線走時用 `ready_pose.speed`（不是網頁速度欄位 /manip/speed），走完切回 arm.speed（網頁設的值）。
+- **2026-11-19 19:11 另一邊同步到 .11 時用舊檔蓋掉** adapters.py、task_manager.py、SP3TaskInterface.html、COMMANDS.md、CLAUDE.md、README
+  （git_sync 19:16 commit 7094796 也是舊的；那份有新的 /manip/speed 速度欄位）。19:3x 從對話紀錄重建我的版本，再把 /manip/speed 合併進去。
+  **改 .11 前先確認對方沒有同時在同步同一批檔案**（rsync 會整個檔案蓋掉，不會合併）。
+- **reach_test scan 改從 ready 出發（2026-11-19 使用者：「可以測手的極限範圍了」）**：任務管理開著就送 /manip/test_cmd ready
+  （照錄好的路線），沒開用 /arm_move；每列先回 ready；plan_failed 回 ready 重試 `--retry`（預設 2）；分開標 ✓／✗ IK／C 撞／P 找不到路；
+  印 workspace 表可直接貼、每點存 scan.csv。本機用假 moveit_bridge 回應測過邏輯，.11 還沒實測。
+- **11/19 20:33 .11 log 看到的兩個問題 → 21:xx 已改（使用者：「tray 高度要根據瓶子」「你直接改吧」）**：
+  ① 放 tray 撞 `sp3_table↔手上的 sp3_held`：原本 tray pos_cm 是掌心、離桌 12 寫死，瓶底 = 12 − 1 − 瓶高（b1 1.8 < 加厚 3）。
+     **改**：place_targets 的「高」改成放置面（81.2 = 桌面，tray 厚度待量），掌心 = 放置面 + 瓶高 + palm_gap + `grasp.place_gap_cm`（1）。
+     實機跟隨開著時 moveit_bridge 往上補 0.17×前（tray 前 32 → 5.5），模擬的瓶底高於加厚、實機剛好在目標（使用者確認補償後實機高度準）；
+     實機跟隨沒開時任務管理自己補（`ArmClient.sim_z_comp`，用 ready_pose.real_z_comp），模擬才跟開實機時一樣。
+     左手實機再低約 1 cm（機構）→ `grasp.arm_z_offset_cm: {left: 1}`，ArmClient.move 每個 /arm_move 都加（使用者 11/19 說好）；
+     兩隻手補的不同時 auto 不交給 bridge，照 arm_order 一隻一隻試。ready 錄好的路線用自己的 adjust_cm，不重複。
+  ② 錄好的 ready 路線被拒 `路線第 1/139 點會撞到：lh_thumb_distal↔html_sp3_table`：左手在站姿時拇指就在桌子加厚裡（只動右手時左手也被檢查）。
+     跟 19:11 覆蓋無關（原本的 _path_hits 也沒處理）。**改**：`_path_hits` 先檢查起點，起點就碰到的那對先放行、分開後就不放行，
+     只在路程前 `START_TOUCH_FRAC`（20%）內放行（同 moveit_bridge 的做法）。本機假 MoveIt 回應測過四種情況，.11 還沒實測。
+  ③ `reach_test scan --arm left` 不給測，但右手沒加 --real 也跟著實機動：**bug**，原本固定等 1.5 秒，新節點還沒收到
+     /arm_real_status 就當「關著」。改成等到收到為止（5 秒沒收到 = real_arm_bridge 沒開），測到一半被打開也會停。
+- **reach_test scan 右手實測（11/19 21:01，掌心離桌 10，csv 在 .11 ~/reach_test_out/20261119_210151_scan_right）**：沒有 plan_failed。
+  最遠（前，桌面座標）：右 0 ≥28、10 ≥34、18.9 34、30 34、40 32、50 ≥26（≥ = 最後一點都到了，還沒找到極限）；
+  最近：右 0 → 0、10 → 4、18.9 → 8、30 → 6、40、50 → 0（joint_limit），近端不是單調的，front_min 一個數不夠。
+  21:25 補 0、10、50（--beyond 20）、21:32 --up 18：最遠 0 → 28（up 18 時 ≥34）、10、18.9、30 → 34、40 → 32、50 → 26，兩個高度一樣。
+  → **workspace 已更新**：reach_front_cm 照實測（取小的）、新增 `reach_near_cm` 表（近端 0/4/8/6/0/0，兩列中間取遠的、不內插），
+  front_min_cm 只在沒表時用。左手 22:10 抽測 18.9、40：近 8／0、遠 34／32，跟右手一模一樣 → 兩隻手共用一張表確認。
+- **11/19 22:20 dry_run:=vision,hand real_arm:=false 全流程**：Ready／Stand 照錄好的路線（兩隻手一起、倒著走）OK；
+  b1、b3 右手→tray_1，b2、b4 左手→tray_2 全部成功（放置不再撞）。測試區 auto 右 30 前 32 失敗、卻回報左手「離肩膀太遠」：
+  左手 +1 讓 auto 改成任務管理一隻一隻試，只回報最後一隻的錯。**改**：auto 只試可及範圍表搆得到的手（都搆不到才兩隻都試），
+  都失敗時每隻手的原因都列出來。重測：右手 unreachable（離肩膀 56 > 55）。原因：scan 是開實機跟隨量的，bridge 把模擬目標補高
+  0.17×前（98.9），只看模擬時沒補（91.2）→ **改**：sim_z_comp 從只用在放置改成 ArmClient.move 每一步都加（實機跟隨沒開時），
+  模擬跟開實機時停在一樣的地方；record_ready 不再自己補（move 會補）。
+  重測：第 7 項右手到了；Stand→Ready 照錄好的路線。
+  另：22:27 那次 stand→ready 退回 move：`路線第 2/85 點會撞到 lh_thumb_distal↔桌子`——起點沒碰、第 2 點才碰（站姿拇指離加厚 0.6，
+  差零點幾度）→ **改**：「起點就碰到」放寬成路程前 `START_WINDOW_FRAC`（5%）內碰到的，一樣要在 20% 前分開、分開後再碰就不走。
+- **11/19 22:49 實機 dry_run:=vision,hand：放置三次都 collision**「右手從上方：實機的位置（比模擬低 5.5 cm）會撞到東西」。
+  moveit_bridge 實機跟隨開著時**也檢查實機的位置**（我原本以為只檢查模擬），實機瓶底離桌 1 在桌子上方加厚 3 裡。
+  **改**：放下那一步桌子上方加厚暫時改成 `grasp.place_table_margin_cm`（0.5），放開、抬起後改回（grasp_plan.scene 的 table_top_margin_cm）。
+  22:58 重測：b1 放下 joint_limit（微調時實機位置撞 → 一般流程最後 10 cm 碰關節極限）、b3 collision、b2（左手）成功。
+  推論（bridge 沒列碰到什麼）：實機位置檢查 = 場景物體上移 5.5，手最低處離桌約 6.5，tray（右 25 前 19）離假藥瓶 b1 只有 9.3 cm，
+  手掌真的會壓到 b1、擦到 b3。**改**：tray 移到桌面座標 (±25, 28)（離 b1 17、b3 19 cm）。tray 真正位置還沒定。
+  使用者量：b2 放下時實機掌心離桌 13.5（預期 9.8，高 3.7）→ 前 41（tray 原位前 32）0.17×前 補太多？給手臂負責人（下垂補償）。
+  Ready／Stand 照錄好的路線 OK，測試區右 30 前 32 實機到了。
+- **11/19 23:17 實機 tray (±25, 28)：b1～b4 四個任務都成功**。放下時照馬達讀數掌心比要的高 5.5～6.9（補償 +7、實機只低 1.1～1.5）。
+- **11/19 尺量 4 點（測試區移到座標）**：右 25 前 28 上 11 → 14.3；左同 → 15.8；右 18.9 前 12 上 10 → 12.8；左同 → 14.5。
+  實際下垂（補償 − 多出來的）：右 前41 3.7、前25 1.5；左（扣掉 +1）3.2、0.8。≈ 0.14×(前 − 14.5)，不是單純比例（或掌心點定義差固定值）。
+  左手 +1 之後反而比右手高 1.5～1.7 → **arm_z_offset_cm 左手改回 0**（ready 路線的 adjust_cm +1 沒動）。
+  補償太多 → 實機抓取掌心高約 3 cm、放下瓶子掉約 4 cm；不能從任務管理往下減（bridge 實機位置檢查會撞桌），要手臂端改。
+- **給手臂負責人的第三批（11/19 晚整理，使用者轉）**：①下垂補償補太多（上面 4 點＋放置紀錄）②實機位置會撞時列出碰到哪兩個物體
+  ③/arm_ready、側舉預備姿勢不用做了（任務管理錄好的路線取代）④not_ready 可不做 ⑤之前還沒做的：_obstacle_top 抬太高、
+  起點碰到的物體整段不算、掌心偏移（等我們量）、_sync_scene 不重試、spawner 競爭。
+- **scan 測完停在 ready 舉著 → 右手過熱（11/19）**：scan 改成只舉測的那隻手（test_cmd ready 帶 arm），測完回站姿（任務管理開著就照路線）。
 - **2026-11-19 開會決定：stand／ready pose 兩種姿勢**：stand = 現在手放下的站姿；ready = 雙手舉到桌子上方準備。
   只有第一次跑任務前 stand → ready，任務之間都回 ready。側舉只用在 stand ↔ ready，其他移動照常規劃（moveit_bridge 兩種走法）。
   手臂負責人還沒動 11/18 的清單 → 依這個決定重新整理給他（11/19）。任務管理（主控）要怎麼改使用者等等再說，**先不改**。

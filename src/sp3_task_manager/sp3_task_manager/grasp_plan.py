@@ -95,16 +95,29 @@ def reach_front(lateral_cm, ws):
     return float(np.interp(lateral_cm, xs, ys))
 
 
+def reach_near(lateral_cm, ws):
+    """離中線往這隻手那一側 lateral_cm 時，掌心最近能到桌緣往前多少（cm）。兩列中間取比較遠的那列（保守，不內插：
+    2026-11-19 量到 30 → 6、40 → 0，中間沒量）。沒有 reach_near_cm 表就用 front_min_cm；表外回 None。"""
+    if not ws.get('reach_near_cm'):
+        return float(ws['front_min_cm'])
+    rows = sorted(ws['reach_near_cm'])
+    xs = [r[0] for r in rows]
+    if not xs[0] <= lateral_cm <= xs[-1]:
+        return None
+    i = int(np.searchsorted(xs, lateral_cm))
+    if xs[i] == lateral_cm:
+        return float(rows[i][1])
+    return float(max(rows[i - 1][1], rows[i][1]))
+
+
 def reachable_arms(center, cfg):
     """藥瓶中心（量測座標 cm）在哪幾隻手的可及範圍內（從上方抓：掌心在藥瓶正上方，左右、前後同藥瓶中心）。"""
     ws = cfg['workspace']
     right, front, _ = meas_to_table(center, cfg['table'], cfg['frames'])
-    if front < ws['front_min_cm']:
-        return []
     out = []
     for arm, lateral in (('left', -right), ('right', right)):
-        limit = reach_front(lateral, ws)
-        if limit is not None and front <= limit:
+        far, near = reach_front(lateral, ws), reach_near(lateral, ws)
+        if far is not None and near is not None and near <= front <= far:
             out.append(arm)
     return out
 
@@ -149,10 +162,12 @@ def margins(m):
     return tuple(float(v) for v in (m if isinstance(m, (list, tuple)) else (m, m, m)))
 
 
-def table_obstacle(table, frames):
+def table_obstacle(table, frames, top_margin_cm=None):
     """桌子 → /arm_ik_obstacles 的 box（base_link，m）：桌板從 bottom_cm（沒設 = 地板）到桌面，桌緣往前 depth_cm，
-    加厚 margin_cm（前後、左右、上下，見 margins；貼地時下面不加）。"""
+    加厚 margin_cm（前後、左右、上下，見 margins；貼地時下面不加）。top_margin_cm：上方的加厚改用這個（放置時）。"""
     mf, mr, mu = (v / 100.0 for v in margins(table.get('margin_cm', 0.0)))
+    if top_margin_cm is not None:
+        mu = top_margin_cm / 100.0
     x0 = table['edge_from_base_link_cm'] / 100.0 - mf
     x1 = x0 + table['depth_cm'] / 100.0 + 2 * mf
     y = from_meas((0.0, table['center_right_cm'], 0.0), frames)[1]
@@ -216,15 +231,20 @@ def fixture_obstacles(cfg):
     return out
 
 
-def scene(cfg, others):
-    """要發給 /arm_ik_obstacles 的整份清單：桌子 + 固定物（fixtures）+ others [(類別, 中心 m, 尺寸 m)]（要抓的那瓶不在裡面）。"""
+def scene(cfg, others, table_top_margin_cm=None):
+    """要發給 /arm_ik_obstacles 的整份清單：桌子 + 固定物（fixtures）+ others [(類別, 中心 m, 尺寸 m)]（要抓的那瓶不在裡面）。
+    table_top_margin_cm：桌子上方的加厚暫時改小（放下藥瓶那一步，見 grasp.place_table_margin_cm）。"""
     margin = cfg['obstacles']['margin_cm']
-    return [table_obstacle(cfg['table'], cfg['frames'])] + fixture_obstacles(cfg) + [
+    return [table_obstacle(cfg['table'], cfg['frames'], table_top_margin_cm)] + fixture_obstacles(cfg) + [
         bottle_obstacle(name, xyz, size, margin) for name, xyz, size in others]
 
 
-def place_poses(target, grasp_cfg):
-    """放置點（量測座標，cm，掌心要到的位置）→ (上方預備位置, 放置位置)。從上方往下放。"""
+def place_poses(target, grasp_cfg, size_m, approach):
+    """放置點（量測座標 cm：[前, 右, 放置面的高]）、手上藥瓶的大小（m，(直徑, 直徑, 高)）→ (上方預備位置, 放置位置)（掌心，cm）。
+    放開時瓶底在放置面上方 place_gap_cm：從上方抓的掌心在瓶頂上方 palm_gap_cm，其他方向在瓶身中間。"""
     p = np.array(target['pos_cm'], dtype=float)
-    above = p + np.array([0.0, 0.0, grasp_cfg['lift_cm']])
-    return above, p
+    h_cm = float(size_m[2]) * 100.0
+    palm_above_bottom = h_cm + grasp_cfg['palm_gap_cm'] if approach == 'top' else h_cm / 2
+    place = p + np.array([0.0, 0.0, grasp_cfg.get('place_gap_cm', 1.0) + palm_above_bottom])
+    above = place + np.array([0.0, 0.0, grasp_cfg['lift_cm']])
+    return above, place

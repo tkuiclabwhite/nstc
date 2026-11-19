@@ -2,7 +2,7 @@
 
 位置都用桌面座標 [右, 前, 上]（cm，見 task_manager.yaml 的 table），預設掌心在藥瓶中心高度（上 4 cm）。
 
-    ros2 run sp3_task_manager reach_test scan                 # 實際極限（從上方、掌心離桌 10）：往前推到搆不到為止，跟模型比
+    ros2 run sp3_task_manager reach_test scan                 # 實際極限（從上方、掌心離桌 10）：從 ready pose 出發，往前推到搆不到為止，跟模型比
     ros2 run sp3_task_manager reach_test scan --arm left --up 9   # 矮的藥瓶（b2、b4 約 7.8 高）
     ros2 run sp3_task_manager reach_test scan --dir front --fingers 90 --up 6
     ros2 run sp3_task_manager reach_test obstacles            # 避障：幾種擺法，看結果符不符合預期
@@ -17,7 +17,9 @@ obstacles、point 每一項都會存一張圖（俯視、正視、側視：桌�
 移動途中也會一直記 /joint_states：模擬（MoveIt）的關節角、實機的馬達刻度（實機跟隨開著時），算「整段路徑上手離物體最近」
 在哪個時候、掌心在哪，圖上畫出掌心走過的路線和最靠近那一刻的手臂（模擬 = 綠、實機 = 紫）。
 
-要先開 moveit_bridge（nstc.launch.py 或 armpackage sim.launch.py）。任務管理不要同時跑（它也會發場景）。
+要先開 moveit_bridge（nstc.launch.py 或 armpackage sim.launch.py）。
+scan 從 ready pose 出發（--start stand 改回站姿）：任務管理開著就請它回 ready（照錄好的路線），沒開就用 /arm_move 移過去；
+任務管理開著沒關係（它的場景也是桌子、小桌子），但不要同時送任務。其他模式任務管理不要同時跑。
 實機跟隨開著時手臂會真的動，要加 --real 才會執行；建議先在只有模擬（實機跟隨關著）時跑一次。
 """
 import argparse
@@ -52,6 +54,9 @@ class Tester(Node):
         self.pub_stand = self.create_publisher(Bool, '/arm_stand', 10)
         self.pub_obs = self.create_publisher(String, '/arm_ik_obstacles', LATCHED_QOS)
         self.pub_speed = self.create_publisher(Float64, '/arm_speed_cmd', 10)
+        self.pub_test = self.create_publisher(String, '/manip/test_cmd', 10)     # 請任務管理回 ready（scan）
+        self.test_result = None
+        self.create_subscription(String, '/manip/test_result', self._test_cb, 10)
         self.result = None
         self.real = None
         self.create_subscription(String, '/arm_ik_status', self._status_cb, 10)
@@ -75,6 +80,12 @@ class Tester(Node):
             return
         if not d.get('stage_only') and d.get('cmd'):
             self.result = (time.monotonic(), d)
+
+    def _test_cb(self, msg):
+        try:
+            self.test_result = json.loads(msg.data)
+        except ValueError:
+            pass
 
     def _real_cb(self, msg):
         try:
@@ -138,9 +149,30 @@ class Tester(Node):
     def stand(self):
         return self.send(lambda: self.pub_stand.publish(Bool(data=True)), 'stand')
 
+    def task_cmd(self, cmd):
+        """請任務管理做測試區指令（ready / stand，照錄好的路線）。任務管理沒開回 None，否則回 /manip/test_result。"""
+        if self.pub_test.get_subscription_count() == 0:
+            return None
+        tid = f'reach_test_{time.time():.0f}'
+        self.test_result = None
+        self.pub_test.publish(String(data=json.dumps(dict(cmd, id=tid))))
+        end = time.monotonic() + 120.0
+        while time.monotonic() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            r = self.test_result
+            if r and r.get('id') == tid:
+                self.pub_speed.publish(Float64(data=self.args.speed))   # 任務管理會換成它自己的速度
+                return r
+        return {'ok': False, 'message': '任務管理 120 秒沒回結果'}
+
     def move(self, table_pt, approach, arm, fingers=None):
         """移動並記下途中的 /joint_states（self.path）。"""
-        p = gp.table_to_meas(table_pt, self.cfg['table'], self.cfg['frames'])
+        return self.move_meas(gp.table_to_meas(table_pt, self.cfg['table'], self.cfg['frames']), approach, arm, fingers)
+
+    def move_meas(self, p, approach, arm, fingers=None):
+        """同 move，位置是量測座標（cm）。"""
+        if not self.args.real and (self.real or {}).get('state') == 'follow':     # 測到一半有人打開實機跟隨
+            raise RuntimeError('實機跟隨被打開了，沒加 --real：停止測試，手臂不再動')
         d = {'pos': [round(float(v), 1) for v in p], 'dir': approach, 'fingers': fingers, 'arm': arm}
         self.path, self.recording = [], True
         try:
@@ -211,9 +243,16 @@ class Tester(Node):
         return True
 
     def check_real(self):
-        """實機跟隨開著（手臂會真的動）就要 --real 才繼續。"""
-        self.spin_for(1.5)
-        follow = (self.real or {}).get('state') == 'follow'
+        """實機跟隨開著（手臂會真的動）就要 --real 才繼續。
+        等到收到 /arm_real_status 才判斷（每秒一筆）：原本固定等 1.5 秒，新節點連上別的節點要一點時間，
+        常常還沒收到就當成「關著」，實機跟隨開著也照樣動（2026-11-19 使用者：沒加 --real 也跟著動）。"""
+        end = time.monotonic() + 5.0
+        while self.real is None and time.monotonic() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        if self.real is None:
+            print('實機跟隨：5 秒沒收到 /arm_real_status（real_arm_bridge 沒開）＝只動模擬')
+            return True
+        follow = self.real.get('state') == 'follow'
         print(f'實機跟隨：{"開著（手臂會真的動）" if follow else "關著（只動模擬）"}')
         if follow and not self.args.real:
             print('實機跟隨開著，要真的動手臂請加 --real；只想測模擬就先關掉實機跟隨。')
@@ -243,37 +282,139 @@ def model_front(cfg, arm, right, up):
     return best
 
 
-def run_scan(t, cfg, args):
-    """每個左右位置，從桌緣往前每 step cm 試一次，記下最遠成功的位置，跟模型比。"""
-    t.scene(table_with_scene(cfg, []))
-    side = 1.0 if args.arm == 'right' else -1.0        # 右手測右半邊，左手測左半邊（鏡像）
-    rights = [side * r for r in args.rights]
-    print(f'\n== 實際極限（{args.arm} 手、掌心方向 {args.dir}、手指 {args.fingers}、掌心離桌 {args.up:g} cm）')
-    print(f'{"右":>7s} {"模型最遠前":>9s} {"實際最遠前":>9s}  最後一次失敗')
-    rows = []
-    for r in rights:
+IK_FAIL = ('unreachable', 'joint_limit')       # 這隻手根本到不了（姿勢不存在），跟「到得了但找不到路」分開
+MARK = {'ok': '✓', 'ik': '✗', 'collision': 'C', 'plan': 'P', 'other': '?'}
+MARK_TEXT = '✓ 到了、✗ 到不了（IK／關節極限）、C 目標會撞到、P 到得了但找不到路（重試過）、? 其他'
+
+
+def kind(res):
+    r = res.get('reason')
+    if res.get('ok'):
+        return 'ok'
+    if r in IK_FAIL:
+        return 'ik'
+    if r == 'collision':
+        return 'collision'
+    if r == 'plan_failed':
+        return 'plan'
+    return 'other'
+
+
+def scan_start(t, cfg, args):
+    """scan 開始前：測的那隻手到 ready pose（任務管理開著就請它照錄好的路線走；另一隻手留在原地，
+    2026-11-19 右手舉太久過熱，左手要能單獨測），回傳這隻手的 ready（量測座標 cm）。
+    --start stand：回站姿、回傳 None（舊的做法：從站姿出發，MoveIt 隨機規劃，常常 plan_failed）。"""
+    if args.start == 'stand':
         t.stand()
-        model = model_front(cfg, args.arm, r, args.up)
-        last_ok, last_fail, reasons = None, None, {}
+        return None
+    _, approach, pos = gp.ready_targets(cfg)
+    ready = (np.asarray(pos[args.arm], float), approach)
+    r = t.task_cmd({'cmd': 'ready', 'arm': args.arm})
+    if r is None:
+        print('任務管理沒開：用 /arm_move 把這隻手移到 ready（MoveIt 一般規劃）')
+        res = back_to_ready(t, ready, args)
+        if not res.get('ok'):
+            raise RuntimeError(f'到不了 ready：{short(res)}｜開任務管理按網頁 Ready pose 再跑，或加 --start stand')
+    else:
+        print(f'任務管理回 ready：{"OK" if r.get("ok") else "失敗"} {r.get("message", "")}')
+        if not r.get('ok'):
+            raise RuntimeError('任務管理回 ready 失敗，停止測試')
+    return ready
+
+
+def scan_end(t):
+    """測完回站姿：手舉著不動馬達會過熱（2026-11-19 測完停在 ready 放太久，右手過熱）。
+    任務管理開著就請它照錄好的路線倒過來走，沒開就交給 moveit_bridge。"""
+    r = t.task_cmd({'cmd': 'stand'})
+    if r is None:
+        res = t.stand()
+        print(f'\n測完回站姿：{short(res)}')
+    else:
+        print(f'\n測完回站姿（任務管理）：{"OK" if r.get("ok") else "失敗"} {r.get("message", "")}')
+
+
+def back_to_ready(t, ready, args):
+    """這隻手回 ready（一般規劃，手已經在桌子上方，通常一次就好）；plan_failed 最多試 args.retry 次。"""
+    for _ in range(args.retry + 1):
+        res = t.move_meas(ready[0], ready[1], args.arm)
+        if res.get('ok') or res.get('reason') != 'plan_failed':
+            return res
+    return res
+
+
+def try_point(t, pt, args, ready):
+    """試一點；plan_failed（到得了、這次沒找到路）就先回 ready 再試，最多 args.retry 次。回傳 (結果, 重試次數)。"""
+    for k in range(args.retry + 1):
+        res = t.move(pt, args.dir, args.arm, args.fingers)
+        if res.get('ok') or res.get('reason') != 'plan_failed' or k == args.retry:
+            return res, k
+        if ready is not None:
+            back_to_ready(t, ready, args)
+    return res, k
+
+
+def run_scan(t, cfg, args):
+    """每個左右位置，從桌緣往前每 step cm 試一次；分開記「到了／IK 到不了／會撞／找不到路」，跟模型比，
+    最後印出可以貼進 task_manager.yaml 的 workspace 表。每一點也存成 csv。"""
+    t.scene(table_with_scene(cfg, []))
+    ready = scan_start(t, cfg, args)
+    side = 1.0 if args.arm == 'right' else -1.0        # 右手測右半邊，左手測左半邊（鏡像）
+    print(f'\n== 實際極限（{args.arm} 手、掌心方向 {args.dir}、手指 {args.fingers}、掌心離桌 {args.up:g} cm、'
+          f'從 {"ready" if ready is not None else "站姿"} 出發、plan_failed 重試 {args.retry} 次）')
+    print(f'   {MARK_TEXT}')
+    d = out_dir(args, 'scan')
+    csv = open(os.path.join(d, 'scan.csv'), 'w', encoding='utf-8')
+    csv.write('right_cm,front_cm,up_cm,ok,reason,retries,note\n')
+    rows = []
+    for r in args.rights:
+        rr = side * r
+        if ready is not None:
+            back_to_ready(t, ready, args)
+        else:
+            t.stand()
+        model = model_front(cfg, args.arm, rr, args.up)
         stop = (model if model is not None else 0.0) + args.beyond
+        marks, res_by = [], {}
         for f in np.arange(0.0, stop + 1e-6, args.step):
-            res = t.move((r, float(f), args.up), args.dir, args.arm, args.fingers)
-            if res.get('ok'):
-                last_ok = float(f)
-            else:
-                last_fail = (float(f), res)
-                reasons.setdefault(res.get('reason'), []).append(f'{f:g}')
-        fail_txt = f'前 {last_fail[0]:g}：{short(last_fail[1])}' if last_fail else '—'
-        print(f'{r:7.1f} {model if model is not None else "搆不到":>9} '
-              f'{last_ok if last_ok is not None else "都到不了":>9}  {fail_txt}')
-        for why, fs in reasons.items():
-            print(f'{"":19s}  {why}：前 {"、".join(fs)}')
-        rows.append((r, model, last_ok))
-    t.stand()
+            f = float(f)
+            res, k = try_point(t, (rr, f, args.up), args, ready)
+            res_by[f] = res
+            marks.append(f'{f:g}{MARK[kind(res)]}{"+" * k if res.get("ok") else ""}')
+            note = (res.get('note') or '').split('\n')[0].replace(',', '，')
+            csv.write(f'{rr:g},{f:g},{args.up:g},{int(bool(res.get("ok")))},{res.get("reason") or ""},{k},{note}\n')
+            csv.flush()
+        ok = [f for f, x in res_by.items() if kind(x) == 'ok']
+        reach = [f for f, x in res_by.items() if kind(x) != 'ik']   # IK 解得到（到了、會撞、找不到路）
+        rows.append((r, model, min(ok) if ok else None, max(ok) if ok else None, max(reach) if reach else None))
+        print(f'\n右 {r:g}（模型最遠前 {model if model is not None else "搆不到"}）：{" ".join(marks)}')
+        if ok and max(ok) >= max(res_by):
+            print(f'   ⚠ 試到最後一點（前 {max(res_by):g}）都還到得了：極限更遠，加大 --beyond 再測這一列')
+        for f, x in res_by.items():
+            if kind(x) in ('collision', 'plan', 'other'):
+                print(f'   前 {f:g}：{short(x)}')
+    scan_end(t)
     t.scene([])
-    diffs = [ok - m for _, m, ok in rows if m is not None and ok is not None]
+    csv.close()
+
+    print(f'\n{"右":>6s} {"模型最遠":>8s} {"最近到了":>8s} {"最遠到了":>8s} {"IK 最遠":>8s}  （前，cm；IK 最遠 = 姿勢存在，含會撞、找不到路）')
+    for r, m, lo, hi, ik in rows:
+        fmt = lambda v: f'{v:8g}' if v is not None else f'{"—":>8s}'   # noqa: E731
+        print(f'{r:6g} {fmt(m)} {fmt(lo)} {fmt(hi)} {fmt(ik)}')
+    diffs = [hi - m for _, m, _, hi, _ in rows if m is not None and hi is not None]
     if diffs:
         print(f'\n實際 − 模型：平均 {np.mean(diffs):+.1f} cm（正 = 實際比模型遠，模型偏保守；負 = 模型太寬）')
+    got = [(r, hi) for r, _, _, hi, _ in rows if hi is not None]
+    if got:
+        print(f'\n可以貼進 task_manager.yaml 的 workspace（{args.arm} 手、掌心離桌 {args.up:g}、{args.dir}；兩隻手共用一張表，'
+              '左右手都量過的話取比較小的）：')
+        print('  reach_front_cm:')
+        for r, hi in got:
+            print(f'    - [{r:.1f}, {hi:.1f}]')
+        print('  reach_near_cm:      # 各左右位置「最近到了」（中間有沒到的點要自己看上面的明細）')
+        for r, _, lo, _, _ in rows:
+            if lo is not None:
+                print(f'    - [{r:.1f}, {lo:.1f}]')
+    print(f'\n每一點的結果：{os.path.join(d, "scan.csv")}')
 
 
 # ----------------------------------------------------------------------
@@ -634,6 +775,9 @@ def main():
                     help='scan 的左右位置（右手往右、左手往左，cm）')
     ap.add_argument('--step', type=float, default=2.0, help='scan 往前每次多少 cm')
     ap.add_argument('--beyond', type=float, default=8.0, help='scan 試到模型極限再往前多少 cm')
+    ap.add_argument('--start', choices=['ready', 'stand'], default='ready',
+                    help='scan 從哪裡出發：ready（預設，任務管理開著就照錄好的路線）/ stand（舊做法）')
+    ap.add_argument('--retry', type=int, default=2, help='scan：plan_failed 先回 ready 再重試幾次')
     ap.add_argument('--front', type=float, default=12.0, help='obstacles 的目標離桌緣多遠（cm）')
     ap.add_argument('--speed', type=float, default=30.0, help='/arm_speed_cmd（Dynamixel 單位）')
     ap.add_argument('--timeout', type=float, default=30.0, help='每個指令最多等幾秒')
