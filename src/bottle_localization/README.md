@@ -23,7 +23,7 @@
 |---|---|
 | `bottle_localization/geometry.py` | 幾何計算，不依賴 ROS（內參換算、步驟 1–7、平滑、設定檔檢查） |
 | `bottle_localization/bottle_localizer.py` | ROS 節點：訂閱、時間配對、TF 查詢、呼叫 `geometry.py`、發布；執行中可改桌高 |
-| `bottle_localization/camera_tf_publisher.py` | ROS 節點：發相機外參的 TF（`zed_camera_link → base_link`），執行中可改外參 |
+| `bottle_localization/camera_tf_publisher.py` | ROS 節點：發固定外參的 TF（`base_link → zed_camera_link`），`camera_tf:=static` 時才用；執行中可改外參 |
 | `bottle_localization/bottle_tuner.py` | 終端機介面：執行中調桌高與外參、存回設定檔 |
 | `bottle_localization/bottle_viewer.py` | 終端機即時顯示輸出的座標 |
 | `bottle_localization/rviz_relay.py` | 把 TF 與 marker 轉到桌機的 RViz |
@@ -31,7 +31,8 @@
 | `config/bottle_dims.yaml` | 藥罐尺寸（公尺） |
 | `config/camera_extrinsics.yaml` | 相機外參 `base_link → zed_camera_link` |
 | `config/robot_reference.yaml` | `base_link` 名稱與量測基準點（換手臂時改這個檔） |
-| `launch/bottle_localization.launch.py` | 只啟動 `bottle_localizer` 與 `camera_tf_publisher` |
+| `launch/bottle_localization.launch.py` | 啟動 `bottle_localizer` 與相機外參的 TF（預設 head_tf 的動態 TF，見「TF」一節） |
+| `launch/vision.launch.py` | 辨識一次開：YOLO（med_detect `bottle_detect_v2`）＋ 上面那個 launch；監控網頁 `web/VisionInterface.html` |
 | `tools/` | 校正與實測工具（不會被安裝，直接用 python3 執行，見「準確度校正流程」） |
 | `test/` | pytest：單元測試、合成場景、工具與設定檔的檢查 |
 
@@ -46,7 +47,7 @@ ros2 pkg prefix vision_msgs || sudo apt install ros-humble-vision-msgs
 source /opt/ros/humble/setup.bash
 source ~/ros2_adult/install/setup.bash      # 一定要先 source，原因見下方
 cd ~/nstc
-colcon build --symlink-install --packages-select bottle_localization
+colcon build --symlink-install --packages-select head_tf bottle_localization   # 預設的動態 TF 在 head_tf
 source install/setup.bash
 ```
 
@@ -70,7 +71,13 @@ ros2 run med_detect bottle_detect_v2
 ros2 launch bottle_localization bottle_localization.launch.py
 ```
 
+一次開（YOLO + 本套件 + 動態 TF，nstc.launch.py 要先開）：`ros2 launch bottle_localization vision.launch.py`
+（`yolo:=false` 不開 YOLO、`yolo_engine:=` 換模型，其他參數同下）。監控網頁是導覽列的 Vision（`web/VisionInterface.html`）。
+
 四個設定檔都可以用 launch 參數換掉：`params_file:=`、`dims_file:=`、`extrinsics_file:=`、`reference_file:=`。
+
+相機外參的 TF 預設依頭部馬達刻度即時計算（`camera_tf:=head`，要 driver_node 在發 `/joint_states`）；
+頭部馬達沒開時用 `camera_tf:=static`（固定外參，頭轉了就不準）。見「TF」一節。
 
 ### 即時查看輸出的座標
 
@@ -120,6 +127,7 @@ ros2 run bottle_localization bottle_tuner      # 另開一個終端機（SSH 也
 - 只有桌高和外參能在執行中改，其他參數（`ros2 param set` 也一樣）會被拒絕，請改設定檔後重新 launch。
 - TUI 需要鍵盤輸入，launch 底下的程式收不到，所以不包在 launch 裡。
 - launch 時用 `params_file:=`／`extrinsics_file:=` 換過檔案的話，`bottle_tuner` 也要用 `--params-file`／`--extrinsics-file` 指定同一個。
+- 動態 TF（`camera_tf:=head`，預設）時，外參是「頭在基準刻度時」的值：**調外參前先把頭轉回基準刻度**（`head_tf/config/neck_head.yaml` 的 `reference_ticks`，目前 28 = 2047、29 = 1708、30 = 2024），否則調出來的值不對。
 
 ### 在桌機用 RViz 看
 
@@ -296,29 +304,32 @@ z_table = (table_height_cm − reference_height_cm) / 100 + reference_point.z
 
 ## TF
 
-ZED wrapper 預設會發布 `map → odom → zed_camera_link`（positional tracking 的 `publish_tf`，
-`camera.launch.py` 沒有關掉），`zed_camera_link → zed_camera_center → zed_left_camera_frame →
-zed_left_camera_optical_frame` 則由 ZED 的 URDF 靜態發布。
-
-`zed_camera_link` 已經有 parent（`odom`），不能再發 `base_link → zed_camera_link`。
-所以 `camera_tf_publisher` 把量到的 `base_link → zed_camera_link` **反過來**，發 `zed_camera_link → base_link`
-（`/tf_static`；執行中外參改了會重新發布）：
-
 ```
-map → odom → zed_camera_link ─┬→ zed_camera_center → zed_left_camera_frame → zed_left_camera_optical_frame
-                              └→ base_link            （本套件，static）
+world → base_link ─→ zed_camera_link → zed_camera_center → zed_left_camera_frame → zed_left_camera_optical_frame
+（MoveIt）           （本套件 launch：head_tf 動態 TF 或固定外參）    （ZED 的 URDF，static）
 ```
 
-`base_link ↔ zed_left_camera_optical_frame` 的查詢只經過 static transform，結果和直接發
-`base_link → zed_camera_link` 完全相同，也不受 ZED 里程計漂移影響。
+- `world → base_link` 由手臂的 MoveIt（armpackage `demo.launch.py` 的 static_virtual_joint_tfs）發。
+- `base_link → zed_camera_link` 由本套件的 launch 發，`camera_tf` 選哪一種（兩種節點名稱都是 `bottle_localization_camera_tf`，
+  `bottle_tuner` 都可以用）：
+  - `head`（預設）：head_tf 的 `neck_tf_publisher` 依 `/joint_states` 的 28/29/30 號刻度即時算（`/tf`，時間戳記用 `/joint_states` 的）。
+    `camera_extrinsics.yaml` 是頭在基準刻度時的外參，頭在基準刻度時結果和固定外參完全一樣。
+    超出允許範圍、沒有某顆馬達的刻度、`/joint_states` 停了，就**不發 TF**，`bottle_localizer` 查不到 TF 會跳過那幾幀，
+    不會發出錯的座標。狀態看 `ros2 topic echo /head_tf/status`（可不可用、原因、刻度、頭有沒有在動）。
+    模型與驗證見 `head_tf/README.md`。
+  - `static`：`camera_tf_publisher` 發固定外參（`/tf_static`，執行中外參改了會重新發布）。頭部馬達沒開時用，頭轉了就不準。
+- `bottle_localizer` 用影像的 stamp 查 `base_link ↔ zed_left_camera_optical_frame`，動態 TF 不用改節點。
+  頭在轉的時候馬達回授和影像的時間對不太準，要準的話等頭停下來（`/head_tf/status` 的 `moving` 是 false）再用。
 
-日後改用頭部馬達做動態 TF（`base_link → 頸部 → 頭 → zed_camera_link`）時，必須讓 ZED 不再發
-`odom → zed_camera_link`（ZED launch 加 `publish_tf:=false`；策略 API 用的是 `/zed/zed_node/odom`
-topic，不是 TF，不受影響），並移除本 launch 的 `camera_tf_publisher`。節點本身已經用影像 stamp 查 TF，不用改。
+**ZED 不能發 `odom → zed_camera_link`**：`nstc.launch.py` 的 ZED 設了 `publish_tf: false`、`publish_map_tf: false`
+（ZED 的 odom topic 照發，只是不進 TF）。否則 `zed_camera_link` 會有兩個 parent。
 
-頭部馬達的回授（給日後的動態 TF）：`motor_control/driver_node` 以 50 Hz 發 `/joint_states`，
-pan 是 `name = "28"`、tilt 是 `"29"`，`position` 是 Dynamixel 原始刻度（一圈 4096，約 0.088°/格），
-不是弧度；策略 API 以 2048 為中心，但 2048 是否等於正前方／水平、正負方向，需要實測。
+歷史：2026-11-20 以前 ZED 有發 `map → odom → zed_camera_link`，所以 `camera_tf_publisher` 把外參反過來發
+`zed_camera_link → base_link`。換到新平台後 MoveIt 也發 `world → base_link`，`base_link` 變成兩個 parent
+（2026-11-20 在 .11 上確認：`world` 和相機變成兩棵沒連起來的樹，哪個節點查得到看訊息先後），所以改成現在這樣。
+
+頭部馬達的回授：`motor_control/driver_node` 以 50 Hz 發 `/joint_states`，`name` 是馬達 ID（`"28"` 轉頭、`"29"` 低頭、`"30"` 歪頭），
+`position` 是 Dynamixel 原始刻度（一圈 4096，約 0.088°/格），不是弧度。刻度和角度的對應見 `head_tf/config/neck_head.yaml`。
 
 ---
 
@@ -492,7 +503,8 @@ ros2 topic echo --once /zed/zed_node/left/camera_info        # 960x600、K、fra
 ros2 topic echo --once /zed/zed_node/depth/depth_registered --no-arr   # 960x600、32FC1
 ros2 topic hz /zed/zed_node/depth/depth_registered           # 應接近 30
 ros2 topic echo /Zoom_In_Topic                               # 有沒有人發、值多少
-ros2 run tf2_tools view_frames                               # 應看到 zed_camera_link → base_link
+ros2 run tf2_ros tf2_echo world zed_left_camera_optical_frame   # 要查得到（world → base_link → zed_camera_link 一條路）
+ros2 topic echo --once /head_tf/status                       # 動態 TF：valid 是 true
 ros2 topic hz /med_detect/bottles
 ros2 topic hz /bottle_detections_3d                          # 應接近 YOLO 的頻率
 ```

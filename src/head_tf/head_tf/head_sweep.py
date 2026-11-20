@@ -38,6 +38,7 @@ from sensor_msgs.msg import CameraInfo, Image, Imu, JointState
 from std_msgs.msg import String
 
 from head_tf import neck_model
+from head_tf.neck_model import default_config
 from head_tf import sweep_core as core
 from head_tf import sweep_runner as runner
 
@@ -221,18 +222,6 @@ class SweepNode(Node):
             size = camera[1]
         return core.Snapshot(depth_frames=frames, k=camera[0], size=size, frame_id=camera[2],
                              color=bgr, joints=joints, roll=roll, imu=imu, detections=dets)
-
-
-def default_config():
-    """neck_head.yaml：先找安裝的 share，找不到用原始碼旁邊的。"""
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        path = Path(get_package_share_directory('head_tf')) / 'config' / 'neck_head.yaml'
-        if path.exists():
-            return str(path)
-    except Exception:
-        pass
-    return str(Path(__file__).resolve().parents[1] / 'config' / 'neck_head.yaml')
 
 
 def parse_args(argv):

@@ -13,12 +13,15 @@
 - M：相機（zed_camera_link，ZED 底部螺絲孔）固定在 head_Link 上的位置，用 camera_extrinsics.yaml
   （在基準刻度校正好的外參 T_calib）反推。所以在基準刻度時，結果和 camera_extrinsics.yaml 完全一樣；
   頭轉到別的角度，才用 URDF 算相對的移動。相機實際裝得和 URDF 設計值不一樣也沒關係，M 會吸收。
+- neck_tilt_deg（量測修正，可省略）：實際的轉頭軸相對桌面歪了多少，套在連桿第一節（neck_base）之後。
+  URDF 的數字不動。
 - 結果主要看「離基準刻度轉了多少」和正負號，零點（zero_tick）的影響：
   - 歪頭、低頭：歪頭固定在基準時完全不影響。
   - 轉頭：低頭軸跟著轉頭轉，轉頭零點差 1°，低頭軸方向就差 1°。低頭離基準 Δ 時，相機角度約差 Δ × 1°（弧度），
     允許範圍的角落（低頭差 9°）約 0.16°、位置約 1 mm。
 """
 import math
+import os
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -99,6 +102,10 @@ class NeckModel:
             if not lo <= self.reference_ticks[mid] <= hi:
                 raise ValueError(f'{mid} 號馬達的基準刻度 {self.reference_ticks[mid]:.0f} 不在允許範圍 {lo:.0f}～{hi:.0f}')
         self.design_center = np.asarray(config.get('camera_center_in_head', [0, 0, 0]), dtype=float)
+        tilt = config.get('neck_tilt_deg') or {}
+        self.neck_tilt_deg = (float(tilt.get('roll', 0.0)), float(tilt.get('pitch', 0.0)))
+        self.tilt_R = rpy_matrix(math.radians(self.neck_tilt_deg[0]), math.radians(self.neck_tilt_deg[1]), 0.0)
+        self.margin = float(config.get('range_margin_ticks', 0))
         T_calib = transform(np.asarray(R0, dtype=float), np.asarray(t0, dtype=float))
         self.mount = invert(self.head_transform(self.reference_ticks)) @ T_calib
 
@@ -126,8 +133,10 @@ class NeckModel:
         """head_Link 在 base_link 的 4x4。"""
         angles = self.joint_angles(ticks)
         T = np.eye(4)
-        for joint in self.chain:
+        for i, joint in enumerate(self.chain):
             T = T @ transform(rpy_matrix(*joint['rpy']), joint['xyz'])
+            if i == 0:
+                T = T @ transform(self.tilt_R, np.zeros(3))
             if joint['type'] != 'fixed':
                 T = T @ transform(axis_angle_matrix(joint['axis'], angles[joint['name']]), np.zeros(3))
         return T
@@ -143,14 +152,14 @@ class NeckModel:
         return R @ R_BODY_FROM_OPT, t + R @ LINK_TO_LEFT_OPTICAL
 
     def check(self, ticks):
-        """回 (可以用, 原因列表)。超出允許範圍或 URDF 關節極限都算不能用。"""
+        """回 (可以用, 原因列表)。超出允許範圍（兩端各放寬 range_margin_ticks）或 URDF 關節極限都算不能用。"""
         reasons = []
         for mid in self.motor_ids:
             if mid not in ticks:
                 reasons.append(f'沒有 {mid} 號馬達的刻度')
                 continue
             lo, hi = self.allowed_ticks[mid]
-            if not lo <= float(ticks[mid]) <= hi:
+            if not lo - self.margin <= float(ticks[mid]) <= hi + self.margin:
                 reasons.append(f'{mid} 號馬達刻度 {float(ticks[mid]):.0f} 超出允許範圍 {lo:.0f}～{hi:.0f}')
         if not reasons:
             for joint in self.chain:
@@ -170,6 +179,18 @@ class NeckModel:
         a = 0.0129     # ZED X Mini 前玻璃在螺絲孔前方的距離（zed_stl_front.py）
         center = t + R @ (LINK_TO_CENTER + np.array([a, 0.0, 0.0]))
         return center - self.design_center, [math.degrees(v) for v in matrix_rpy(R)]
+
+
+def default_config():
+    """neck_head.yaml：先找安裝的 share，找不到用原始碼旁邊的。"""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        path = os.path.join(get_package_share_directory('head_tf'), 'config', 'neck_head.yaml')
+        if os.path.exists(path):
+            return path
+    except Exception:
+        pass
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'neck_head.yaml')
 
 
 def load_config(path):
@@ -213,6 +234,9 @@ def describe(model):
     ang = model.joint_angles(ref)
     lines.append('基準刻度：' + '、'.join(f'{mid} 號 {ref[mid]:.0f}' for mid in model.motor_ids)
                  + '（' + '、'.join(f'{k} {math.degrees(v):+.2f}°' for k, v in ang.items()) + '）')
+    r, p = model.neck_tilt_deg
+    if r or p:
+        lines.append(f'轉頭軸傾斜修正：roll {r:+.2f}°、pitch {p:+.2f}°（neck_tilt_deg）')
     d, rpy = model.mount_vs_design()
     lines.append(f'相機裝在頭上的位置和 URDF 設計值差：前 {d[0]*100:+.1f}、左 {d[1]*100:+.1f}、上 {d[2]*100:+.1f} cm；'
                  f'角度 roll {rpy[0]:+.2f}°、pitch {rpy[1]:+.2f}°、yaw {rpy[2]:+.2f}°')

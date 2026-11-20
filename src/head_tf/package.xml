@@ -3,16 +3,20 @@
 <package format="3">
   <name>head_tf</name>
   <version>0.0.0</version>
-  <description>由頭部馬達刻度（28 號 pan、29 號 tilt）計算相機外參；目前只有校正資料收集工具 head_sweep</description>
+  <description>由頭部馬達刻度（28 轉頭、29 低頭、30 歪頭）計算相機外參：動態 TF 節點 neck_tf_publisher、校正資料收集工具 head_sweep</description>
   <maintainer email="iclab@todo.todo">iclab</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>nstc_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

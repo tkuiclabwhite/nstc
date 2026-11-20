@@ -1,7 +1,7 @@
 # head_tf：由頭部馬達刻度計算相機外參
 
 `bottle_localization/config/camera_extrinsics.yaml` 是頭在某一組刻度時校正的，頭一轉外參就不對了。
-這個套件的目標：讀頭部馬達刻度，算出當下的相機外參，發布成動態 TF。
+這個套件讀頭部馬達刻度，算出當下的相機外參，發布成動態 TF（`neck_tf_publisher`，由 bottle_localization 的 launch 開）。
 
 2026-11-16 起 ZED 裝在**新平台**（seven_axis_arm_head_urdf，三軸脖子：28 轉頭、29 低頭、30 歪頭），
 見下一節。之後的「為什麼要用刻度算」以下是**舊機器人**（兩軸頭，28 pan、29 tilt）時寫的，
@@ -13,8 +13,8 @@
 |---|---|---|
 | 1 | 確認刻度和 URDF 角度的對應（零點、正負號） | **完成**（2026-11-18，`config/neck_head.yaml`） |
 | 2 | 頭部模型：URDF 連桿 + 由外參反推的相機固定位置 | **完成**（`head_tf/neck_model.py`） |
-| 3 | 改 head_sweep 支援三軸、驗證工具 `check_neck_model.py` | 工具完成，**等機器人上收資料** |
-| 4 | 動態 TF 節點，接到 bottle_localization | 還沒開始（改 launch 前會先列出要改什麼） |
+| 3 | 改 head_sweep 支援三軸、驗證工具 `check_neck_model.py`、收資料驗證 | **完成**（neck_01 擬合傾斜修正、neck_02 獨立驗證，最大誤差 1 cm 內） |
+| 4 | 動態 TF 節點 `neck_tf_publisher`，接到 bottle_localization | 程式完成、桌機測過（2026-11-20），**等 .11 上實測** |
 
 ## 新平台（三軸脖子）
 
@@ -32,18 +32,106 @@ M = FK(基準刻度)⁻¹ · camera_extrinsics.yaml
   頭轉了才用 URDF 算相對的移動。相機實際裝得和 URDF 設計值不同也沒關係。
 - **重新校正外參時，要同時把 neck_head.yaml 的 `reference_ticks` 改成校正當時的刻度。**
 - 零點的影響：歪頭固定時，歪頭、低頭的零點完全不影響；轉頭零點差 1°，允許範圍角落約差 0.16°、1 mm。
+- **轉頭軸傾斜修正**（`neck_tilt_deg`，2026-11-19 用 neck_01 擬合）：實際的轉頭軸相對桌面往左傾 1.3°、往前傾 0.63°，
+  套在 neck_base 之後，URDF 的數字不動。沒修正時頭往左轉，藥罐會往前偏，IMU pitch 跟著轉頭變 ±0.4°。
+  30 號要轉到 2025（往右歪約 2°）相機才水平，也吻合這個傾斜。
+- **範圍容許值**（`range_margin_ticks: 6`）：判斷可不可用時，允許範圍兩端各放寬 6 格，因為 29 號在最低點會下垂 3～4 格。
+
+驗證結果，藥罐和基準姿勢差（中位數 / 95% / 最大）：
+
+| | neck_01（2026-11-19，擬合用） | neck_02（2026-11-20，獨立驗證） |
+|---|---|---|
+| 固定外參（沒有動態 TF） | 104 / 148 / 154 mm | 114 / 186 / 191 mm |
+| 模型，沒有傾斜修正 | 4.0 / 6.9 / 10.3 mm | 5.8 / 10.1 / 11.7 mm |
+| 模型 + 傾斜修正 | 3.5 / 5.1 / 8.2 mm | 5.3 / 9.4 / 9.4 mm |
+
+- 傾斜修正有獨立確認：只用 neck_02 的 IMU 擬合得到 roll −1.33°、pitch +0.63°（neck_01 是 −1.30°、+0.63°）。
+  neck_02 的 IMU pitch 殘差最大從 0.61° 降到 0.29°。
+- neck_02 的數字比 neck_01 大，主要原因：
+  - **低頭有約 0.4° 的間隙**：開頭和結尾的基準姿勢 29 號只差 1 格，但藥罐仰角、IMU 都差 0.4°。
+    刻度看不到這個間隙，50 cm 外約 4 mm，是現在的精度下限。
+  - neck_02 的藥罐擺得比較開、比較遠（最遠 52 cm、偏離畫面中心 31°），定位算法本身的偏差也比較大。
+- 剩下的規律：往左、往右轉時，藥罐被算得往轉的那一側偏 5～8 mm（像是實際轉的角度比刻度多 2%）。
+  兩份資料各自擬合出的比例不一致（1.5%、2.8%），馬達刻度本身也不太會有比例誤差（可能是連桿尺寸之類的幾何誤差），所以先不修。
+- IMU roll 殘差和低頭角度成正比（neck_03 低到 1496 時 +0.9°）：**是 IMU 在相機裡左右偏了約 1.6°，不是頭部模型的問題**。
+  三份資料各自擬合 IMU 的 yaw 偏差都是 1.56～1.59°，殘差降到 0.07°，和「轉頭零點 +21 格」解釋得一樣好；
+  但轉頭零點會讓藥罐變差，IMU 偏差不影響藥罐，所以不改模型。驗證工具的 IMU roll 殘差會一直有這個趨勢，看的時候扣掉。
+- **neck_03（2026-11-20，低頭 1500～1820、7 個角度 × 轉頭 3 個）**：
+  - b1、b2：中位數 2.0、95% 4.1、最大 5.1 mm，低頭 1496～1544 那段最大也是 5.1 mm（固定外參差 10～19 cm）。**模型到 1500 一樣準**。
+    只用 neck_03 的 IMU 擬合傾斜：−1.33° / +0.60°（含 IMU yaw 偏差），第三次確認傾斜修正。
+  - b4 在低頭時出問題，是 **YOLO 的問題，不是模型**：1550 以下 YOLO 把空桌面、滑鼠墊、鍵盤認成 b4（信心值 0.85～0.89），
+    真的 b4 反而沒認到；認到的 b4 也偏 15～25 mm（同姿勢的 b1、b2 都在 5 mm 內）。往下看越多，藥罐越接近從正上方看，
+    和訓練資料的角度不同，b4 最小、最明顯。驗證工具直接跑會因為 b4 判「需要修正」。
+  - 29 號目標 1500 停在 1496（下垂 4 格），容許值 6 格夠。
+
+neck_01 的桌面擬合區有滑鼠、膠帶、筆，桌面高度殘差不可靠；下次收資料前要清空畫面下方中間的桌面。
 
 | 馬達 | URDF 關節 | 刻度變大 | sign | 基準刻度 | 允許範圍 |
 |---|---|---|---|---|---|
 | 28（HeadPackage id 1） | neckYawJoint | 往左轉 | +1 | 2047 | 1877～2218（±15°） |
-| 29（id 2） | neckPitchJoint | 往上看 | −1 | 1708（低頭 29.9°） | 1594～1820（低頭 40°～20°） |
+| 29（id 2） | neckPitchJoint | 往上看 | −1 | 1708（低頭 29.9°） | 1500～1820（低頭 48°～20°） |
 | 30（id 3） | headRollJoint | 往左歪 | −1 | 2024 | 2014～2034（固定） |
 
 正負號是 2026-11-18 用眼睛看的；29 號用 table_plane 量到的相機 pitch 30.4° 對過（換算 29.9°）。
 範圍是 2026-11-18 和使用者定的：抓取時頭不動，這是為了之後的場景先做。
+2026-11-20 低頭下限從 1594 改成 1500（48°）：1594 時畫面下緣離桌緣還有約 9 cm，看不到桌子前段；1500 時約 2 cm（模型算的），機構實測可以到。
+neck_03（2026-11-20，低頭收到 1500）驗證過：模型到 1500 一樣準（見下面的驗證結果）。
 
 檢查設定：`python3 -m head_tf.neck_model`（在 head_tf 資料夾）印出基準姿勢、相機裝在頭上的位置和 URDF 設計值的差、
 允許範圍四個角的相機姿態。2026-11-18：位置差 3 mm 內、roll −1.86°（30 號零點或相機裝歪，歪頭固定所以不影響）、pitch +0.49°。
+
+### 動態 TF（階段 4，`neck_tf_publisher`）
+
+```
+world → base_link → zed_camera_link → zed_camera_center → 左右眼
+（MoveIt）  ↑ neck_tf_publisher，照 /joint_states 的 28/29/30 號刻度即時更新
+```
+
+平常不用自己開：`ros2 launch bottle_localization bottle_localization.launch.py` 預設（`camera_tf:=head`）就會開它，
+節點名稱是 `bottle_localization_camera_tf`（和固定外參的節點同名，`bottle_tuner` 照常可以調外參）。
+
+- 每收到一筆有位置的 `/joint_states`（driver_node 約 50 Hz）就用 `neck_model` 算一次，發 `/tf`，時間戳記用 `/joint_states` 的。
+  bottle_localizer 用影像的時間戳記查 TF，tf2 會在前後兩筆之間內插。
+- **不可用就不發 TF**：超出允許範圍（兩端放寬 `range_margin_ticks`）、`/joint_states` 只有一部分頭部馬達的刻度、
+  超過 0.5 秒沒收到 28/29/30 號的刻度（driver_node 沒開或頭部馬達沒上電）。
+  MoveIt 也發 `/joint_states`（手臂關節名、弧度），完全沒有頭部馬達的訊息直接略過。bottle_localizer 查不到 TF 會跳過那幾幀，所以不會發出錯的藥罐座標。
+  例外：剛回到範圍內的那一刻，延遲才處理的幾幀會在「離開前」和「回來後」的 TF 之間內插，誤差和頭在轉時差不多（狀態的 `moving` 會是 true）。
+- `/head_tf/status`（std_msgs/String，JSON，5 Hz，可不可用改變時馬上發一筆）：
+
+  | 欄位 | 內容 |
+  |---|---|
+  | `valid` | 現在有沒有在發 TF |
+  | `reasons` | 不可用的原因（中文） |
+  | `ticks` | 28/29/30 號的刻度 |
+  | `moving` | 最近 0.3 秒內有馬達變化超過 3 格。頭在轉時馬達回授和影像時間對不太準，要準的話等它變 false |
+  | `at_reference` | 三顆都在基準刻度 ±3 格內 |
+  | `age_s` | 最後一筆 `/joint_states` 是幾秒前 |
+  | `camera` | 可用時：`zed_camera_link` 在 base_link 的位置（m）和 roll / pitch / yaw（度） |
+  | `reference_ticks`、`allowed_ticks`、`margin_ticks` | neck_head.yaml 的基準刻度、允許範圍、容許值（監控網頁 Vision 畫刻度條用） |
+
+- 外參 x、y、z、roll、pitch、yaw 是「頭在基準刻度時」的值，執行中可以改（`bottle_tuner`、`ros2 param set`），模型立刻重算。
+  **調外參前先把頭轉回基準刻度**，不在基準時節點會警告。
+- ZED 不能發 `odom → zed_camera_link`：`nstc.launch.py` 已經設 `publish_tf: false`、`publish_map_tf: false`。
+- 頭部馬達沒開時用 `camera_tf:=static`（bottle_localization 的固定外參）。
+
+參數（launch 會帶 `base_frame`、`camera_frame`、外參 6 個值；其他用預設就好）：
+`config_file`（空的 = 安裝的 `config/neck_head.yaml`，bottle_localization launch 的 `neck_config:=` 可以換）、
+`joint_topic` `/joint_states`、`status_topic` `/head_tf/status`、`stale_s` 0.5、`still_ticks` 3、`still_s` 0.3、`status_hz` 5。
+
+.11 上實測：
+
+```bash
+# 桌機：同步（head_tf、bottle_localization、nstc.launch.py）
+rsync -av --relative --exclude __pycache__ --exclude .pytest_cache \
+    ./src/head_tf ./src/bottle_localization ./launch/nstc.launch.py iclab@192.168.1.200:~/nstc/    # 在 ~/nstc_ws/nstc 下執行
+# .11：新增了執行檔，要重新建置
+cd ~/nstc && colcon build --symlink-install --packages-select head_tf bottle_localization && source install/setup.bash
+# .11：照平常開 nstc.launch.py、bottle_detect_v2、bottle_localization，然後
+ros2 topic echo --once /head_tf/status                                  # valid: true
+ros2 run tf2_ros tf2_echo world zed_left_camera_optical_frame           # 查得到、不會說兩棵樹
+timeout 3 ros2 topic echo /tf_static --qos-durability transient_local --qos-reliability reliable --full-length | grep -E "frame_id"
+                                                                         # child_frame_id: base_link 只能出現一次（world）
+```
 
 ### 在機器人上收資料
 
@@ -62,7 +150,7 @@ ros2 run head_tf head_sweep neck_01
 scp -r iclab@172.17.121.11:~/head_sweeps/neck_01 ~/nstc_ws/head_sweeps/
 ```
 
-- 預設姿勢從 `neck_head.yaml` 算：轉頭 1877 / 2047 / 2218 × 低頭 1594 / 1651 / 1708 / 1764 / 1820，頭尾加量基準，共 17 個，約 2 分鐘。
+- 預設姿勢從 `neck_head.yaml` 算：轉頭 1877 / 2047 / 2218 × 低頭 1500 / 1604 / 1708 / 1764 / 1820，頭尾加量基準，共 17 個，約 2 分鐘。
   `--pan`、`--tilt`、`--reference` 可以改，但不能超出允許範圍。
 - 開始前 30 號要在 2014～2034，不在就不跑（模型假設歪頭固定）。30 號不轉，只記錄；收集中變了超過 3 格會在結束時警告。
 - 網頁（ImageProcessInterface）開著時 rosbridge 也算 `/Head_Topic` 的發布者，工具會拒絕；確定沒人會動頭就加 `--force`。
@@ -311,6 +399,16 @@ env -u PYTHONPATH ~/nstc_ws/nstc/foundationpose_trial/.venv/bin/python -B -m pyt
   30 號有記錄、動了會警告；sweep_plan 的姿勢和範圍。
 - 用真的 ROS topic 和假機器人（發 28、29、30）跑完 17 個姿勢、頭轉回原位，驗證工具讀得到輸出；30 號不在基準時拒絕執行。
 
+階段 4（2026-11-20）：
+
+- `test/test_neck_tf_core.py`：`/joint_states` 解析（略過 driver_node 速度、電流那兩筆）、四元數、基準刻度時和外參完全一樣
+  （含 repo 裡實際的 camera_extrinsics.yaml）、轉頭 15° / 低頭 10°、超出範圍和容許值、缺馬達、沒收到和停止更新、
+  馬達抖 ±1 格不算在動、外參改了重算。
+- 用 ROS 跑 bottle_localization 的 launch（桌機沒有 colcon，手動做安裝目錄）＋假 driver（50 Hz，劇本：基準 → 轉頭 2218 →
+  2300 超出範圍 → 回基準 → 停止）＋MoveIt 的 `world → base_link`：`world → 左眼` 查得到；轉頭時 TF yaw +15.1°；
+  超出範圍和停止時不再發 TF、狀態寫原因；用參數服務（bottle_tuner 的做法）改 x 立刻生效，非數字、別的參數被拒絕；
+  `camera_tf:=static` 發固定外參、`world → 左眼` 也查得到；`camera_tf` 打錯會報錯。
+
 ## 檔案
 
 | 檔案 | 內容 |
@@ -320,6 +418,8 @@ env -u PYTHONPATH ~/nstc_ws/nstc/foundationpose_trial/.venv/bin/python -B -m pyt
 | `head_tf/head_sweep.py` | ROS 節點與指令列 |
 | `head_tf/head_model.py` | 舊機器人的頭部模型：刻度 -> zed_camera_link 的姿態（純 numpy） |
 | `head_tf/neck_model.py` | 新平台的頭部模型（URDF 三軸脖子）、`sweep_plan()`（head_sweep 的預設姿勢） |
+| `head_tf/neck_tf_core.py` | 動態 TF 的計算部分：解析 `/joint_states`、可不可用、頭有沒有在動、狀態內容（不依賴 ROS） |
+| `head_tf/neck_tf_publisher.py` | 動態 TF 的 ROS 節點（`ros2 run head_tf neck_tf_publisher`，平常由 bottle_localization 的 launch 開） |
 | `tools/check_neck_model.py` | 新平台：用收集的資料驗證頭部模型（桌機，需要 scipy） |
 | `config/neck_head.yaml` | 新平台：URDF 連桿、馬達對應、基準刻度、允許範圍 |
 | `tools/fit_head_model.py` | 擬合頭部模型（桌機，需要 scipy） |

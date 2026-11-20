@@ -25,6 +25,7 @@ window.ROBOT_NAV_MENUS = {
     main: [
         { logo: true },
         { label: 'SP3Task', href: 'SP3TaskInterface.html' },
+        { label: 'Vision', href: 'VisionInterface.html' },     // 藥罐辨識監控（YOLO 畫面、座標、頭部刻度）
         { label: 'Motion', href: 'MotionControlInterface.html' },
         { label: 'ImageProcess', href: 'ImageProcessInterface.html' },
         {

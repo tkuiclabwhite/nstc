@@ -36,7 +36,7 @@ class NeckSim(HeadSim):
         self.ref = (ref[28], ref[29])
         self.roll_tick = float(ref[30] if roll_tick is None else roll_tick)
         self.z_table = Z_TABLE
-        # 相機在桌面上方約 52 cm、往下看 20°～40°：瓶子放在支架前 60～75 cm，每個姿勢都看得到
+        # 相機在桌面上方約 50 cm、往下看 20°～48°：瓶子放在支架前 60～75 cm，每個姿勢都看得到
         self.bottles = {'b1': (0.62, 0.06, 0.041, 0.092),
                         'b2': (0.68, 0.20, 0.025, 0.078),
                         'b3': (0.74, -0.08, 0.022, 0.090)}

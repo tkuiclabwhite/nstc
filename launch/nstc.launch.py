@@ -42,7 +42,12 @@ def generate_launch_description():
     zed_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')),
-        launch_arguments={'camera_model': 'zedxm'}.items(),
+        # publish_tf / publish_map_tf 關掉：不發 odom -> zed_camera_link、map -> odom。
+        # zed_camera_link 由 head_tf 的動態 TF 接在 base_link 底下（world -> base_link -> zed_camera_link），
+        # ZED 再發 odom 的話 zed_camera_link 會有兩個 parent。nstc 沒有東西用 odom/map 的 TF（2026-11-20）。
+        launch_arguments={'camera_model': 'zedxm',
+                          'publish_tf': 'false',
+                          'publish_map_tf': 'false'}.items(),
     )
 
     # 2) 手臂馬達驅動（Dynamixel，原樣沿用 ros2_adult）與非 MoveIt 的手臂控制

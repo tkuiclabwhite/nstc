@@ -344,8 +344,8 @@ def invert_transform(rot, trans):
 def inverse_extrinsics(x, y, z, roll, pitch, yaw):
     """外參 base -> camera（位置 m、rpy 弧度）-> 反轉換 camera -> base 的 (平移, 四元數 xyzw)。
 
-    ZED wrapper 已經發 odom -> zed_camera_link，相機的 frame 不能再有第二個 parent，
-    所以 TF 發的是反過來的 camera -> base（README「TF」一節）。
+    2026-11-20 以前 camera_tf_publisher 用這個發反過來的 camera -> base；現在 TF 改發正方向
+    base -> camera（README「TF」一節），這個函式留著給測試和工具用。
     """
     inv_rot, inv_trans = invert_transform(rpy_to_matrix(roll, pitch, yaw), [x, y, z])
     return inv_trans, matrix_to_quaternion(inv_rot)

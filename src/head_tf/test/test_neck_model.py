@@ -26,7 +26,9 @@ def config():
 
 @pytest.fixture
 def model(config):
-    # 和實際外參差不多的假外參：頭朝前、低頭約 30°
+    # 和實際外參差不多的假外參：頭朝前、低頭約 30°。
+    # 這組測試檢查 URDF 本身的幾何，所以拿掉量測修正（傾斜、範圍容許值），修正另外測
+    config = dict(config, neck_tilt_deg=None, range_margin_ticks=0)
     R0 = rpy_matrix(math.radians(0.3), math.radians(30.4), 0.0)
     return nm.NeckModel(config, R0, [0.094, -0.001, 0.115])
 
@@ -108,7 +110,7 @@ def test_pitch_rotates_about_pitch_axis(model):
 
     _, c0 = model.optical_pose(ticks0)
     p0 = camera_rpy_deg(model, ticks0)[1]
-    for tick in (1594, 1650, 1780, 1820):
+    for tick in (1500, 1594, 1650, 1780, 1820):
         ticks = ref_with(model, m29=tick)
         _, c = model.optical_pose(ticks)
         assert dist(c) == pytest.approx(dist(c0), abs=1e-12)
@@ -149,9 +151,43 @@ def test_check_ranges(model):
     assert not ok and '29 號' in why[0]
 
 
+def test_range_margin(config):
+    """29 號在最低點下垂幾格（neck_01：目標 1594 停在 1590）還算可用，超過容許值（6 格）才不行。"""
+    m = nm.NeckModel(config, np.eye(3), np.zeros(3))
+    assert m.margin == 6
+    ticks = {**m.reference_ticks, 29: 1494}
+    assert m.check(ticks)[0]
+    ticks[29] = 1493
+    ok, why = m.check(ticks)
+    assert not ok and '29 號' in why[0] and '1500～1820' in why[0]
+
+
+def test_neck_tilt(config):
+    """轉頭軸傾斜修正：基準刻度時照樣重現外參；轉頭時轉軸是傾斜的線，相機 pitch 跟著轉頭變（neck_01 IMU 看到的）。"""
+    R0 = rpy_matrix(math.radians(0.3), math.radians(30.4), 0.0)
+    t0 = [0.094, -0.001, 0.115]
+    m = nm.NeckModel(dict(config, neck_tilt_deg={'roll': -1.3, 'pitch': 0.63}), R0, t0)
+    flat = nm.NeckModel(dict(config, neck_tilt_deg=None), R0, t0)
+    assert m.neck_tilt_deg == (-1.3, 0.63) and flat.neck_tilt_deg == (0.0, 0.0)
+    R, t = m.camera_link_pose(m.reference_ticks)
+    assert np.allclose(R, R0, atol=1e-12) and np.allclose(t, t0, atol=1e-12)
+    # 轉頭軸 = head_Link 往上的方向（在 base_link），往左傾（+y）、往前傾（+x）
+    axis = m.head_transform({28: 2048, 29: 2048, 30: 2048})[:3, 2]
+    assert axis[1] == pytest.approx(math.sin(math.radians(1.3)), abs=1e-3)
+    assert axis[0] == pytest.approx(math.sin(math.radians(0.63)), abs=1e-3)
+
+    def pitch(model, tick28):
+        Rc, _ = model.camera_link_pose({**model.reference_ticks, 28: tick28})
+        return math.degrees(matrix_rpy(Rc)[1])
+    # 往左轉 15°：沒有修正時 pitch 不變；有修正時多往下約 0.3～0.4°（和 neck_01 的 IMU 同方向）
+    assert pitch(flat, 2218) == pytest.approx(pitch(flat, 2047), abs=1e-9)
+    assert 0.25 < pitch(m, 2218) - pitch(m, 2047) < 0.45
+    assert -0.45 < pitch(m, 1877) - pitch(m, 2047) < -0.2
+
+
 def test_bad_config_rejected(config):
     bad = copy.deepcopy(config)
-    bad['reference_ticks'][29] = 1500
+    bad['reference_ticks'][29] = 1450
     with pytest.raises(ValueError, match='基準刻度'):
         nm.NeckModel(bad, np.eye(3), np.zeros(3))
     bad = copy.deepcopy(config)

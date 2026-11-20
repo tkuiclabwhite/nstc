@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8" />
+	<link rel="SHORTCUT ICON" href="./picture/icon.png">
+	<title>Vision</title>
+
+	<link rel="stylesheet" type="text/css" href="./css/style.css">
+
+	<script src="./js/config.js"></script>
+	<script src="./js/nav.js"></script>
+	<script src="./js/vision_core.js"></script>
+	<!-- 藥罐辨識的監控畫面（只看，不送任何指令）。直接講 rosbridge 2.0 的 JSON 協定（同 SP3TaskInterface.html），
+	     YOLO 畫面走 web_video_server（8080）。要先開 nstc.launch.py 與 `ros2 launch bottle_localization vision.launch.py`。 -->
+
+	<style type="text/css">
+		body {
+			width: 1520px;
+			overflow: visible;
+			background-image: url(./picture/Gray_Background.jpg);
+			background-size: cover;
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+		}
+		#container {
+			background-color: #333; border: 2px black solid; width: 1440px;
+			margin: 10px auto 30px auto; padding-bottom: 10px; overflow: visible; color: white;
+		}
+		section.wide { float: left; width: 1416px; margin: 10px 8px 0 8px; border: 1px #FFF solid; padding-bottom: 8px; }
+		section.half { float: left; width: 701px; margin: 10px 0 0 8px; border: 1px #FFF solid; padding-bottom: 8px; min-height: 230px; }
+		h2 { font-size: 21px; margin: 6px 0 4px 0; text-align: center; }
+		#connected { color: #00D600; display: none; font-size: 20px; margin: 0; }
+		.dim { color: #bbb; font-size: 13px; }
+		.Button { height: 30px; margin-left: 6px; padding: 0 14px; font-size: 15px; }
+		input[type=number] { width: 60px; height: 26px; font-size: 15px; }
+
+		/* 狀態列 */
+		#lamps { display: flex; justify-content: space-around; padding: 8px 6px; }
+		.lamp { display: flex; align-items: flex-start; width: 272px; }
+		.lamp .dot { flex: none; width: 22px; height: 22px; border-radius: 50%; margin: 2px 8px 0 0; background: #555; border: 2px solid #222; }
+		.lamp .name { font-size: 17px; font-weight: bold; }
+		.lamp .val { font-size: 14px; color: #ddd; min-height: 36px; }
+		.dot.ok { background: #2e7d32; box-shadow: 0 0 8px #4caf50; }
+		.dot.warn { background: #f9a825; box-shadow: 0 0 8px #ffd54f; }
+		.dot.bad { background: #c62828; box-shadow: 0 0 8px #ff5252; }
+		.dot.off { background: #555; }
+
+		/* YOLO 畫面 */
+		#imgwrap { position: relative; width: 680px; height: 425px; margin: 4px auto; background: #111; border: 1px #666 solid; }
+		#yolo { width: 680px; height: 425px; display: block; }
+		#img-msg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; align-items: center;
+		           justify-content: center; text-align: center; font-size: 16px; color: #ccc; background: rgba(0,0,0,0.6); }
+
+		/* 俯視圖 */
+		#topview { display: block; margin: 4px auto; background: #1e1e1e; border: 1px #666 solid; }
+
+		/* 座標表 */
+		table.coords { border-collapse: collapse; margin: 6px auto; }
+		table.coords th { background-color: #000080; border: 1px white solid; padding: 3px 10px; font-weight: normal; }
+		table.coords td { border: 1px #777 solid; padding: 3px 10px; text-align: right; font-family: monospace; font-size: 16px; min-width: 56px; }
+		table.coords td.name { text-align: center; font-family: inherit; font-weight: bold; font-size: 18px; }
+		table.coords tr.stale td { color: #777; }
+		table.coords tr.stale td.name { opacity: 0.5; }
+		td.sep { border-left: 3px #ccc solid !important; }
+
+		/* 頭部刻度條 */
+		.hrow { display: flex; align-items: center; margin: 12px 14px 20px 14px; }
+		.hlabel { width: 120px; font-size: 16px; }
+		.hbar { position: relative; width: 380px; height: 26px; background: #222; border: 1px #777 solid; }
+		.hbar .margin { position: absolute; top: 0; height: 100%; background: #6d5b1d; }
+		.hbar .allowed { position: absolute; top: 0; height: 100%; background: #2e5d32; }
+		.hbar .ref { position: absolute; top: -4px; width: 2px; height: 34px; background: #fff; }
+		.hbar .cur { position: absolute; top: -7px; width: 0; height: 0; border-left: 8px solid transparent;
+		             border-right: 8px solid transparent; border-top: 14px solid #ffeb3b; margin-left: -8px; display: none; }
+		.hbar .lo, .hbar .hi { position: absolute; top: 28px; font-size: 11px; color: #bbb; }
+		.hval { width: 170px; margin-left: 12px; font-family: monospace; font-size: 15px; }
+		.hval.out { color: #ff8a80; font-weight: bold; }
+		.hval.margin { color: #ffd54f; }
+		#head-extra { margin: 14px 14px 0 14px; font-size: 14px; line-height: 1.6; }
+
+		/* 錄製 */
+		#rec-ctrl { text-align: center; margin: 6px; }
+		#rec-state { text-align: center; min-height: 22px; font-size: 15px; }
+		table.rec { border-collapse: collapse; margin: 6px auto; }
+		table.rec th { background-color: #000080; border: 1px white solid; padding: 2px 6px; font-weight: normal; font-size: 13px; }
+		table.rec td { border: 1px #777 solid; padding: 2px 6px; text-align: right; font-family: monospace; font-size: 14px; }
+		table.rec td.name { text-align: center; font-family: inherit; font-weight: bold; }
+	</style>
+</head>
+
+<body>
+	<ul id="mainnav"></ul>
+	<br>
+
+	<div style="padding-left: 20px; height: 30px;">
+		<p id="connected">Connected</p>
+	</div>
+
+	<div id="head" align="center">
+		<h1 align="center" style="color: white; margin: 4px;">Vision Monitor</h1>
+		<table>
+			<tr>
+				<td>
+					<select style="height:25px; margin-right: 5px;" id="addressSelect">
+						<option value="localhost">localhost</option>
+					</select>
+				</td>
+				<td>
+					<button type="button" style="width:110px ;height:25px;" onclick="enterAddress()">Enter Address</button>
+				</td>
+			</tr>
+		</table>
+	</div>
+
+	<div id="container">
+
+		<!-- ================= 1. 狀態列 ================= -->
+		<section class="wide">
+			<div id="lamps">
+				<div class="lamp"><span class="dot" id="d-ros"></span><div><div class="name">rosbridge</div><div class="val" id="v-ros"></div></div></div>
+				<div class="lamp"><span class="dot" id="d-zed"></span><div><div class="name">ZED 相機</div><div class="val" id="v-zed"></div></div></div>
+				<div class="lamp"><span class="dot" id="d-yolo"></span><div><div class="name">YOLO</div><div class="val" id="v-yolo"></div></div></div>
+				<div class="lamp"><span class="dot" id="d-loc"></span><div><div class="name">3D 定位</div><div class="val" id="v-loc"></div></div></div>
+				<div class="lamp"><span class="dot" id="d-tf"></span><div><div class="name">相機外參（動態 TF）</div><div class="val" id="v-tf"></div></div></div>
+			</div>
+		</section>
+
+		<!-- ================= YOLO 畫面 ================= -->
+		<section class="half">
+			<h2>YOLO 畫面 <a id="img-link" class="dim" target="_blank" style="color:#9cf;">（開新分頁）</a></h2>
+			<div id="imgwrap">
+				<img id="yolo" alt="">
+				<div id="img-msg">連線中…</div>
+			</div>
+		</section>
+
+		<!-- ================= 3. 俯視圖 ================= -->
+		<section class="half">
+			<h2>俯視圖（上 = 前方）</h2>
+			<canvas id="topview" width="680" height="425"></canvas>
+			<div class="dim" style="text-align:center;">格線 10 cm（桌面座標）。圓 = 藥罐直徑；虛線 = 超過 1 秒沒看到。三角形 = 相機位置與朝向。</div>
+		</section>
+
+		<!-- ================= 2. 座標表 ================= -->
+		<section class="wide">
+			<h2>藥罐座標</h2>
+			<table class="coords">
+				<thead>
+					<tr><th rowspan="2">類別</th><th colspan="2">信心值</th>
+						<th colspan="3" class="sep">base_link（m）</th>
+						<th colspan="3" class="sep">桌面（cm）</th>
+						<th colspan="2" class="sep">抖動（最近 3 秒，mm）</th>
+						<th rowspan="2" class="sep">更新</th></tr>
+					<tr><th>YOLO</th><th>定位</th>
+						<th class="sep">x 前</th><th>y 左</th><th>z 上</th>
+						<th class="sep">右</th><th>前</th><th>上</th>
+						<th class="sep">水平</th><th>高度</th></tr>
+				</thead>
+				<tbody id="coords-body"></tbody>
+			</table>
+			<div class="dim" style="text-align:center;">
+				z / 上 是瓶身中心（桌面 + 瓶高的一半）。桌面座標：原點 = 桌緣上正對 base_link 中線、桌面高，同任務管理（task_manager.yaml 的 table）。
+			</div>
+		</section>
+
+		<!-- ================= 5. 頭部 ================= -->
+		<section class="half">
+			<h2>頭部馬達刻度</h2>
+			<div id="head-bars"></div>
+			<div id="head-extra" class="dim"></div>
+			<div class="dim" style="margin: 8px 14px 0 14px;">綠 = 允許範圍、黃 = 容許的下垂（超出黃色就停發 TF）、白線 = 基準刻度（外參校正時的位置）。</div>
+		</section>
+
+		<!-- ================= 4. 錄製 ================= -->
+		<section class="half">
+			<h2>錄製座標（跟捲尺量的比對用）</h2>
+			<div id="rec-ctrl">
+				錄 <input type="number" id="rec-sec" min="1" max="120" step="1" value="5"> 秒
+				<input type="button" class="Button" id="rec-btn" value="開始錄製" onclick="toggleRecord()">
+				<input type="button" class="Button" id="rec-raw" value="下載原始資料 CSV" onclick="downloadRaw()" disabled>
+				<input type="button" class="Button" id="rec-sum" value="下載摘要 CSV" onclick="downloadSummary()" disabled>
+			</div>
+			<div id="rec-state" class="dim">藥罐和機器人都不要動。結果是錄製期間每個藥罐的平均和標準差。</div>
+			<table class="rec">
+				<thead>
+					<tr><th rowspan="2">類別</th><th rowspan="2">筆數</th><th colspan="3">base_link 平均（m）</th>
+						<th colspan="3">桌面 平均（cm）</th><th colspan="3">標準差（mm）</th></tr>
+					<tr><th>x</th><th>y</th><th>z</th><th>右</th><th>前</th><th>上</th><th>x</th><th>y</th><th>z</th></tr>
+				</thead>
+				<tbody id="rec-body"></tbody>
+			</table>
+		</section>
+
+		<div style="clear: both;"></div>
+	</div>
+
+	<script type="text/javascript">
+        var VC = window.VisionCore, CFG = VC.CONFIG;
+        var COLORS = { b1: '#ff5252', b2: '#40c4ff', b3: '#ffd740', b4: '#69f0ae' };
+        var STALE_MS = 1000;            // 藥罐超過 1 秒沒看到 = 灰掉
+        var FORGET_MS = 10000;          // 超過 10 秒就不畫在俯視圖上
+        var TOPICS = {
+            det: ['/bottle_detections_3d', 'vision_msgs/Detection3DArray'],
+            yolo: ['/med_detect/bottles', 'std_msgs/String'],
+            head: ['/head_tf/status', 'std_msgs/String'],
+            zed: ['/zed/zed_node/left/camera_info', 'sensor_msgs/CameraInfo']
+        };
+
+        // ===================================================================
+        // 狀態
+        // ===================================================================
+        var rates = { det: new VC.RateMeter(2), yolo: new VC.RateMeter(2), zed: new VC.RateMeter(2) };
+        var latest = {};                // label -> {t, label, score, x, y, z}
+        var yoloConf = {}, yoloT = 0;   // label -> YOLO 信心值（最新一筆）
+        var lastDetCount = 0;
+        var head = null, headT = 0;
+        var track = new VC.Track(3);
+        var rec = { on: false, start: 0, dur: 0, samples: [], done: null };
+
+        // ===================================================================
+        // 連線（同 SP3TaskInterface.html：自動重連）
+        // ===================================================================
+        var myAddress = window.ROBOT_CONFIG.ip;
+        var ws = null;
+
+        function host() { return myAddress.split(':')[0]; }
+        function url() { return 'ws://' + (myAddress.indexOf(':') >= 0 ? myAddress : myAddress + ':9090'); }
+
+        function connect() {
+            var sock = new WebSocket(url());
+            ws = sock;
+            sock.onopen = function () {
+                if (sock !== ws) return;
+                setConn(true);
+                Object.keys(TOPICS).forEach(function (k) {
+                    sock.send(JSON.stringify({ op: 'subscribe', topic: TOPICS[k][0], type: TOPICS[k][1], queue_length: 5 }));
+                });
+            };
+            sock.onmessage = function (ev) {
+                var m = JSON.parse(ev.data);
+                if (m.op === 'publish') onMessage(m.topic, m.msg);
+            };
+            sock.onclose = function () {
+                if (sock !== ws) return;
+                setConn(false);
+                setTimeout(function () { if (sock === ws) connect(); }, 2000);
+            };
+        }
+
+        function setConn(ok) {
+            document.getElementById('connected').style.display = ok ? 'inline' : 'none';
+            document.body.style.backgroundImage = ok ? 'url(./picture/Background.jpg)' : 'url(./picture/Gray_Background.jpg)';
+        }
+
+        function enterAddress() {
+            myAddress = document.getElementById('addressSelect').value;
+            var old = ws;
+            ws = null;
+            if (old) old.close();
+            connect();
+            startImage();
+        }
+
+        function onMessage(topic, msg) {
+            var now = Date.now();
+            if (topic === TOPICS.det[0]) {
+                rates.det.add(now);
+                var dets = VC.parseDetections3D(msg);
+                lastDetCount = dets.length;
+                var ticks = head && head.ticks ? head.ticks : null;
+                dets.forEach(function (d) {
+                    d.t = now;
+                    latest[d.label] = d;
+                    track.add(now, d);
+                    if (rec.on) rec.samples.push({ t: now, label: d.label, score: d.score, x: d.x, y: d.y, z: d.z, ticks: ticks });
+                });
+            } else if (topic === TOPICS.yolo[0]) {
+                rates.yolo.add(now);
+                try { yoloConf = VC.parseYolo(msg.data); yoloT = now; } catch (e) { }
+            } else if (topic === TOPICS.head[0]) {
+                try { head = JSON.parse(msg.data); headT = now; } catch (e) { }
+            } else if (topic === TOPICS.zed[0]) {
+                rates.zed.add(now);
+            }
+        }
+
+        // ===================================================================
+        // YOLO 畫面（web_video_server）
+        // ===================================================================
+        var imgRetry = null;
+        function streamUrl() { return 'http://' + host() + ':8080/stream?topic=/med_detect/image&quality=70'; }
+
+        function startImage() {
+            var img = document.getElementById('yolo'), msg = document.getElementById('img-msg');
+            clearTimeout(imgRetry);
+            document.getElementById('img-link').href = streamUrl();
+            msg.style.display = 'flex';
+            msg.textContent = '等待影像…（' + host() + ':8080）';
+            img.onload = function () { msg.style.display = 'none'; };
+            img.onerror = function () {
+                msg.style.display = 'flex';
+                msg.innerHTML = '影像串流連不上（' + host() + ':8080）<br>nstc.launch.py 的 web_video_server 有開嗎？3 秒後重試';
+                imgRetry = setTimeout(startImage, 3000);
+            };
+            img.src = streamUrl() + '&t=' + Date.now();
+        }
+
+        // ===================================================================
+        // 1. 狀態列
+        // ===================================================================
+        function lamp(id, cls, text) {
+            document.getElementById('d-' + id).className = 'dot ' + cls;
+            document.getElementById('v-' + id).innerHTML = text;
+        }
+
+        function fresh(meter, now, ms) { var t = meter.last(); return t != null && now - t < ms; }
+
+        function renderLamps(now) {
+            var connected = ws && ws.readyState === WebSocket.OPEN;
+            lamp('ros', connected ? 'ok' : 'bad', connected ? url() : '沒連上 ' + url() + '<br>nstc.launch.py 有開嗎？');
+            if (!connected) {
+                ['zed', 'yolo', 'loc', 'tf'].forEach(function (k) { lamp(k, 'off', '—'); });
+                return;
+            }
+            // ZED
+            if (fresh(rates.zed, now, 1500)) lamp('zed', 'ok', rates.zed.hz(now).toFixed(1) + ' Hz');
+            else lamp('zed', 'bad', '沒有影像（camera_info）<br>nstc.launch.py 的 ZED 有開嗎？');
+            // YOLO
+            var yoloHz = rates.yolo.hz(now);
+            if (fresh(rates.yolo, now, 2000)) {
+                var seen = Object.keys(yoloConf).sort();
+                lamp('yolo', 'ok', yoloHz.toFixed(1) + ' Hz<br>' + (seen.length ? '看到 ' + seen.join(' ') : '沒看到藥罐'));
+            } else lamp('yolo', 'bad', '沒有 /med_detect/bottles<br>vision.launch.py 有開嗎？');
+            // 3D 定位
+            if (fresh(rates.det, now, 2000)) {
+                var hz = rates.det.hz(now), ratio = yoloHz > 0 ? hz / yoloHz : 1;
+                var txt = hz.toFixed(1) + ' Hz，輸出 ' + lastDetCount + ' 個';
+                if (yoloHz > 0 && ratio < 0.5) lamp('loc', 'warn', txt + '<br>只有 YOLO 的 ' + Math.round(ratio * 100) + '%：很多幀被跳過（log_level:=debug 看原因）');
+                else lamp('loc', 'ok', txt + (yoloHz > 0 ? '<br>YOLO 的 ' + Math.min(100, Math.round(ratio * 100)) + '%' : ''));
+            } else if (fresh(rates.yolo, now, 2000)) {
+                lamp('loc', 'bad', 'YOLO 有、定位沒輸出<br>多半是查不到 TF（看右邊）');
+            } else lamp('loc', 'bad', '沒有 /bottle_detections_3d');
+            // 動態 TF
+            if (head && now - headT < 2000) {
+                if (!head.valid) lamp('tf', 'bad', '停發 TF：' + esc((head.reasons || []).join('；')));
+                else if (head.moving) lamp('tf', 'warn', '可用，頭在動<br>停下來座標才準');
+                else lamp('tf', 'ok', '可用' + (head.at_reference ? '（頭在基準刻度）' : ''));
+            } else lamp('tf', 'off', '沒有 /head_tf/status<br>camera_tf:=static（固定外參）或沒開');
+        }
+
+        function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+
+        // ===================================================================
+        // 2. 座標表
+        // ===================================================================
+        function fmt(v, d) { return (v == null || isNaN(v)) ? '—' : Number(v).toFixed(d); }
+        function sgn(v, d) {        // 帶正負號；四捨五入後是 0 就不帶（不要出現 -0.000）
+            if (v == null || isNaN(v)) return '—';
+            var r = Number(Number(v).toFixed(d));
+            return (r > 0 ? '+' : '') + (r === 0 ? 0 : r).toFixed(d);
+        }
+
+        function renderCoords(now) {
+            var rows = CFG.labels.map(function (label) {
+                var d = latest[label], c = '<span style="color:' + COLORS[label] + '">' + label + '</span>';
+                var yc = (now - yoloT < 2000 && yoloConf[label] != null) ? fmt(yoloConf[label], 2) : '—';
+                if (!d) return '<tr class="stale"><td class="name">' + c + '</td><td>' + yc + '</td>' +
+                    '<td>—</td><td class="sep">—</td><td>—</td><td>—</td><td class="sep">—</td><td>—</td><td>—</td>' +
+                    '<td class="sep">—</td><td>—</td><td class="sep">沒看過</td></tr>';
+                var tb = VC.baseToTable(d.x, d.y, d.z), j = track.jitter(label, now), age = (now - d.t) / 1000;
+                return '<tr' + (now - d.t > STALE_MS ? ' class="stale"' : '') + '><td class="name">' + c + '</td>' +
+                    '<td>' + yc + '</td><td>' + fmt(d.score, 2) + '</td>' +
+                    '<td class="sep">' + sgn(d.x, 3) + '</td><td>' + sgn(d.y, 3) + '</td><td>' + sgn(d.z, 3) + '</td>' +
+                    '<td class="sep">' + sgn(tb.right, 1) + '</td><td>' + sgn(tb.front, 1) + '</td><td>' + sgn(tb.up, 1) + '</td>' +
+                    '<td class="sep">' + fmt(j.horizontal_mm, 1) + '</td><td>' + fmt(j.z_mm, 1) + '</td>' +
+                    '<td class="sep">' + (age < 0.5 ? '即時' : age.toFixed(1) + ' 秒前') + '</td></tr>';
+            });
+            document.getElementById('coords-body').innerHTML = rows.join('');
+        }
+
+        // ===================================================================
+        // 3. 俯視圖
+        // ===================================================================
+        var TV = { scale: 440, xMin: -0.06 };       // 440 px/m；畫面下緣 = base_link 後 6 cm
+
+        function tvPoint(x, y) {      // base_link (m) -> canvas px；右 = −y 在畫面右邊，前 = x 往上
+            var cv = document.getElementById('topview');
+            return [cv.width / 2 - y * TV.scale, cv.height - (x - TV.xMin) * TV.scale];
+        }
+
+        function renderTopView(now) {
+            var cv = document.getElementById('topview'), g = cv.getContext('2d'), T = CFG.table;
+            g.clearRect(0, 0, cv.width, cv.height);
+            var edge = T.edge_from_base_link_cm / 100, far = edge + T.depth_cm / 100;
+            var yL = (T.width_cm / 2 - T.center_right_cm) / 100, yR = -(T.width_cm / 2 + T.center_right_cm) / 100;
+            // 桌子
+            var a = tvPoint(far, yL), b = tvPoint(edge, yR);
+            g.fillStyle = '#3a3226'; g.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+            // 格線（桌面座標每 10 cm）
+            g.strokeStyle = '#55493a'; g.lineWidth = 1; g.fillStyle = '#9a8f80'; g.font = '11px sans-serif';
+            for (var f = 0; f <= T.depth_cm; f += 10) {
+                var p1 = tvPoint(edge + f / 100, yL), p2 = tvPoint(edge + f / 100, yR);
+                g.beginPath(); g.moveTo(p1[0], p1[1]); g.lineTo(p2[0], p2[1]); g.stroke();
+                if (f > 0) g.fillText('前 ' + f, p2[0] - 40, p2[1] - 2);
+            }
+            for (var r = -70; r <= 70; r += 10) {
+                var q1 = tvPoint(edge, -r / 100), q2 = tvPoint(far, -r / 100);
+                g.beginPath(); g.moveTo(q1[0], q1[1]); g.lineTo(q2[0], q2[1]); g.stroke();
+                if (r % 20 === 0) g.fillText(String(r), q1[0] - 8, q1[1] + 13);
+            }
+            // 桌緣
+            var e1 = tvPoint(edge, yL), e2 = tvPoint(edge, yR);
+            g.strokeStyle = '#d7b98e'; g.lineWidth = 3;
+            g.beginPath(); g.moveTo(e1[0], e1[1]); g.lineTo(e2[0], e2[1]); g.stroke();
+            g.fillStyle = '#d7b98e'; g.fillText('桌緣（前 0）  右 →', e2[0] - 110, e2[1] + 26);
+            // base_link
+            var o = tvPoint(0, 0), ox = tvPoint(0.08, 0), oy = tvPoint(0, 0.08);
+            g.lineWidth = 2;
+            g.strokeStyle = '#ff5252'; g.beginPath(); g.moveTo(o[0], o[1]); g.lineTo(ox[0], ox[1]); g.stroke();
+            g.strokeStyle = '#69f0ae'; g.beginPath(); g.moveTo(o[0], o[1]); g.lineTo(oy[0], oy[1]); g.stroke();
+            g.fillStyle = '#fff'; g.beginPath(); g.arc(o[0], o[1], 4, 0, 2 * Math.PI); g.fill();
+            g.font = '12px sans-serif'; g.fillText('base_link', o[0] + 8, o[1] - 4);
+            g.fillStyle = '#ff8a80'; g.fillText('x', ox[0] + 4, ox[1] + 4);
+            g.fillStyle = '#b9f6ca'; g.fillText('y', oy[0] - 12, oy[1] - 2);
+            // 相機
+            if (head && head.valid && head.camera && Date.now() - headT < 2000) {
+                var c = head.camera, cp = tvPoint(c.x, c.y), yaw = c.yaw_deg * Math.PI / 180;
+                g.save(); g.translate(cp[0], cp[1]); g.rotate(-yaw);
+                g.fillStyle = '#e0e0e0'; g.beginPath(); g.moveTo(0, -14); g.lineTo(-7, 6); g.lineTo(7, 6); g.closePath(); g.fill();
+                g.restore();
+            }
+            // 藥罐
+            CFG.labels.forEach(function (label) {
+                var d = latest[label];
+                if (!d || now - d.t > FORGET_MS) return;
+                var p = tvPoint(d.x, d.y), rad = (CFG.dims[label] ? CFG.dims[label].diameter / 2 : 0.025) * TV.scale;
+                var stale = now - d.t > STALE_MS, tb = VC.baseToTable(d.x, d.y, d.z);
+                g.globalAlpha = stale ? 0.4 : 1;
+                g.fillStyle = COLORS[label] + '55'; g.strokeStyle = COLORS[label]; g.lineWidth = 2;
+                g.setLineDash(stale ? [4, 3] : []);
+                g.beginPath(); g.arc(p[0], p[1], rad, 0, 2 * Math.PI); g.fill(); g.stroke();
+                g.setLineDash([]);
+                g.fillStyle = '#fff'; g.font = 'bold 13px sans-serif'; g.fillText(label, p[0] - 8, p[1] + 5);
+                g.font = '12px sans-serif'; g.fillStyle = COLORS[label];
+                g.fillText('右 ' + tb.right.toFixed(1) + ' 前 ' + tb.front.toFixed(1), p[0] + rad + 4, p[1] + 4);
+                g.globalAlpha = 1;
+            });
+        }
+
+        // ===================================================================
+        // 5. 頭部刻度條
+        // ===================================================================
+        var HEAD_NAMES = { '28': '28 轉頭', '29': '29 低頭', '30': '30 歪頭' };
+        var HEAD_DIR = { '28': ['右', '左'], '29': ['下', '上'], '30': ['右', '左'] };   // 刻度變小 / 變大
+
+        function buildHeadBars() {
+            document.getElementById('head-bars').innerHTML = ['28', '29', '30'].map(function (id) {
+                return '<div class="hrow"><div class="hlabel">' + HEAD_NAMES[id] + '</div>' +
+                    '<div class="hbar" id="hb-' + id + '"><div class="margin"></div><div class="allowed"></div><div class="ref"></div>' +
+                    '<div class="cur"></div><span class="lo"></span><span class="hi"></span></div>' +
+                    '<div class="hval" id="hv-' + id + '">—</div></div>';
+            }).join('');
+        }
+
+        function renderHead(now) {
+            var ok = head && now - headT < 2000;
+            var refs = (ok && head.reference_ticks) || CFG.head.reference_ticks;
+            var ranges = (ok && head.allowed_ticks) || CFG.head.allowed_ticks;
+            var margin = (ok && head.margin_ticks != null) ? head.margin_ticks : CFG.head.margin_ticks;
+            ['28', '29', '30'].forEach(function (id) {
+                var bar = document.getElementById('hb-' + id), val = document.getElementById('hv-' + id);
+                var rg = ranges[id], ref = refs[id], pad = Math.max(30, (rg[1] - rg[0]) * 0.25);
+                var lo = rg[0] - pad, hi = rg[1] + pad, W = bar.clientWidth;
+                function px(t) { return Math.max(0, Math.min(W, (t - lo) / (hi - lo) * W)); }
+                var m = bar.querySelector('.margin'), a = bar.querySelector('.allowed');
+                m.style.left = px(rg[0] - margin) + 'px'; m.style.width = (px(rg[1] + margin) - px(rg[0] - margin)) + 'px';
+                a.style.left = px(rg[0]) + 'px'; a.style.width = (px(rg[1]) - px(rg[0])) + 'px';
+                bar.querySelector('.ref').style.left = px(ref) + 'px';
+                var loEl = bar.querySelector('.lo'), hiEl = bar.querySelector('.hi');
+                loEl.textContent = rg[0]; loEl.style.left = (px(rg[0]) - 14) + 'px';
+                hiEl.textContent = rg[1]; hiEl.style.left = (px(rg[1]) - 14) + 'px';
+                var cur = bar.querySelector('.cur'), tick = ok && head.ticks ? head.ticks[id] : null;
+                if (tick == null) { cur.style.display = 'none'; val.className = 'hval'; val.textContent = '—'; return; }
+                var h = VC.headTick(tick, ref, rg, margin);
+                cur.style.display = 'block'; cur.style.left = px(tick) + 'px';
+                cur.style.borderTopColor = h.state === 'ok' ? '#ffeb3b' : h.state === 'margin' ? '#ffb300' : '#ff1744';
+                var dir = Math.abs(h.deg) < 0.05 ? '' : (h.deg < 0 ? HEAD_DIR[id][0] : HEAD_DIR[id][1]) + ' ';
+                val.className = 'hval' + (h.state === 'ok' ? '' : ' ' + h.state);
+                val.textContent = tick.toFixed(0) + '（' + dir + Math.abs(h.deg).toFixed(1) + '°）';
+            });
+            var ex = document.getElementById('head-extra');
+            if (!ok) { ex.textContent = '沒有 /head_tf/status（camera_tf:=static 或 vision.launch.py 沒開），刻度條的範圍是預設值。'; return; }
+            var parts = ['頭' + (head.moving ? '<b style="color:#ffd54f">在動</b>' : '停著') +
+                         (head.at_reference ? '，在基準刻度' : '，不在基準刻度（調外參前要先轉回基準）')];
+            if (head.camera) {
+                var c = head.camera;
+                parts.push('相機（zed_camera_link）在 base_link：x ' + c.x.toFixed(3) + '、y ' + c.y.toFixed(3) + '、z ' + c.z.toFixed(3) +
+                           ' m；roll ' + c.roll_deg.toFixed(1) + '°、pitch ' + c.pitch_deg.toFixed(1) + '°（往下看）、yaw ' + c.yaw_deg.toFixed(1) + '°');
+            }
+            if (!head.valid) parts.push('<span style="color:#ff8a80">停發 TF：' + esc((head.reasons || []).join('；')) + '</span>');
+            ex.innerHTML = parts.join('<br>');
+        }
+
+        // ===================================================================
+        // 4. 錄製
+        // ===================================================================
+        function toggleRecord() {
+            if (rec.on) { finishRecord(); return; }
+            var sec = Math.max(1, Math.min(120, Number(document.getElementById('rec-sec').value) || 5));
+            rec = { on: true, start: Date.now(), dur: sec * 1000, samples: [], done: null };
+            document.getElementById('rec-btn').value = '停止';
+            document.getElementById('rec-raw').disabled = true;
+            document.getElementById('rec-sum').disabled = true;
+            document.getElementById('rec-body').innerHTML = '';
+        }
+
+        function finishRecord() {
+            rec.on = false;
+            rec.done = new Date();
+            rec.summary = VC.summarize(rec.samples);
+            document.getElementById('rec-btn').value = '開始錄製';
+            var has = rec.samples.length > 0;
+            document.getElementById('rec-raw').disabled = !has;
+            document.getElementById('rec-sum').disabled = !has;
+            document.getElementById('rec-body').innerHTML = rec.summary.map(function (s) {
+                return '<tr><td class="name" style="color:' + (COLORS[s.label] || '#fff') + '">' + s.label + '</td><td>' + s.n + '</td>' +
+                    '<td>' + sgn(s.mean.x, 4) + '</td><td>' + sgn(s.mean.y, 4) + '</td><td>' + sgn(s.mean.z, 4) + '</td>' +
+                    '<td>' + sgn(s.table.right, 1) + '</td><td>' + sgn(s.table.front, 1) + '</td><td>' + sgn(s.table.up, 1) + '</td>' +
+                    '<td>' + fmt(s.std_mm.x, 1) + '</td><td>' + fmt(s.std_mm.y, 1) + '</td><td>' + fmt(s.std_mm.z, 1) + '</td></tr>';
+            }).join('');
+            var secs = ((Date.now() - rec.start) / 1000).toFixed(1);
+            document.getElementById('rec-state').textContent = has
+                ? '錄了 ' + secs + ' 秒、' + rec.samples.length + ' 筆（' + stamp(rec.done) + '）'
+                : '錄了 ' + secs + ' 秒，沒有收到任何藥罐座標';
+        }
+
+        function renderRecord(now) {
+            if (!rec.on) return;
+            var el = (now - rec.start) / 1000;
+            document.getElementById('rec-state').textContent =
+                '錄製中 ' + el.toFixed(1) + ' / ' + (rec.dur / 1000) + ' 秒，已收 ' + rec.samples.length + ' 筆';
+            if (now - rec.start >= rec.dur) finishRecord();
+        }
+
+        function stamp(d) {
+            function p(n) { return (n < 10 ? '0' : '') + n; }
+            return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+        }
+
+        function download(name, text) {
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+            a.download = name;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+        }
+        function downloadRaw() { download('vision_' + stamp(rec.done) + '_raw.csv', VC.samplesCsv(rec.samples)); }
+        function downloadSummary() { download('vision_' + stamp(rec.done) + '_summary.csv', VC.summaryCsv(rec.summary)); }
+
+        // ===================================================================
+        buildHeadBars();
+        setInterval(function () {
+            var now = Date.now();
+            renderLamps(now); renderCoords(now); renderTopView(now); renderHead(now); renderRecord(now);
+        }, 200);
+        connect();
+        startImage();
+	</script>
+</body>
+
+</html>

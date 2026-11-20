@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 #coding=utf-8
-"""相機外參的 TF：發 camera_frame -> base_frame（外參的反轉換），執行中可以修改。
+"""固定相機外參的 TF：發 base_frame -> camera_frame（/tf_static），執行中可以修改。
 
-外參（camera_extrinsics.yaml）是 base_link -> zed_camera_link，但 ZED wrapper 已經在發
-odom -> zed_camera_link，zed_camera_link 不能再有第二個 parent，所以發反過來的那一個
-（README「TF」一節）。查 base_link <-> 左眼 optical frame 的結果與直接發 base_link -> zed_camera_link 相同。
+平常由 head_tf 的 neck_tf_publisher 依頭部馬達刻度發動態 TF（bottle_localization.launch.py 的 camera_tf:=head，預設）；
+這個節點是 camera_tf:=static 時用的（頭部馬達沒開、或不想讓頭的角度影響時），頭轉了外參就不準。
+
+需要 ZED 不發 odom -> zed_camera_link（nstc.launch.py 的 ZED 已設 publish_tf: false），否則 zed_camera_link 會有兩個 parent。
+2026-11-20 以前發的是反過來的 zed_camera_link -> base_link（為了避開 ZED 的 odom），但 MoveIt 也發 world -> base_link，
+base_link 變成兩個 parent，所以改回正方向（README「TF」一節）。
 
 x、y、z、roll、pitch、yaw 可以在執行中修改（bottle_tuner 或 ros2 param set），
 改了立刻重新發布 /tf_static。執行中改的值不會寫回 yaml，要存檔請用 bottle_tuner。
@@ -29,7 +32,7 @@ EXTRINSIC_PARAMS = ('x', 'y', 'z', 'roll', 'pitch', 'yaw')
 
 
 class CameraTfPublisher(Node):
-#國科會計畫 - 藥罐 3D 定位：相機外參 TF
+#國科會計畫 - 藥罐 3D 定位：固定相機外參 TF
     def __init__(self):
         super().__init__('bottle_localization_camera_tf')
         values = {}
@@ -82,15 +85,14 @@ class CameraTfPublisher(Node):
 
     def publish(self):
         e = self._extrinsics
-        trans, (qx, qy, qz, qw) = geometry.inverse_extrinsics(
-            e['x'], e['y'], e['z'], e['roll'], e['pitch'], e['yaw'])
+        qx, qy, qz, qw = geometry.matrix_to_quaternion(geometry.rpy_to_matrix(e['roll'], e['pitch'], e['yaw']))
         tf = TransformStamped()
         tf.header.stamp = self.get_clock().now().to_msg()
-        tf.header.frame_id = self._frames['camera_frame']
-        tf.child_frame_id = self._frames['base_frame']
-        tf.transform.translation.x = float(trans[0])
-        tf.transform.translation.y = float(trans[1])
-        tf.transform.translation.z = float(trans[2])
+        tf.header.frame_id = self._frames['base_frame']
+        tf.child_frame_id = self._frames['camera_frame']
+        tf.transform.translation.x = float(e['x'])
+        tf.transform.translation.y = float(e['y'])
+        tf.transform.translation.z = float(e['z'])
         tf.transform.rotation.x = float(qx)
         tf.transform.rotation.y = float(qy)
         tf.transform.rotation.z = float(qz)

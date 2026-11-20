@@ -24,15 +24,17 @@ def test_sweep_plan_from_config():
     assert (plan['pan_id'], plan['tilt_id'], plan['roll_id']) == (28, 29, 30)
     assert plan['reference'] == (2047, 1708) and plan['roll_reference'] == 2024
     assert plan['pan'] == [1877, 2047, 2218]
-    assert plan['tilt'] == [1594, 1651, 1708, 1764, 1820]
-    assert plan['pan_limits'] == (1877, 2218) and plan['tilt_limits'] == (1594, 1820)
+    # 低頭下限 2026-11-20 改成 1500：基準以下、以上各自平均分
+    assert plan['tilt'] == [1500, 1604, 1708, 1764, 1820]
+    assert plan['pan_limits'] == (1877, 2218) and plan['tilt_limits'] == (1500, 1820)
     assert plan['roll_limits'] == (2014, 2034)
     postures = core.build_postures(plan['pan'], plan['tilt'], plan['reference'])
     assert len(postures) == 17
     core.check_postures(postures, plan['pan_limits'], plan['tilt_limits'])
     with pytest.raises(ValueError):
         core.check_postures([('grid', 2250, 1708)], plan['pan_limits'], plan['tilt_limits'])
-    assert nm.sweep_plan(load_config(), tilt_steps=3)['tilt'] == [1594, 1708, 1820]
+    assert nm.sweep_plan(load_config(), tilt_steps=3)['tilt'] == [1500, 1708, 1820]
+    assert nm.sweep_plan(load_config(), tilt_steps=7)['tilt'] == [1500, 1569, 1639, 1708, 1745, 1783, 1820]
     with pytest.raises(ValueError):
         nm.sweep_plan(load_config(), tilt_steps=4)
 

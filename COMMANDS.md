@@ -28,6 +28,20 @@ Motion、ImageProcess、HandControl、HandMotion、HandTouch、RobotViewer。
 
 ## 藥罐定位（照順序開）
 
+一次開（YOLO + 3D 定位 + 動態 TF）：先開 nstc.launch.py，再
+
+```bash
+ros2 launch bottle_localization vision.launch.py
+ros2 launch bottle_localization vision.launch.py camera_tf:=static   # 頭部馬達沒開時（固定外參）
+ros2 launch bottle_localization vision.launch.py log_level:=debug    # 印出 YOLO 有框卻沒座標的原因
+ros2 launch bottle_localization vision.launch.py yolo:=false         # YOLO 另外開
+```
+
+監控網頁：導覽列 **Vision**（`web/VisionInterface.html`）。YOLO 畫面、各環節狀態燈、藥罐座標（base_link 與桌面座標並列）、
+俯視圖、頭部刻度條、錄製 N 秒座標算平均和標準差並下載 CSV（跟捲尺量的比對用）。只看，不送任何指令。
+
+分開開（照順序）：
+
 ```bash
 # 1. 系統（ZED 相機、馬達、手等），見上一節
 ros2 launch ~/nstc/launch/nstc.launch.py
@@ -36,7 +50,11 @@ ros2 launch ~/nstc/launch/nstc.launch.py
 ros2 run med_detect bottle_detect_v2
 
 # 3. 藥罐 3D 定位，發布 /bottle_detections_3d
+#    相機外參預設照頭部馬達刻度即時算（head_tf 動態 TF），頭轉了也準；要 nstc.launch.py 的 driver 在發 /joint_states
 ros2 launch bottle_localization bottle_localization.launch.py
+
+# 頭部馬達沒開時：用固定外參（頭轉了就不準）
+ros2 launch bottle_localization bottle_localization.launch.py camera_tf:=static
 ```
 
 ## 查看與調整（上面三個在跑的時候）
@@ -45,14 +63,17 @@ ros2 launch bottle_localization bottle_localization.launch.py
 # 即時查看輸出的座標
 ros2 run bottle_localization bottle_viewer
 
-# 執行中調整桌高與外參
+# 執行中調整桌高與外參（外參是頭在基準刻度時的值：先把頭轉回 28 = 2047、29 = 1708、30 = 2024 再調）
 ros2 run bottle_localization bottle_tuner
+
+# 動態 TF 的狀態：valid（有沒有在發 TF）、reasons（為什麼不能用）、ticks、moving（頭在動）
+ros2 topic echo /head_tf/status
 
 # YOLO 有框到、卻沒有輸出座標時，印出被跳過的原因（取代上面第 3 步）
 ros2 launch bottle_localization bottle_localization.launch.py log_level:=debug
 ```
 
-看 YOLO 畫面：在桌機的瀏覽器開 `http://172.17.121.11:8080/stream?topic=/med_detect/image`
+看 YOLO 畫面：網頁 Vision，或在桌機的瀏覽器開 `http://172.17.121.11:8080/stream?topic=/med_detect/image`
 
 ## 在桌機用 RViz 看
 
@@ -307,6 +328,47 @@ python3 zed_stl_front.py
 
 # 由量到的值算出 camera_extrinsics.yaml 要填的數字（任何電腦都能跑）
 python3 extrinsics_calc.py --dx <cm> --dy <cm> --dz <cm> --pitch <度> --roll <度> --a <m>
+```
+
+## 頭部座標校正（head_tf）
+
+用頭部馬達刻度（28 轉頭、29 低頭、30 歪頭）算相機外參，頭轉了藥罐定位才不會偏。
+動態 TF 由上面「藥罐定位」第 3 步的 bottle_localization launch 開（`camera_tf:=head`，預設），不用另外開。
+超出允許範圍（轉頭 ±15°、低頭 20°～48°）或 `/joint_states` 停了就不發 TF，藥罐定位會暫停輸出。
+這一節是重新收資料、驗證模型用的。詳細說明見 `src/head_tf/README.md` 的「新平台」。
+
+基準刻度和允許範圍在 `src/head_tf/config/neck_head.yaml`（目前基準 28 = 2047、29 = 1708、30 = 2024）。
+**重新校正 camera_extrinsics.yaml 時，要把校正當時的刻度一起改進 neck_head.yaml 的 `reference_ticks`。**
+
+```bash
+# 第一次或改了程式：在桌機把套件同步到 .11，再到 .11 上建置
+rsync -av --exclude __pycache__ --exclude .pytest_cache ~/nstc_ws/nstc/src/head_tf iclab@172.17.121.11:~/nstc/src/
+cd ~/nstc && colcon build --symlink-install --packages-select head_tf bottle_localization && source install/setup.bash
+
+# 檢查 TF：要查得到，不能出現 "two or more unconnected trees"
+ros2 run tf2_ros tf2_echo world zed_left_camera_optical_frame
+
+# 收集資料：頭會自動轉 17 個姿勢（轉頭 ±15°、低頭 20°～48°），約 2 分鐘，30 號不轉。
+# nstc.launch.py 和 bottle_detect_v2 要開著；任務管理不要開、網頁的頭部拉條不要動。
+# 頭先轉到基準刻度，桌上放 2～4 個藥罐，過程中不要動機器人、桌子和瓶子。Ctrl+C 可以隨時停，頭會轉回原位
+ros2 run head_tf head_sweep neck_01
+
+# 網頁開著時工具會說有其他程式在發 /Head_Topic；確定沒人會動頭再加 --force
+ros2 run head_tf head_sweep neck_01 --force
+
+# 自己轉頭、按 Enter 記錄（工具不發頭部指令）
+ros2 run head_tf head_sweep neck_02 --manual
+
+# 傳回桌機（在桌機上）
+mkdir -p ~/nstc_ws/head_sweeps && scp -r iclab@172.17.121.11:~/head_sweeps/neck_01 ~/nstc_ws/head_sweeps/
+
+# 驗證頭部模型（在桌機上）：每個姿勢的藥罐位置、IMU、桌面高度和基準姿勢差多少
+cd ~/nstc_ws/nstc/src/head_tf
+env -u PYTHONPATH ~/nstc_ws/nstc/foundationpose_trial/.venv/bin/python tools/check_neck_model.py \
+    ~/nstc_ws/head_sweeps/neck_01
+
+# 檢查 neck_head.yaml：印出基準姿勢、相機裝在頭上的位置和 URDF 設計值的差、允許範圍四個角的相機姿態
+cd ~/nstc/src/head_tf && python3 -m head_tf.neck_model
 ```
 
 ## FoundationPose 試驗（實驗用，不影響上面的系統）

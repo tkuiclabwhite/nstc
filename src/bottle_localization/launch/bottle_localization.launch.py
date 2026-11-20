@@ -14,9 +14,13 @@ bottle_detect_v2 負責（同一時間只能有一個程式開相機）。
 執行中調整桌高、外參：另開一個終端機執行 bottle_tuner（README「bottle_tuner」）。
 TUI 需要鍵盤輸入，launch 底下的程式收不到，所以不包在這裡。
 
-相機外參（camera_extrinsics.yaml）量的是 base_link -> zed_camera_link，
-但 ZED wrapper 已經在發 odom -> zed_camera_link，zed_camera_link 不能再有第二個 parent。
-所以 camera_tf_publisher 發的是反過來的 zed_camera_link -> base_link（README「TF」一節）。
+相機外參的 TF（base_link -> zed_camera_link）用 camera_tf 選：
+    camera_tf:=head    （預設）head_tf 的 neck_tf_publisher 依頭部馬達刻度（/joint_states 28/29/30）發動態 TF，
+                       頭轉了藥罐位置照樣準；camera_extrinsics.yaml 是頭在基準刻度（head_tf/config/neck_head.yaml）時的外參。
+                       超出允許範圍或 /joint_states 停了就不發 TF，bottle_localizer 會跳過那幾幀。狀態看 /head_tf/status。
+    camera_tf:=static  camera_tf_publisher 發固定外參（頭部馬達沒開時用；頭轉了就不準）。
+兩種節點名稱都是 bottle_localization_camera_tf，bottle_tuner 調外參照常可以用（head 模式要先把頭轉回基準刻度）。
+ZED 不能發 odom -> zed_camera_link（nstc.launch.py 已設 publish_tf: false），否則 zed_camera_link 會有兩個 parent（README「TF」一節）。
 """
 import os
 
@@ -54,15 +58,28 @@ def _nodes(context):
             f'[bottle_localization] 警告：{ext_path} 還是 placeholder（measured: false），'
             f'{ref["base_frame"]} 的位置不可信。量完外參後填入並把 measured 改成 true。')))
 
-    actions.append(Node(
-        package='bottle_localization',
-        executable='camera_tf_publisher',
-        name='bottle_localization_camera_tf',
-        output='screen',
-        parameters=[dict({'base_frame': str(ref['base_frame']),
-                          'camera_frame': str(ext['child_frame'])},
-                         **{k: float(ext[k]) for k in EXTRINSIC_KEYS})],
-    ))
+    tf_params = dict({'base_frame': str(ref['base_frame']), 'camera_frame': str(ext['child_frame'])},
+                     **{k: float(ext[k]) for k in EXTRINSIC_KEYS})
+    camera_tf = LaunchConfiguration('camera_tf').perform(context)
+    if camera_tf == 'head':
+        actions.append(Node(
+            package='head_tf',
+            executable='neck_tf_publisher',
+            name='bottle_localization_camera_tf',
+            output='screen',
+            parameters=[dict(tf_params, config_file=LaunchConfiguration('neck_config').perform(context))],
+        ))
+    elif camera_tf == 'static':
+        actions.append(LogInfo(msg='[bottle_localization] camera_tf:=static：用固定外參，頭轉了藥罐位置就不準'))
+        actions.append(Node(
+            package='bottle_localization',
+            executable='camera_tf_publisher',
+            name='bottle_localization_camera_tf',
+            output='screen',
+            parameters=[tf_params],
+        ))
+    else:
+        raise RuntimeError(f'camera_tf 只能是 head 或 static（{camera_tf!r}）')
 
     actions.append(Node(
         package='bottle_localization',
@@ -97,6 +114,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'reference_file', default_value=os.path.join(config, 'robot_reference.yaml'),
             description='base_link 名稱與量測基準點（換手臂時改這個檔）'),
+        DeclareLaunchArgument(
+            'camera_tf', default_value='head',
+            description='相機外參的 TF：head = 依頭部馬達刻度的動態 TF（head_tf）、static = 固定外參'),
+        DeclareLaunchArgument(
+            'neck_config', default_value='',
+            description='camera_tf:=head 用的頭部模型；空的 = head_tf 安裝的 config/neck_head.yaml'),
         DeclareLaunchArgument(
             'log_level', default_value='info',
             description='bottle_localizer 的 log 等級；debug 會印出每個框被跳過的原因'),

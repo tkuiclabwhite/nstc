@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='iclab',
     maintainer_email='iclab@todo.todo',
-    description='由頭部馬達刻度計算相機外參；目前只有校正資料收集工具 head_sweep',
+    description='由頭部馬達刻度計算相機外參：動態 TF 節點 neck_tf_publisher、校正資料收集工具 head_sweep',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'head_sweep = head_tf.head_sweep:main',
+            'neck_tf_publisher = head_tf.neck_tf_publisher:main',
         ],
     },
 )
