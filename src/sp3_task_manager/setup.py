@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'task_manager = sp3_task_manager.task_manager:main',
             'reach_test = sp3_task_manager.reach_test:main',
+            'pose_demo = sp3_task_manager.pose_demo:main',
         ],
     },
 )

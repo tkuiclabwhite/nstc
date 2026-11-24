@@ -81,4 +81,7 @@ ros2 launch sp3_task_manager task_manager.launch.py
 
 可及範圍與避障測試（直接對 moveit_bridge，不經任務管理）：`ros2 run sp3_task_manager reach_test scan` / `obstacles`，用法見檔頭或 COMMANDS.md。
 
+成果展示（手離藥瓶 2 cm 左右環繞、45° 時試手指朝上下，記每一步的誤差）：`ros2 run sp3_task_manager pose_demo --at 18.9 28 --plan-only`，
+用法見 `pose_demo.py` 檔頭或 COMMANDS.md「成果展示」；姿態序列與規劃在 `demo_poses.py`（純 numpy，有單元測試）。
+
 單元測試（不需要 ROS）：`cd src/sp3_task_manager && python3 -m pytest test -q`

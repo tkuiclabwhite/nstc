@@ -35,6 +35,21 @@ Linker Hand O6 ×2、ZED X Mini、頭部馬達 3 顆。負責人楊舒凱。回�
 - `launch/nstc.launch.py` 用路徑啟動：ZED、driver、motionpackage、雙手、影像 4 節點、rosbridge、web_video_server、手臂 MoveIt。
 - `web/` 只留 5 頁＋RobotViewer。
 
+## 網頁修正（2026-11-23）
+
+- **motor_area 一直閃 0**（`web/js/Interface.js`）：`/joint_states` 除了 driver_node（name = 馬達 ID、刻度）還有 armpackage MoveIt 的
+  joint_state_broadcaster（URDF 關節名、弧度）。原本每筆先填 0、只填數字 ID → MoveIt 那筆把整排刷成 0。改成整筆沒有數字 ID 就跳過、
+  沒帶到的馬達保留原值。ros2_adult 同一個修正也推到 .200 的 `~/ros2_adult`（使用者要的）。
+- **扭力狀態同步**（使用者要的）：以 motionpackage 的扭力記錄（訂 `/set_torque`、`/package/GetTorqueState`）為準。只「加」程式：
+  - `ImageProcessInterface.html`：`isHeadTorqueOn` 原本每次開頁面都從關開始 → 連線時查服務（28/29/30 都開才算開），再訂 `/set_torque`
+    （ID 0 = 全身）。查詢還沒回來時收到的 topic 先暫存、回來後再套（舊的查詢結果不蓋掉新指令），服務 3 秒沒回就只靠 topic。
+  - `MotionControlInterface.html`：原本只在連線時 `LoadTorqueState()` 一次 → 加訂 `/set_torque`，更新 `motorTorqueStates` 後呼叫 `refreshTorqueUI()`。
+  - 兩頁都照 ZedTemp 的寫法每次 connection 先退訂再重訂（enterAddress 重連後 rosbridge 端訂閱會不見）。
+  - 本機 headless Chrome（CDP，假 WebSocket、攔 publish、假 callService、`ros.emit` 模擬）測 20 項全過，沒連機器人。
+  - 限制：後端是**指令紀錄不是讀硬體**；只重啟 motionpackage（driver 沒重啟）會歸零、跟硬體不符；直接寫馬達（不經 `/set_torque`）
+    的程式不會被記到；MotionControl 原本的 `LoadTorqueState` 回應若晚於 topic 訊息，會用查詢結果蓋掉（開頁面那一瞬間，沒改它）。
+  - `framer_design_interface/` 新版：nstc 本機與 .11 都沒有，沒處理。
+
 ## 子三任務管理 `src/sp3_task_manager`（2026-11-13）
 
 對應子三文件 S3-01 的「任務管理」模組；介面照 **S3-05**（文件在 `~/Desktop/國科會計畫範例/SP3_文件工具包`，GitHub tkuiclabwhite/nstc-sp3-docs）。
@@ -322,6 +337,63 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
   b1 右肩正前方、b2 左肩正前方（前 12）、b3／b4 各在外側 16 cm。取代舊的 bottle_base_link_m／bottle_size_m。
 - **tray_2（左手）**：place_targets 改成 tray_1 = 桌面 右 25、前 15、掌心離桌 12（右手），tray_2 = 鏡像（左手），都還是暫定。
   任務管理選手時只留「藥瓶和放置點都搆得到」的手（抓起來不換手），沒有就 MAN-E-002。b1 → tray_2 會被擋。
+- **成果展示 `pose_demo`（2026-11-24，使用者要的：成果報告展示位置控制）**：掌心到藥瓶正上方 15 cm → 原地換姿態（手掌繞掌心轉、
+  掌心傾 30° 繞一圈）→ 繞著藥瓶（掌心對著瓶頂、傾 45°）→ 回 ready → 站姿；每步記誤差存 CSV。使用者選：兩種都做、上半球 45°、要誤差表。
+  - 走 moveit_bridge `/arm_ik_target`（任意姿態，`/arm_ik_arm` 設成那隻手、做完改回 auto），不經任務管理；繼承 reach_test.Tester，
+    場景來源也用 `reach_test`。中途停下時場景（藥瓶）保留，`pose_demo --clear` 清。
+  - 離線分析（armpackage kinematics.py + URDF 外形）：**掌心朝下時手指能轉的範圍很窄**（手肘 RforarmJoint 只能 ±80°），
+    右肩前方前 12 只有朝內 65～80°、前 18～21 約 30°；固定手指朝前幾乎都到不了 → `demo_poses.Planner` 先用 IK 規劃手指
+    （起點取範圍中間、之後盡量維持、轉不到就近調整，原地轉手掌幅度看範圍）。**靠身體那側到不了**，前方（遠離身體）到得了 →
+    繞的順序 外側 → 前方 → 內側。每步 15°：30° 時有一軸要轉 52°，超過 bridge 微調的 SMALL_JOINT 45°。
+  - 建議擺位：桌面 右 10～30、前 18～21（左手鏡像，URDF 左右完全對稱）→ 規劃 39 步全到、全是微調（不開實機補償時）；
+    實機補償開著時原地轉手掌常被略過。到達起點後依實際姿勢重新規劃（bridge 挑的姿勢可能不同）；實際關節角跟規劃差 > 3° 也重規劃。
+  - 誤差都跟「模擬的目標 = 目標 + 0.17×前」比：實機馬達照模擬的關節角轉，馬達讀數算的掌心本來就跟模擬一樣高，跟原始目標比會多出假的 5 cm。
+    機構下垂看不到，要尺量。
+  - rclpy 預設的 Ctrl+C handler 會先關 context，之後 /arm_stop 發不出去 → pose_demo 用 `SignalHandlerOptions.NO`。
+    reach_test 也有同樣問題（Ctrl+C 清場景會失敗），還沒改。
+  - 本機用假 moveit_bridge 測過（scratchpad fake_bridge.py：plan-only、全跑、略過、執行失敗、實機跟隨、Ctrl+C、--clear）；
+    影像模式本機沒有 vision_msgs 沒測；**.11 上還沒實測**。
+  - **第二版（2026-11-24 下午，使用者測完要的）**：速度預設 50；**手離藥瓶 2 cm**（`--gap`，`demo_poses.hand_in_palm`
+    取最後一軸之後跟手掌一起動的 link 外形、`standoff` 二分找掌心位置）；角度只做 30°、45°；新預設 `--parts sides`：
+    正上方手指朝前 → 外側 30/45 → 測試手指朝上／朝下（使用者選「左右 45° 時手指轉朝上/下」）→ 正上方 → 內側同樣 → 正上方。
+    測試步（Step.test）一定送給 bridge，終端機印判斷（擋下 = 預期）；非測試步碰到東西自動離遠（alts，每 0.5 cm，使用者選）。
+    終端機每步一行＋總表（錄影用）。舊的 spin/orbit 留成選項。
+  - 離線發現：手離瓶子 2 cm 時掌心低，正上方手指朝前到得了；但**實機補償 +0.17×前 讓模擬掌心高 5～6 cm → 前 ≤ 22 起點到不了**
+    → 擺位改成 右 18.9～30、前 26～28（補償開關都 7/7）。內側 45° 2 cm 會碰桌子 → 3 cm。手指朝上／下多半手腕轉不到。
+  - 使用者回報：實機跟隨中途斷、肩膀洩力（懷疑電池）。real_arm_bridge 停跟隨不關扭力；馬達 Shutdown = 52（過熱、電氣、過載，
+    不含電壓）→ 洩力是過載／過熱保護，電量低→出力不足→過載。建議 self_check 看錯誤與電壓、重新上電。
+    arm_settle_log 今天右肩 8 號停穩時常落後 13～50 刻度。launch.log 沒有 real_arm_bridge 自己的訊息（停跟隨的原因看不到）。
+  - pose_demo 加實機跟隨中斷偵測（使用者同意）：開始時跟隨開著 → 每步送出前後、等停穩時、停留後檢查；狀態不是 follow
+    或 3 秒沒收到 /arm_real_status → FollowLost：/arm_stop + 任務管理 cancel、印 real_arm_bridge 的 msg、那步記沒做。
+    假 bridge 測過 off（附原因）與 silent（不再發狀態）兩種。
+  - **2026-11-24 17:xx 使用者回報「比剛剛還糟」**：我建議的 `--at 18.9 26 --gap 4 --real` 起點到不了（只驗過 gap 2）→
+    規劃失敗就停、還沒舉到 ready；場景在按 Enter 後才放，網頁也沒藥瓶。改：①一開始就放場景（plan-only／失敗也看得到，
+    沒動手臂時場景留著）②固定手指的非測試步轉不到 → 只對掌心朝向解一次、挑最接近的手指角度，說明「往外偏 N°」
+    ③擺位改 右 18.9～25、前 28（gap 2～4、補償開關都剛好朝前）。另：解不到（ik）就不再往外試候選距離、測試步只用 10 個起點、
+    起點實際姿勢跟規劃一樣就不重算（前 20 規劃 21 → 3.4 秒）；規劃時沒收訊息會誤判跟隨中斷 → 看起來斷了先再等 3 秒。
+    **教訓：給使用者的指令參數組合要先離線驗過。**
+  - **17:35 實機 ready 之後第一步就被擋「會撞到藥瓶」**：moveit_bridge 規劃前檢查掌心點在不在物體裡面（`surface_dist`，
+    INSIDE_TOL 0.3 cm），**stick 被當成兩端半圓球的膠囊**（頂端多一個半徑 ≈ 5.1 cm，頂 96.6）；MoveIt 碰撞是平頂圓柱（頂 91.4）。
+    掌心在瓶頂上方 → 一定被擋；gap 2 時 11 步擋 10 步、gap 4 擋 6 步。假 bridge 沒做這個檢查，所以本機沒測到。
+    改（使用者同意）：pose_demo 的目標藥瓶改發**方柱**（`bottle_box`，兩邊都是平頂）；`make_clearance` 照 bridge 的檢查
+    （`bridge_surface_dist`，用沒補高度的目標）一起算。離線 gap 2/3/4 × 補償開關：7/7、沒有會被擋的；假 bridge（加了同樣檢查）
+    gap 2、3 + 實機跟隨跑完。**要跟手臂負責人說**：surface_dist／object_top_bottom 的 stick 跟 MoveIt 的 CYLINDER 不一致。
+    實機建議 `--gap 3 --real`。
+  - **17:56 實機跑完 7 步**，但 result.csv 的 z_comp_cm 全是 0、手離瓶子 10 cm、掌心誤差 70 mm：開始時實機跟隨是關的（17:47 自己停了），
+    規劃沒補，按 Enter 前使用者在網頁打開 → bridge 補了 7 cm。改：按 Enter 後跟隨狀態跟規劃時不一樣就重新規劃；
+    開始時關著、中途被打開 → `FollowTurnedOn`（FollowLost 的子類）停下。
+  - **錄影用重播 `--replay`**（使用者 18:0x：要錄影，省掉計算、動作平滑；選「每顆馬達直接轉過去、會碰到的段照上次路線」
+    「被擋下的測試步只印結果」）：`demo_replay.py`（純 numpy，test_demo_replay.py）。正常跑時 execute 錄每步的模擬路徑
+    （reach_test 的 path 記錄）與到了的關節角 → `poses.json`（含 ready 關節角、場景、follow）。重播：段落先檢查（make_clearance
+    含實機往下的位置＋bridge 掌心檢查，再 MoveIt /check_state_validity），直接交給 MoveIt `/execute_trajectory`
+    （ready_path.time_path 排時間，同任務管理照路線走），每步等停穩、停 --hold、量誤差。follow 不一樣就拒絕（補償在關節角裡）。
+    假 bridge（加了 /execute_trajectory、/check_state_validity）測過：錄→重播 gap 2、3 全過；ready→起點直接轉一定碰到 → 照錄的路線。
+    **.11 上還沒實測**（直接送 /execute_trajectory 只給一隻手的 7 軸，任務管理是 14 軸）。
+  - **繞圈 `--parts ring` 改成預設**（使用者 18:3x：左右環繞只有 4 個到達點太少；選繞圈、手指測試預設不做、擺位維持右 18.9 前 28）：
+    `demo_poses.ring_sequence`（與 sides 共用 `_side_step`）：正上方 → 30°、45° 各繞 RING_AZ 8 個方向 → 外、內 60° → 正上方。
+    離線（scratchpad scan_more／scan_ring）：右 18.9 前 28 b1 gap 3 補償開 19/20（45° 靠身體到不了），手指都朝前；前 24 也 19/20
+    但手指偏 17～29°；前 12（b1 設定檔位置）21/25 但偏 20～100°；細的 b3 有幾步要離到 3.5～5 cm。假 bridge 錄→重播都過；
+    重播 20 步約 44 秒（--hold 0）。
 
 ## 還沒做的
 
@@ -329,7 +401,9 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
 2. sp3_task_manager、ros2_task_plan_demo、COMMANDS.md、CLAUDE.md 尚未 commit（2026-11-17 15:08 本機已同步到 .11，由使用者 commit）。
 3. 實機跑一次完整取放（流程見 COMMANDS.md「子三任務管理／接實機」）。
 4. 使用者的「修改主計畫主控模擬」任務還沒開始（先問清楚要改什麼）。
-5. `src/head_tf` 第 4 階段：動態 TF 接到 bottle_localization（改 launch 前先列出要改什麼給使用者看）；README 的建置段還寫 source ros2_adult，要更新。
+5. `src/head_tf` 第 4 階段：動態 TF（`neck_tf_publisher`）接到 bottle_localization，程式完成、桌機測過（2026-11-20），
+   **等 .11 上實測**（步驟見 head_tf README「動態 TF」一節，要重新 build head_tf、bottle_localization）。
+   同一批也加了 `vision.launch.py`、網頁 Vision、nstc.launch.py 關掉 ZED 的 TF。README 建置段已不用 source ros2_adult。
 6. 取放結果目前只在 result.message，沒有存檔（文件 S3-03「記錄取放結果」未完成）。
    使用者 2026-11-17 列為之後再做的：重試前先退開再辨識、放下後確認藥瓶放好、失敗或取消後的收尾。
 7. bottle_localization、med_detect 不是使用者負責的，沒驗證過；URDF 原點對齊是 URDF 負責人的事，不管。

@@ -126,8 +126,11 @@ JointStateListener.subscribe(function(message) {
   
   // 我們需要把這些亂序的資料，整理成我們函式看得懂的陣列 (Index 0 = ID 1)
   
-  // 1. 先建立一個全空的陣列 (含頭部 28~30)
-  var formattedData = new Array(TOTAL_MOTORS).fill(0);
+  // 1. 先建立一個空陣列 (含頭部 28~30)。不填 0：沒收到的馬達保持 undefined，畫面就不會被歸零。
+  //    /joint_states 還有 arm_ws MoveIt 假硬體在發（name 是 URDF 關節名、單位弧度），
+  //    那種訊息一顆數字 ID 都沒有，以前會把整排刷成 0 造成閃爍。
+  var formattedData = new Array(TOTAL_MOTORS);
+  var found = 0;
 
   // 2. 把收到的資料填進去
   for(var i = 0; i < message.name.length; i++){
@@ -137,8 +140,10 @@ JointStateListener.subscribe(function(message) {
       // 防呆：確保 ID 在合理範圍內 (1~30)
       if(id >= 1 && id <= TOTAL_MOTORS) {
           formattedData[id - 1] = pos; // ID 1 存到 Index 0
+          found++;
       }
   }
+  if (found === 0) return; // 不是 driver_node 的訊息
 
   // 3. 呼叫更新函式
   Update_Motor_Input_Values(formattedData);
@@ -1779,6 +1784,7 @@ function Update_Motor_Input_Values(motorValues) {
         motorsInPart.forEach(motor => {
             // 假設 motorValues 陣列 index 0 對應 ID 1，以此類推
             let currentVal = motorValues[motor.id - 1]; 
+            if (currentVal === undefined) return; // 這筆訊息沒有這顆，保留原值
             let inputField = document.getElementById('motor_val_' + motor.id);
 
             if (inputField) {

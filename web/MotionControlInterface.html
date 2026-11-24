@@ -913,6 +913,45 @@
             });
         }
 
+        // ===== 扭力狀態同步 =====
+        // LoadTorqueState 只在連線時查一次；再訂閱 /set_torque，別的頁面或分頁改了扭力，
+        // 這裡也會即時更新 motorTorqueStates 並重畫。自己送出的指令也會從 topic 收回來，結果一樣。
+        var TorqueSync_Subscriber = null;
+
+        function onTorqueSyncMsg(msg) {
+            if (!msg || !msg.data || msg.data.length < 2) return;
+            var id = Number(msg.data[0]);
+            var state = Number(msg.data[1]) ? 1 : 0;
+            if (id === 0) {
+                for (var i = 1; i <= TOTAL_MOTORS; i++) motorTorqueStates[i] = state;
+            } else if (id >= 1 && id <= TOTAL_MOTORS) {
+                motorTorqueStates[id] = state;
+            } else {
+                return;   // 不相關的 ID
+            }
+            if (typeof refreshTorqueUI === "function") refreshTorqueUI();
+        }
+
+        // enterAddress() 重連後 rosbridge 端的訂閱都沒了，每次 connection 重新訂閱一次
+        function createTorqueSyncTopic() {
+            try {
+                if (TorqueSync_Subscriber != null) {
+                    TorqueSync_Subscriber.unsubscribe();
+                }
+                TorqueSync_Subscriber = new ROSLIB.Topic({
+                    ros: ros,
+                    name: '/set_torque',
+                    messageType: 'std_msgs/Int16MultiArray'
+                });
+                TorqueSync_Subscriber.subscribe(onTorqueSyncMsg);
+            } catch (e) {
+                console.warn('扭力狀態訂閱失敗:', e);
+            }
+        }
+
+        ros.on('connection', createTorqueSyncTopic);
+        if (ros.isConnected) createTorqueSyncTopic();
+
         var locationBack_Subscriber = new ROSLIB.Topic({
             ros: ros,
             name: '/locationBack',

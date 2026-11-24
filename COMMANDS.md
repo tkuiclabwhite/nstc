@@ -26,6 +26,10 @@ ros2 launch ~/nstc/launch/nstc.launch.py arm:=false      # 不開手臂 MoveIt /
 網頁：在桌機用 sftp 掛載 `~/nstc/web/` 直接開 html（IP 自動判斷）。
 Motion、ImageProcess、HandControl、HandMotion、HandTouch、RobotViewer。
 
+扭力開關的狀態以 motionpackage 的紀錄為準，各頁面會即時同步（ImageProcess 的頭部扭力按鈕也是）。
+這份紀錄是「送過的指令」不是讀馬達：**只重開 motionpackage 時紀錄會歸零**（全部當成關），網頁就可能跟實際不符；
+這時在 Motion 頁按一次全身扭力開／關，讓紀錄跟實際一致。
+
 ## 藥罐定位（照順序開）
 
 一次開（YOLO + 3D 定位 + 動態 TF）：先開 nstc.launch.py，再
@@ -244,6 +248,67 @@ ros2 run sp3_task_manager reach_test bottle --bottle b1 --arm left --real --spee
 **不用 RViz 看結果**：`obstacles` 每一項都存一張圖（俯視、正視、側視：桌子、障礙物、目標掌心、手臂外形），
 並印出「手離物體最近幾 cm」（含障礙物的餘裕，負的 = 插進去）。圖在 `~/reach_test_out/<時間>_obstacles_<手>/case<N>.png`，
 輸出會印路徑。看圖：在 AGX 用 `eog <路徑>`，或拿回桌機 `scp iclab@172.17.121.11:<路徑> .`。
+
+### 成果展示：圍著藥瓶換姿態（pose_demo，2026-11-24）
+
+手離藥瓶表面 `--gap`（預設 2 cm，實機建議 3；用 URDF 的手部外形算掌心停哪），速度 **50**，手指一直朝前，每一步停住記誤差。
+**預設 `--parts ring`（繞圈，2026-11-24 晚上）**：正上方 → 傾 30° 繞一圈（外、外前、前、內前、內、內後、後、外後）
+→ 傾 45° 再繞一圈 → 往外、往內傾 60° → 回正上方 → 回 ready → 站姿。右 18.9、前 28（b1）、`--gap 3`、實機補償開著：
+離線算 20 步到 19 步（17 個不同的點；45° 靠身體那側到不了、略過；往內 60° 自動離到 6.5 cm），手指都剛好朝前。
+30° 那圈每步都是連續微調；45° 那圈每步轉比較多，moveit_bridge 會先退開 10 cm 再靠近（錄影用 `--replay` 就是直接轉）。
+`--tilts`、`--side-tilts` 改角度；`--finger-test` 最後加手指朝上／朝下的測試（多半到不了，預設不做）。
+往身體靠近（前 24 以內）也到得了差不多的步數，但手指轉不到朝前（偏 17～60°），所以維持前 28。
+`--parts sides`（下午的版本，只有 4 個不同的到達點）：正上方 → 往外側傾 30°、45° → **測試**：45° 時手指朝上、朝下 → 回正上方
+→ 往內側傾 30°、45° → 測試 → 回正上方。
+測試步一定送給 moveit_bridge，終端機印它的判斷：✓ 到了／✗ 會撞到桌子（擋下，手臂沒動）／✗ 到不了（關節轉不到）。
+終端機每一步一行、最後一張總表，可以直接錄影。
+直接對 moveit_bridge 下 `/arm_ik_target`（任意姿態；`/arm_move` 只有 6 種掌心方向），碰撞、實機補償、刻度檢查跟平常一樣。
+要先開 nstc.launch.py；**任務管理建議開著**（ready／站姿會照錄好的路線走，沒開就交給 MoveIt 規劃），但不要同時送任務。
+不用先按 Ready pose：腳本先規劃（照「手在 ready」算，不是照現在站姿的位置），印出每一步，按 Enter 後才自己舉到 ready 開始。
+一開始就會把藥瓶放進場景，規劃失敗、`--plan-only` 時網頁（RobotViewer）也看得到瓶子在哪。
+
+```bash
+ros2 run sp3_task_manager pose_demo --at 18.9 28 --plan-only     # 先看規劃：每一步到不到得了（手臂不動）
+ros2 run sp3_task_manager pose_demo --at 18.9 28                 # 實機跟隨關著：只動模擬（先印規劃，按 Enter 才動）
+ros2 topic pub --once -w 1 /arm_real_enable std_msgs/msg/Bool "{data: true}"
+ros2 run sp3_task_manager pose_demo --at 18.9 28 --gap 3 --real  # 實機：第一次離遠一點，沒問題再用 2
+ros2 run sp3_task_manager pose_demo --at -18.9 28 --bottle b2    # 左手（右 < 0 自動用左手），尺寸照 b2
+ros2 run sp3_task_manager pose_demo --clear                      # 中途停下時場景（藥瓶）會留著，不用了就清掉
+ros2 run sp3_task_manager pose_demo --replay ~/reach_test_out/<上次的資料夾> --real   # 錄影：照上次錄好的做
+```
+
+**錄影用重播 `--replay`**（2026-11-24）：正常跑一次會多存 `poses.json`（每一步到了的關節角、途中的路線、場景、實機跟隨開關），
+跑完最後一行印出要打的指令。重播不經 moveit_bridge、不用規劃：每一步從上一個姿勢**每顆馬達直接轉過去**（直接交給 MoveIt
+`/execute_trajectory`，走前用 URDF 外形（含實機往下的位置）＋MoveIt `/check_state_validity` 檢查），會碰到的那段照上次錄到的路線走；
+上次被擋下的測試步不送，照上次的結果印。藥瓶位置、手離瓶子都照錄的時候（終端機會印藥瓶要擺哪）。
+實機跟隨要跟錄的時候一樣（補償已經算在關節角裡），不一樣會拒絕。`--replay … --plan-only` 只印每一步怎麼走。
+手離瓶子 3 cm 錄的大多直接轉；2 cm 比較擠，一半以上照上次的路線（還是不用等規劃）。
+
+- `--at 右 前`：藥瓶中心在桌面座標的位置（右 = 離機器人中線、往左是負的；前 = 離桌緣），立在桌面上，高度不用給。
+  尺寸照 `--bottle`（設定檔 `dry_run.bottles`，預設 b1）或 `--size 直徑 高`（cm）。真的瓶子要擺在那個點（場景照這個位置避）。
+  不給 `--at` = 用影像找 `--bottle` 那一瓶（要開 vision.launch.py）。
+- **藥瓶擺在 右 18.9～25（左手 −18.9～−25）、前 28**：`--gap 2～4`、實機跟隨開不開，手指都剛好朝前、整套跑得完。
+  實機跟隨開著時目標會往上補 0.17×前（約 5～6 cm），掌心一高手指就轉不到朝前（前 ≤ 22，或前 26 + `--gap 4`）
+  → 自動改成最接近的手指角度，規劃和終端機會寫「手指朝前轉不到，往外偏 14°」，不會整個停掉
+  （2026-11-24 前 26 + `--gap 4` 起點到不了、整個停掉，網頁也沒顯示藥瓶 → 改成這樣）。
+  往內側傾 45° 離瓶子 2 cm 時手會碰到桌子，自動改離 3 cm（規劃和終端機會寫）。手指朝上／朝下的測試多半是手腕轉不到。
+- 每步角度差 30° 以上時 moveit_bridge 不微調，會先退開 10 cm 再直線靠近（規劃的「走法」：退開再靠近）。
+- 2 cm 是照模擬算的；實機有幾 cm 的誤差（下垂補償、掌心偏移還沒量清楚），實機上手可能碰到瓶子 → 先 `--gap 3`。
+- 場景裡要圍著轉的藥瓶是**方柱**（不是圓柱）：moveit_bridge 規劃前的「掌心在物體裡面」檢查把圓柱當兩端半圓球的膠囊，
+  頂端多算約 5 cm，手在瓶頂上方幾 cm 一定被擋（2026-11-24 實機第一步就「會撞到藥瓶」）。規劃也照這個檢查算。
+- 其他選項：`--tilts 30 45`、`--no-finger-test`、`--hold 1`（每步停幾秒）、`--speed 50`、`--arm auto|left|right`、
+  `--end stand|ready|stay`（預設做完回站姿，手舉太久會過熱）、`--yes`（不用按 Enter）。
+  舊的細版本（掌心離瓶頂中心 15 cm、原地換姿態、每 15° 繞一步）：`--parts spin orbit`（擺 右 10～30、前 18～21）。
+- 一般步到不了就略過，接著做下一步；執行失敗、取消就停在原地。Ctrl+C = `/arm_stop`（停在原地，不會自己回去）。
+- 結果在 `~/reach_test_out/<時間>_pose_demo_<手>/`：`plan.csv`（規劃）、`result.csv`（每一步：結果、bridge 的判斷、
+  手離瓶子 `bottle_gap_cm`、誤差）。誤差都是跟「模擬的目標」（實機跟隨開著時 = 目標 + `z_comp_cm`）比：
+  `sim_*` = MoveIt 關節角算的掌心（IK、執行準不準）、`real_*` = 馬達讀數算的掌心（馬達有沒有跟上）。
+  真正的掌心還會因為機構下垂再低一點，馬達讀數看不到，要用尺量（reach_test point）。
+- **實機跟隨中途斷掉**：pose_demo 開始時實機跟隨開著、中途斷了（real_arm_bridge 停了，或 3 秒沒收到 `/arm_real_status`）
+  會馬上停（送 `/arm_stop`，模擬也不再動），印 real_arm_bridge 寫的原因（哪一顆馬達沒跟上），那一步記「沒做（實機跟隨中斷）」。
+- **實機跟隨中途斷掉、肩膀洩力**（2026-11-24 遇過）：real_arm_bridge 看到實機 2 秒沒跟上就停跟隨（不會關扭力）；
+  洩力是馬達自己的保護（過載／過熱，Shutdown = 52，電壓低本身不會關）。電池電量低 → 出力不夠 → 過載很常見。
+  關掉 nstc.launch.py 後跑 `ros2 run armpackage self_check.py` 看哪一顆記了什麼錯誤、現在電壓多少；觸發保護的馬達要重新上電。
 
 ### 網頁送任務（暫代總計畫主控）
 

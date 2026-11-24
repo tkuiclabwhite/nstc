@@ -198,6 +198,97 @@
 		// 紀錄頭部扭力狀態 (預設為 true/開啟)
 		var isHeadTorqueOn = false;
 
+		// ===== 頭部扭力狀態同步 =====
+		// isHeadTorqueOn 原本每次開頁面都從「關」開始，扭力若已在別的頁面打開，第一下等於沒反應。
+		// 改以 motionpackage 的扭力記錄（/package/GetTorqueState）為準，再訂閱 /set_torque 即時更新。
+		// 頭部三顆 (28, 29, 30) 都開才算開；ID 0 代表全身。自己送出的指令也會從 topic 收回來，結果一樣。
+		var HEAD_TORQUE_IDS = [28, 29, 30];
+		var headTorqueStates = {};
+		// 查詢還沒回來時收到的 topic 訊息先暫存，回來後再依序套用，免得較舊的查詢結果蓋掉較新的指令
+		var headTorquePending = null;
+		var headTorqueReqSeq = 0;
+		var HeadTorqueSync_Subscriber = null;
+		var HeadTorqueStateClient = new ROSLIB.Service({
+			ros: ros,
+			name: '/package/GetTorqueState',
+			serviceType: 'nstc_msgs/TorqueState'
+		});
+
+		function recomputeHeadTorque() {
+			isHeadTorqueOn = HEAD_TORQUE_IDS.every(function (h) { return headTorqueStates[h] === 1; });
+		}
+
+		function applyHeadTorque(id, state) {
+			if (id === 0) {
+				HEAD_TORQUE_IDS.forEach(function (h) { headTorqueStates[h] = state; });
+			} else if (HEAD_TORQUE_IDS.indexOf(id) >= 0) {
+				headTorqueStates[id] = state;
+			} else {
+				return;   // 不相關的馬達
+			}
+			recomputeHeadTorque();
+		}
+
+		function onHeadTorqueMsg(msg) {
+			if (!msg || !msg.data || msg.data.length < 2) return;
+			var id = Number(msg.data[0]);
+			var state = Number(msg.data[1]) ? 1 : 0;
+			if (headTorquePending) {
+				headTorquePending.push([id, state]);
+			} else {
+				applyHeadTorque(id, state);
+			}
+		}
+
+		function finishHeadTorqueQuery(seq, states) {
+			// 已經有更新的查詢，或這次已經處理過（逾時或已回來）就不再套用
+			if (seq !== headTorqueReqSeq || !headTorquePending) return;
+			var pending = headTorquePending;
+			headTorquePending = null;
+			if (states) {
+				HEAD_TORQUE_IDS.forEach(function (h) { headTorqueStates[h] = states[h - 1] ? 1 : 0; });
+				recomputeHeadTorque();
+			}
+			pending.forEach(function (p) { applyHeadTorque(p[0], p[1]); });
+			console.log("[Head Torque] 同步狀態:", isHeadTorqueOn ? "ON" : "OFF");
+		}
+
+		// enterAddress() 重連後 rosbridge 端的訂閱都沒了，跟 ZedTemp 一樣每次 connection 重新訂閱並重新查詢
+		function syncHeadTorque() {
+			try {
+				if (HeadTorqueSync_Subscriber != null) {
+					HeadTorqueSync_Subscriber.unsubscribe();
+				}
+				HeadTorqueSync_Subscriber = new ROSLIB.Topic({
+					ros: ros,
+					name: '/set_torque',
+					messageType: 'std_msgs/Int16MultiArray'
+				});
+				HeadTorqueSync_Subscriber.subscribe(onHeadTorqueMsg);
+			} catch (e) {
+				console.warn("頭部扭力訂閱失敗:", e);
+			}
+
+			var seq = ++headTorqueReqSeq;
+			headTorquePending = [];
+			try {
+				HeadTorqueStateClient.callService(new ROSLIB.ServiceRequest({ query: true }),
+					function (res) { finishHeadTorqueQuery(seq, res && res.states); },
+					function (err) {
+						console.warn("查詢扭力狀態失敗:", err);
+						finishHeadTorqueQuery(seq, null);
+					});
+			} catch (e) {
+				console.warn("查詢扭力狀態失敗:", e);
+				finishHeadTorqueQuery(seq, null);
+			}
+			// motionpackage 沒開時服務可能一直不回，3 秒後不再等，只靠 topic 更新
+			setTimeout(function () { finishHeadTorqueQuery(seq, null); }, 3000);
+		}
+
+		ros.on('connection', syncHeadTorque);
+		if (ros.isConnected) syncHeadTorque();
+
 		var ColorFormcmd = new ROSLIB.Message({
 			buildingmodel: false
 		});
