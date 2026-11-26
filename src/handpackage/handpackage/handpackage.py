@@ -902,6 +902,10 @@ class HandPackage(Node):
             'started': {s: time.time() for s in hands},
             'frozen': {s: [False] * C.NUM_JOINTS for s in hands},
             'hit': {s: [False] * len(C.MASS_KEYS) for s in hands},
+            # 壓力零點：開始閉合那一刻的讀數。門檻看「比零點多了多少」——
+            # 實機右手中指沒碰東西就讀到 50 以上（2026-11-26），門檻 50 時 any 模式
+            # 一開始就整隻手凍結、看起來像手指不動
+            'base': {s: None for s in hands},
             'reason': '',
             'done': {},
         }
@@ -940,7 +944,7 @@ class HandPackage(Node):
             return None
         return {'mode': self._first(g, 'mode'), 'hands': list(g['hands']),
                 'threshold': self._first(g, 'threshold'),
-                'hit': g['hit'], 'frozen': g['frozen'],
+                'hit': g['hit'], 'frozen': g['frozen'], 'base': g.get('base', {}),
                 'elapsed': self._elapsed(g)}
 
     @staticmethod
@@ -989,6 +993,14 @@ class HandPackage(Node):
             # 到這裡才算做完，網頁的按鈕要到這一刻才解開
             self._exec_done(True)
 
+    def _net_mass(self, side):
+        """夾持用的壓力 = 讀數 − 開始閉合時的零點（沒有零點就用讀數）。"""
+        mass = self.hw[side]['mass']
+        base = self.grip.get('base', {}).get(side)
+        if not base:
+            return mass
+        return [m - b for m, b in zip(mass, base)]
+
     def _grip_tick(self):
         g = self.grip
         now = time.time()
@@ -1013,6 +1025,8 @@ class HandPackage(Node):
             if g['phase'][side] == 'wait_touch':
                 if fresh:
                     g['phase'][side] = 'closing'
+                    g['base'][side] = list(self.hw[side]['mass'])
+                    self.get_logger().info(f'[夾持] {side} 壓力零點 {g["base"][side]}')
                     self.get_logger().info(f'[夾持] {side} 收到壓力資料，開始閉合')
                 elif now - g['started'][side] > C.GRIP_WAIT_TOUCH_TIMEOUT:
                     self._grip_finish_hand(side, '等不到壓力資料')
@@ -1023,7 +1037,7 @@ class HandPackage(Node):
                 continue
 
             # ---- 每指是否到門檻（帶釋放邊界，避免在門檻附近來回抖）----
-            mass = self.hw[side]['mass']
+            mass = self._net_mass(side)
             th = g['threshold'][side]
             for f in range(len(C.MASS_KEYS)):
                 if g['hit'][side][f]:
@@ -1056,7 +1070,7 @@ class HandPackage(Node):
             # ---- 算新位置並送出 ----
             cur = list(g['cmd'][side])
             new_pos = list(cur)
-            mass = self.hw[side]['mass']
+            mass = self._net_mass(side)
             th = g['threshold'][side]
             done = True
             for j in range(C.NUM_JOINTS):
@@ -1113,7 +1127,7 @@ class HandPackage(Node):
                 'active': True, 'phase': {}, 'mode': {}, 'hands': [],
                 'threshold': {}, 'target': {}, 'origin': {}, 'cmd': {},
                 'timeout': {}, 'started': {}, 'frozen': {}, 'hit': {},
-                'step': {},
+                'step': {}, 'base': {},
                 'release_margin': int(clamp(int(release_margin), 0, C.MASS_MAX)),
                 'reason': '', 'done': {},
             }
@@ -1130,6 +1144,7 @@ class HandPackage(Node):
         g['started'][side] = time.time()
         g['frozen'][side] = [False] * C.NUM_JOINTS
         g['hit'][side] = [False] * len(C.MASS_KEYS)
+        g['base'][side] = None
         g.setdefault('done', {}).pop(side, None)
         self.set_mass_subscription(True)
         self.get_logger().info(
@@ -1204,7 +1219,7 @@ class HandPackage(Node):
             # 不只回 active/reason —— stop_grip 存下來的那份快照（hit / frozen）
             # 也要一起送出去，網頁才看得到是哪根手指觸發停止的
             out = {'active': False, 'reason': g.get('reason', '')}
-            for k in ('mode', 'hands', 'threshold', 'hit', 'frozen', 'elapsed'):
+            for k in ('mode', 'hands', 'threshold', 'hit', 'frozen', 'base', 'elapsed'):
                 if k in g:
                     out[k] = g[k]
             return out
@@ -1216,6 +1231,7 @@ class HandPackage(Node):
             'threshold': self._first(g, 'threshold'),
             'hit': g['hit'],
             'frozen': g['frozen'],
+            'base': g.get('base', {}),
             'elapsed': self._elapsed(g),
             'timeout': self._first(g, 'timeout'),
             # 兩手各夾各的時（動作序列），上面的單值不夠用，這裡給完整的

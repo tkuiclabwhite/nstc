@@ -36,7 +36,7 @@
   base_link ↔ 實機量測座標（前 / 右 / 高，cm）：前 = x·100 + 1.35、右 = −y·100、高 = z·100 + 120.2（arm_config.to_meas）
 
 「移動」怎麼做（_do_move）：
-  1. 實機跟隨開著時，目標往上補 REAL_Z_COMP × 前（實機掌心比模擬低約 0.17 × 前，見 position_test_report.md）
+  1. 實機跟隨開著時，目標往上補 REAL_Z_COMP ×（前 − REAL_Z_FROM）（實機掌心比模擬低多少，見 REAL_Z_COMP 的註解）
   2. 自己的 IK（numpy）解目標：從很多起點解出好幾組姿勢，挑「離站姿近、離關節極限遠」的（_pose_cost），
      不管上一個動作停在哪，同一個目標都挑差不多的姿勢
   3. 檢查會不會撞到東西；高度補償時，實機那個比較低的位置也檢查（場景物體暫時往上移）
@@ -114,8 +114,12 @@ VIA_CORRIDOR = 0.15             # 起點、終點掌心的水平範圍往外多�
 VIA_TRIES = 2                   # 移到預備點時，最好的幾個目標姿勢試這個方法
 SMALL_ROT = np.radians(30)      # 微調：目標離目前掌心不到 PRE_DIST、姿態差不到這麼多，就不退到預備點，直接轉過去
 SMALL_JOINT = np.radians(45)    # 微調時任一軸要轉超過這麼多，就當作不是微調（走一般流程）
-REAL_Z_COMP = 0.17   # 實機跟隨開著時，目標往上補「前 × 這個值」（前 = 離立柱前面多遠，前 50 cm → +8.5 cm）。
-                     # 實機掌心比模擬低約 0.17 × 前（2026-11-11 右手 11 組，見 position_test_report.md）。0 = 不補
+REAL_Z_COMP = 0.14   # 實機跟隨開著時，目標往上補「(前 − REAL_Z_FROM) × 這個值」cm（前 = 離立柱前面多遠，前 50 → +5.0）。0 = 不補
+REAL_Z_FROM = 14.5   # 前這麼近以內不補（cm）
+                     # 2026-11-11 右手 11 組量到實機掌心比模擬低約 0.17 × 前（position_test_report.md），原本補 0.17 × 前。
+                     # 2026-11-19、11-26 子三尺量（sp3_task_manager CLAUDE.md）：0.17 補太多——前 25 實機比目標高 2.8～2.9 cm、
+                     # 前 41 高 3.3；11-26 右手 前 25.4 照馬達讀數只比模擬低 1.2、尺量再低 0.2。實際 ≈ 0.14 ×（前 − 14.5）。
+                     # 子三任務管理 task_manager.yaml ready_pose.real_z_comp / real_z_from_cm 用同一組，要一起改
 HOLD_DIST = 0.05     # 直線靠近整段固定姿態轉不過去（預備點比較高，同一個姿態手肘到極限）時，只固定目標前這麼遠（m）
 POSE_W_NOW = 0.3     # 挑姿勢的成本 = 離站姿轉多少 + 這個 × 離目前姿勢轉多少 + 靠近關節範圍兩端的扣分（_pose_cost）
 LIMIT_MARGIN = np.radians(15)   # 離關節範圍兩端不到這麼多就扣分（極限邊上：實機容易卡住、線拉緊）
@@ -908,7 +912,7 @@ class MoveItBridge(Node):
         t0 = time.time()
         self.ax_cache = {}
         self.fail_codes = {"IK": R_UNREACH}
-        dz = REAL_Z_COMP * max(to_meas(p)[0], 0.0) / 100 if self._real_on() else 0.0
+        dz = REAL_Z_COMP * max(to_meas(p)[0] - REAL_Z_FROM, 0.0) / 100 if self._real_on() else 0.0
         p_sim = p + UP * dz                         # 模擬（MoveIt）的掌心目標：實機會低 dz，剛好落在 p
         f, r, h = to_meas(p)
         goal = f"前 {f:.1f}、右 {r:.1f}、高 {h:.1f} cm"

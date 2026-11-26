@@ -359,12 +359,14 @@ def table_delta(a_m, b_m, cfg):
 
 
 def make_z_comp(cfg, on):
-    """實機跟隨開著時 moveit_bridge 把模擬的目標往上補 REAL_Z_COMP × 前（設定檔 ready_pose.real_z_comp 同一個值）。
-    回傳 f(p) → 往上補幾 m。"""
-    k = float((cfg.get('ready_pose') or {}).get('real_z_comp', 0.17)) if on else 0.0
+    """實機跟隨開著時 moveit_bridge 把模擬的目標往上補多少（同 moveit_bridge REAL_Z_COMP、REAL_Z_FROM；
+    設定檔 ready_pose.real_z_comp、real_z_from_cm，公式見 ready_path.real_z_comp_cm）。回傳 f(p) → 往上補幾 m。"""
+    rp_cfg = cfg.get('ready_pose') or {}
 
     def f(p):
-        return k * max(float(gp.to_meas(p, cfg['frames'])[0]), 0.0) / 100.0
+        if not on:
+            return 0.0
+        return ready_path.real_z_comp_cm(rp_cfg, gp.to_meas(p, cfg['frames'])[0]) / 100.0
     return f
 
 

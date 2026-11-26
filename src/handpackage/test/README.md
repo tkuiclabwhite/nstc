@@ -35,7 +35,7 @@ export ROS_DOMAIN_ID=77
 | `smoke_hands.py` | handpackage 自己的行為：模式仲裁、雙手同步、`-1` 哨符、速度夾限、扭矩分手 topic、緊急停止、壞輸入不會讓節點死 | `handpackage` |
 | `smoke_page_contract.py` | 把 `HandControlInterface.html` 裡每一個 `sendCmd` 的 payload 原樣重建丟給節點，確認介面合約沒斷 | `handpackage` |
 | `smoke_history.py` | 執行歷史：Undo 要讓手真的回到執行前的位置、Redo、Clear、預設動作自帶速度 | `handpackage` |
-| `smoke_grip.py` | 夾持迴路，壓力值由測試直接設定所以門檻時機完全可控。17 組情境 56 項檢查 | `handpackage` |
+| `smoke_grip.py` | 夾持迴路，壓力值由測試直接設定所以門檻時機完全可控。18 組情境 61 項檢查（含壓力零點） | `handpackage` |
 | `smoke_fake_shapes.py` | `fake_hands` 發的資料形狀跟實機一致（避免拿失真的假資料驗網頁） | `fake_hands` |
 | `smoke_integration.py` | `fake_hands` + `handpackage` 真閉迴路：夾持會不會停在合理位置 | 兩個都要 |
 | `probe_current.py` | **實機量測**，不是測試：O6 的電流回授（CAN frame 0x36）拿不拿得到、讀得多快、會不會隨負載變。順便印出 `effort` 其實是轉矩**上限**的回讀 | 真的手 + CAN，且**要先關掉** `handpackage` |

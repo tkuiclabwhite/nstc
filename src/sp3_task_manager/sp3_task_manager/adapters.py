@@ -120,6 +120,7 @@ class ArmClient:
         self.ready_cfg = cfg.get('ready_pose') or {}
         self.ready_file = os.path.expanduser(self.ready_cfg.get('path_file', ''))
         self.ready_speed = float(self.ready_cfg.get('speed', self.cfg['arm_speed']))
+        self.ready_accel = self.ready_cfg.get('accel')   # rad/s²，None = 跟著速度縮（見 ready_path.time_path）
         rp.mirror_src(self.ready_cfg)              # ready_pose.mirror 設錯就不開（同 ready_targets）
         self.pub_ready = node.create_publisher(String, '/arm_ready', 10)
         from moveit_msgs.action import ExecuteTrajectory
@@ -188,11 +189,11 @@ class ArmClient:
             return None
 
     def sim_z_comp(self, pos_cm):
-        """實機跟隨沒開時，目標要自己往上補多少 cm（moveit_bridge 只在實機跟隨開著時補 0.17 × 前）：
+        """實機跟隨沒開時，目標要自己往上補多少 cm（moveit_bridge 只在實機跟隨開著時補，公式見 rp.real_z_comp_cm）：
         模擬才會停在跟開實機跟隨時一樣的地方（可及範圍一樣、放置時藥瓶底不會插進桌子的加厚）。move 每一步都會加。"""
         if self.real_following():
             return 0.0
-        return float(self.ready_cfg.get('real_z_comp', 0.17)) * max(float(pos_cm[0]), 0.0)
+        return rp.real_z_comp_cm(self.ready_cfg, pos_cm[0])
 
     def real_following(self):
         return self._real is not None and time.monotonic() - self._real[0] < self.timeouts['real_status_stale_s'] \
@@ -438,9 +439,8 @@ class ArmClient:
             raise TaskError(OUT_OF_RANGE, f'{"、".join("左" if a == "left" else "右" for a in away)}手不在站姿，'
                                           '先按 Stand 回站姿再錄')
         follow = self.real_following()
-        k = float(self.ready_cfg.get('real_z_comp', 0.17))
         # 實機跟隨開著時 moveit_bridge 自己會往上補；沒開就自己補，錄到的關節角才會跟實機要的一樣
-        comp = {a: 0.0 if follow else k * max(float(self.ready_pos[a][0]), 0.0) for a in rp.ARMS}
+        comp = {a: 0.0 if follow else rp.real_z_comp_cm(self.ready_cfg, self.ready_pos[a][0]) for a in rp.ARMS}
         src = rp.mirror_src(self.ready_cfg)        # 兩隻手共用一隻手的路線：只舉那隻手
         self._rec = [q0]
         try:
@@ -460,7 +460,7 @@ class ArmClient:
                 f'只有模擬：目標自己往上補了 {comp["left"]:.1f} cm（實機會低這麼多），所以模擬的 ready 會比設定的高')
         if src:
             note += f'。只錄了{"左" if src == "left" else "右"}手，另一隻手用同一條（鏡像），還在站姿，按 Ready 會一起走'
-        return f'錄好了：{rp.describe(paths, self.ready_speed)}。{note}。存在 {self.ready_file}'
+        return f'錄好了：{rp.describe(paths, self.ready_speed, self.ready_accel)}。{note}。存在 {self.ready_file}'
 
     def _path_go(self, task, kind, arms):
         """照錄好的路線走（kind = ready / stand）。走完（或本來就在）回 None；沒動（不能用）回原因；走到一半出錯丟 TaskError。"""
@@ -473,11 +473,16 @@ class ArmClient:
         paths = rp.plan(rec, q, arms, kind)
         if not paths:
             return None
-        names, P = rp.merge(paths)
-        P = rp.resample(P, rp.CHECK_STEP)
+        names, P0 = rp.merge(paths)
+        P = rp.prepare(P0)          # 磨圓（2026-11-26：折線每個轉角都減速，實機走起來一頓一頓的）
         hit = self._path_hits(task, names, P)
         if hit:
-            return hit
+            # 磨圓會切轉角、離東西近一點：會撞到就走原本的折線（轉角處會慢下來，跟以前一樣）
+            self.node.get_logger().info(f'磨圓的{hit}，改走原本的路線')
+            P = rp.resample(P0, rp.CHECK_STEP)
+            hit = self._path_hits(task, names, P)
+            if hit:
+                return hit
         self._exec_path(task, names, P, '回站姿（照錄好的路線）' if kind == 'stand' else '回預備姿勢（照錄好的路線）')
         return None
 
@@ -561,7 +566,7 @@ class ArmClient:
         from moveit_msgs.action import ExecuteTrajectory
         from moveit_msgs.msg import RobotTrajectory
         from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-        t, V = rp.time_path(P, self.ready_speed)
+        t, V = rp.time_path(P, self.ready_speed, accel=self.ready_accel, **rp.READY_TIMING)
         jt = JointTrajectory(joint_names=list(names))
         for q, v, ti in zip(P, V, t):
             ns = int(round(float(ti) * 1e9))
@@ -668,6 +673,7 @@ class HandClient:
         self.stale = cfg['timeouts']['hand_status_stale_s']
         self.pub = node.create_publisher(String, '/hand/cmd', 10)
         self._status = None        # (收到時間, dict)
+        self._base = {}            # 每隻手上次夾持的壓力零點（handpackage 開始閉合時的讀數）
         node.create_subscription(String, '/hand/status', self._cb, 10, callback_group=cb_group)
 
     def _cb(self, msg):
@@ -694,13 +700,31 @@ class HandClient:
                    'speed': self.cfg['open_spd'], 'position': self.cfg['open_pos']})
         task.sleep(self.cfg['open_wait_s'])
 
+    def pose(self, task, sides, which):
+        """ready／站姿時把手擺到設定的手勢（which = 'open_pos' / 'stand_pos'）。
+        離線的手跳過、不算失敗（例如 hands:=right 只開一隻手），回傳說明（全部擺好 = ''）。"""
+        done, skipped = [], []
+        for side in sides:
+            try:
+                self._check(side)
+            except TaskError as e:
+                skipped.append(f'{side}：{e.detail}')
+                continue
+            self._cmd({'cmd': 'manual', 'hand': side,
+                       'speed': self.cfg['open_spd'], 'position': self.cfg[which]})
+            done.append(side)
+        if done:
+            task.sleep(self.cfg['open_wait_s'])
+        return f'手勢沒改（{"；".join(skipped)}）' if skipped else ''
+
     def grip(self, task, side):
         """夾到壓力門檻才算抓到；'閉合到目標位置' = 整隻手握到底都沒碰到東西。"""
         self._check(side)
         t0 = time.monotonic()
         self._cmd({'cmd': 'grip', 'action': 'start', 'hand': side,
                    'mode': self.cfg['grip_mode'], 'threshold': self.cfg['grip_threshold'],
-                   'target': [0] * 6, 'timeout': self.cfg['grip_timeout_s']})
+                   'target': list(self.cfg.get('grip_target', [0] * 6)),
+                   'timeout': self.cfg['grip_timeout_s']})
 
         def grip_state():
             if self._status is None or self._status[0] <= t0:
@@ -712,6 +736,7 @@ class HandClient:
         g = task.wait_until(lambda: (lambda s: s if s and not s.get('active') else None)(grip_state()),
                             self.cfg['grip_timeout_s'] + 2.0, GRASP_FAILED, '夾持沒有結束')
         reason = g.get('reason', '')
+        self._base[side] = (g.get('base') or {}).get(side)
         if f'{side}: 壓力到門檻' not in reason:
             raise TaskError(GRASP_FAILED, f'沒夾到：{reason}')
         return reason
@@ -724,9 +749,11 @@ class HandClient:
             mass = (self._check(side)['hands'][side].get('mass')) or []
         finally:
             self._cmd({'cmd': 'touch', 'on': False})
-        total = sum(mass)
+        base = self._base.get(side) or [0] * len(mass)   # 扣掉夾持開始時的讀數（實機右手中指沒碰東西就 50 以上）
+        total = sum(m - b for m, b in zip(mass, base))
         if total < self.cfg['hold_min_mass']:
-            raise TaskError(GRASP_FAILED, f'抬起後沒夾住（壓力總和 {total} < {self.cfg["hold_min_mass"]}）')
+            raise TaskError(GRASP_FAILED, f'抬起後沒夾住（壓力總和 {total} < {self.cfg["hold_min_mass"]}，'
+                                          f'讀數 {list(mass)}、零點 {list(base)}）')
         return total
 
     def stop(self):
@@ -739,6 +766,9 @@ class DryHandClient:
 
     def open(self, task, side):
         task.sleep(self.cfg['step_s'])
+
+    def pose(self, task, sides, which):
+        return ''
 
     def grip(self, task, side):
         task.sleep(self.cfg['step_s'])

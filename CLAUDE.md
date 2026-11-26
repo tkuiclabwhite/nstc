@@ -394,6 +394,55 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
     離線（scratchpad scan_more／scan_ring）：右 18.9 前 28 b1 gap 3 補償開 19/20（45° 靠身體到不了），手指都朝前；前 24 也 19/20
     但手指偏 17～29°；前 12（b1 設定檔位置）21/25 但偏 20～100°；細的 b3 有幾步要離到 3.5～5 cm。假 bridge 錄→重播都過；
     重播 20 步約 44 秒（--hold 0）。
+  - **2026-11-26 手勢**（使用者實機：從瓶子上方抓瓶蓋，大拇指橫擺 250 抓不到，先 100、同日改 50）：`hand.open_pos` 改
+    `[250, 50, 250, 250, 250, 250]`（第 2 軸 = 大拇指橫擺），新增 `stand_pos` 全 250。HandClient.pose（離線的手跳過、只回說明）。
+    擺手勢的時機：ready 到位後 open_pos（任務第 0 步、網頁 Ready、錄 ready 路線之後）；抓前／放下／重試前照舊 open_pos；
+    網頁 Stand **先**擺 stand_pos 再下去（站姿附近一直是全張開，跟錄路線時一樣）。任務第 6 步回 ready 不動手（放下時已是 open_pos；
+    沒放置點時藥瓶還在手上）。`_holding` 記上一個沒放置點的任務藥瓶在哪隻手，ready／Stand 不改那隻。131 測試過。
+  - **2026-11-26 夾持**（使用者實機：門檻 50、目標 100 抓得到藥罐，低於 100 食指碰大拇指；目標 0 空抓會傷手、壓力不用那麼大）：
+    `grip_threshold` 250 → 50，新增 `grip_target` [100, 50, 100, 100, 100, 100]（大拇指橫擺維持 50；原本寫死在 HandClient.grip 的 [0]*6）。門檻是**每指各自**
+    （那根手指 40 格總和），不是五指總和；任一指到門檻就算夾到。`hold_min_mass` 100（五指總和）還沒跟著調，看實測。
+  - **2026-11-26 Ready/Stand 走起來一頓一頓**（使用者：「定速下小卡卡的」）：實機錄（`motion_probe.py`，在 .200 /tmp）：
+    馬達一直在轉（速度／平均 0.90～0.94、沒有停頓），最快一軸只到 0.51 rad/s（速度 50 上限 1.2），實機落後 0.2～0.3 秒
+    → 不是馬達 Profile Acceleration、也不是每顆馬達的 Profile Velocity，是 `time_path` 每個轉角都減速（掌心 0→25→9→22→13→32… cm/s）。
+    改：ready_path `smooth`（沿路程高斯 σ 5°、兩端奇對稱 = 起終點與方向不變）＋`prepare`；`time_path(corner_k, plateau_deg)`，
+    `READY_TIMING` = 轉角加速度 ×2（不超過 MAX_ACC）、轉角限速前後 15° 一起算——只用在照路線走（pose_demo 重播用預設 = 原本排法）。
+    `_path_go` 磨圓的會撞就走原本的折線（log「磨圓的路線第…，改走原本的路線」）。右手加 `adjust_cm.right.edge [-2, 0, 1]`
+    （桌角 3.4 → 5.5 cm，但 26～29% 離小桌子 3.5 → 2.9；全程最近仍是 12% 離小桌子 1.5，原本就有）。
+    離線（URDF）：一趟 9.3 → 8.05 秒、掌心起伏 6 → 3 次（只有左手 adjust 時 7.3 秒、1 次），掌心偏離原路線 ≤ 1.1 cm、離加厚物體不比原路線近。
+    使用者說右手碰到東西是拍攝貼的板子，不用管。U2D2 latency_timer 已是 1 ms（udev 規則）；馬達 Return Delay Time 還是出廠 250（500 µs），沒改。
+    **20:05 同步後被另一邊用舊檔整份蓋掉**（adapters.py 20:05、task_manager.yaml／CLAUDE.md 20:17，對方加 grip_target 時）→ 使用者 20:13 之後
+    測的都是舊走法（log 沒有「磨圓」）。20:4x 以 .200 當時版本為底重新套上。**改 .200 的檔案前一定要先拉 .200 最新版，不要用自己手上的舊檔整份蓋**。
+  - **2026-11-26 下垂補償改小**（使用者：「右手好像灌水」，前 25.4 目標離桌 15 → 尺量 17.9；使用者說「直接改」moveit_bridge）：
+    照馬達讀數 18.1（到位紀錄 #950：模擬比目標高 4.3、實機比模擬低 1.2）→ 看不到的機構下垂只剩 0.2，0.17 × 前（11-11 定的，當時
+    看不到的部分有 0.12 × 前）已經補太多。改成 **0.14 ×（前 − 14.5）**（11-19 四點擬合，11-26 這點算 1.5、實際 1.4）：
+    moveit_bridge `REAL_Z_COMP` 0.14 + 新增 `REAL_Z_FROM` 14.5；任務管理 `ready_pose.real_z_comp` 0.14 + `real_z_from_cm` 14.5，
+    公式集中在 `ready_path.real_z_comp_cm`（adapters sim_z_comp、錄 ready、pose_demo make_z_comp 都用它），單元測試檢查兩邊數字一樣。
+    影響：前 25 補 4.3 → 1.5、前 41（tray）7.0 → 3.8、前 50 8.5 → 5.0。11-19 的 ready 路線、pose_demo 的錄影（poses.json）是用 0.17 錄的
+    （補償在關節角裡），ready 會比設定的高約 3 cm（不用重錄）；可及範圍表是用 0.17 量的，最遠那格可能差 1～2 cm。前 40 以上只量過 1 點，要再量。
+    .200 改前備份 `~/backup_20261126_ready_smooth/`（19:58 的狀態）、`~/backup_20261126_z_comp/`（20:4x 的狀態），使用者確認後刪。136 測試過；**實機還沒測**。
+  - **速度感（2026-11-26 使用者問：速度上限真的是 50？馬達沒這麼慢）**：50 是 real_arm_bridge 的 `MAX_SPEED`（手臂負責人定，1.2 rad/s）；
+    馬達 Velocity Limit：XM540-W270 128（3.1 rad/s）、XH540-W270 167（4.0 rad/s）（self_check latest.json）；MoveIt joint_limits 2.38 rad/s、
+    加速度 1.0 rad/s²。**卡的是加速度不是速度**：照路線走用 MoveIt 的慣例「加速度 = 1.0 × 速度倍率」= 0.5 rad/s²，最快一軸只到上限的 37%；
+    速度 80 也只 8.05 → 7.7 秒，加速度 1.5 → 6.2 秒、2.0 → 5.4 秒（路線長 132°、轉角多，直線理想 2.5～4.3 秒）。
+    一般移動（moveit_bridge，速度 30）加速度只有 0.30 rad/s²（line 1591 速度、加速度倍率同一個）。
+    使用者同意（21:0x）→ `ready_pose.accel: 1.5`（`time_path(accel=)`，轉角也用它；沒寫 = 跟著速度縮）：Ready 8.05 → 6.21、
+    Stand 8.01 → 6.18 秒，最快一軸 0.63 rad/s。一般移動（moveit_bridge）沒改。備份 `~/backup_20261126_accel/`。137 測試過；**實機還沒測**。
+  - 21:0x 使用者回報補償改了還是差 2、左手更多：**moveit_bridge 從 14:39 跟 nstc.launch 一起開、沒重開**（只重開了 task_manager），
+    還在用 0.17（模擬停在離桌 19.3 = 15 + 4.3）。bridge 沒參數、不會自己動手臂，可以單獨重開：
+    `pkill -f moveit_bridge.py` 再 `ros2 run armpackage moveit_bridge.py --ros-args -r __node:=moveit_bridge`。
+  - **move_group 洗版的 WARN（2026-11-26，使用者選「只讓 move_group 不印」）**：「Unable to transform object from frame 'zed_…' to
+    planning frame 'base_link'」= ZED 的 zed_camera_link 那棵 TF 沒接到 base_link（接的人是 bottle_localization 開的相機 TF，
+    `dry_run:=vision` 沒開影像、或頭部馬達沒上電時就斷開），move_group 每次更新場景對 6 個座標系各印一次（14:39 開機到 21:16 印了 28802 次）。
+    對手臂沒影響。改手臂負責人的 `seven_axis_arm_moveit_config/launch/move_group.launch.py`：照 Humble generate_move_group_launch 原樣抄，
+    只多 `ros_arguments` 讓 `moveit_ros.planning_scene_monitor.planning_scene_monitor` 只印 ERROR（QUIET_LOGGERS）。.200 上驗過：
+    launch 解析出兩個 move_group 節點都帶參數、rcl 的具名 logger 等級有效（WARN 擋、ERROR 照印、別的 logger 不受影響）。
+    symlink 安裝不用重編，要整個 nstc.launch 重開才生效。備份 `~/backup_20261126_movegroup_log/`。
+  - **2026-11-26 同日再改**：大拇指橫擺 `open_pos`／`grip_target` 改 20（要對準掌心），`grip_mode` each → **any**。
+    **網頁夾持「某幾根手指不動」**：.11 log（~/.ros/log python3_138430_*）any 門檻 50 時 9 次都在 0.03 秒內結束、原因「壓力到門檻（middle）」
+    ＝右手中指沒碰東西就讀 ≥ 50，any 一根到門檻整隻手凍結。改 **handpackage 加壓力零點**：wait_touch → closing 那一刻記
+    `grip.base[side]`（log「壓力零點」、/hand/status grip.base），門檻與 hold 模式都看「讀數 − 零點」。smoke_grip 加情境 18（18 組 61 項全過，
+    本機 ROS_DOMAIN_ID=87 跑）。HandClient.holding 也扣零點（錯誤訊息附讀數、零點）。中指為什麼有讀數（感測器偏移或碰到拇指）沒查。
 
 ## 還沒做的
 
@@ -407,3 +456,8 @@ collision／plan_failed／exec_failed／canceled／moveit_down／internal）。�
 6. 取放結果目前只在 result.message，沒有存檔（文件 S3-03「記錄取放結果」未完成）。
    使用者 2026-11-17 列為之後再做的：重試前先退開再辨識、放下後確認藥瓶放好、失敗或取消後的收尾。
 7. bottle_localization、med_detect 不是使用者負責的，沒驗證過；URDF 原點對齊是 URDF 負責人的事，不管。
+8. **桌緣位置對不上（2026-11-26 發現，還沒決定）**：影像那邊 11/25 實量 base_link 到桌緣 13.4 cm（右肩垂線到桌緣 14.8 − 肩在
+   base_link 後 1.375，寫在 web/js/vision_core.js、camera_extrinsics.yaml 的註解），task_manager.yaml `table.edge_from_base_link_cm`
+   還是 12.0（11/18 看網頁三軸定的）。差 1.4：假藥瓶、ready pose、workspace 表都是桌面座標，實機手會比尺量的位置近 1.4。
+   改成 13.4 的話：ready 點往前 1.4 → 錄的路線失效要重錄；workspace 表要各減 1.4 才代表同一個實際位置；tray（量測座標）不動。
+   在決定之前，真瓶子手測時擺在尺量前 10.6（= 設定的前 12）。

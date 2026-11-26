@@ -3,7 +3,7 @@
 """夾持迴路測試：假扮兩隻 O6（state / info / 壓力），觀察節點送出的位置命令。
 
 不需要真的手。壓力值由測試直接設定（不做物理模擬），門檻跨越的時機才完全可控。
-涵蓋 17 組情境 / 56 項檢查：離線與無壓感時拒絕啟動、等不到壓力資料時絕對不動手、
+涵蓋 18 組情境 / 61 項檢查：離線與無壓感時拒絕啟動、等不到壓力資料時絕對不動手、
 each / any / anyhand / hold 四種模式、拇指兩軸共用壓力、釋放邊界、逾時、
 壓力中斷、過溫、手動介入、緊急停止、壓感訂閱的生命週期。
 
@@ -387,6 +387,22 @@ after = sim.p_mass['left'].get_subscription_count()
 chk('夾持前沒訂閱', before == 0, f'count={before}')
 chk('夾持中有訂閱', during >= 1, f'count={during}')
 chk('夾持後退訂', after == 0, f'count={after}')
+
+print('\n=== 18. 壓力零點：開始時就有讀數的手指不會一開始就觸發（2026-11-26 實機右手中指）===')
+sim.clear(); sim.mass['left'][2] = 80; sim.mass['right'][2] = 80   # 沒碰東西就讀 80，比門檻 50 大
+grip(mode='any', threshold=50, release_margin=80, step=3, target=[0]*NJ)
+chk('有進入閉合', wait_closing())
+p3 = sim.pos['left'][3]
+wait(0.5)
+chk('零點之後還在夾', gstat().get('active') is True, str(gstat().get('reason')))
+chk('中指軸繼續閉合', sim.pos['left'][3] < p3, f'{p3} -> {sim.pos["left"][3]}')
+chk('status 有零點', (gstat().get('base') or {}).get('left', [None] * 5)[2] == 80,
+    str(gstat().get('base')))
+sim.mass['left'][2] = 140          # 比零點多 60 ≥ 50 → 觸發
+wait(0.5)
+fr = last_active().get('frozen', {}).get('left', [])
+chk('比零點多到門檻才凍結（any：整隻手）', len(fr) == NJ and all(fr), str(fr))
+stop_all(); sim.reset(); wait(0.5)
 
 print('\n' + ('全部通過' if not fails else f'{len(fails)} 項失敗:\n  - ' + '\n  - '.join(fails)))
 # spin 在 daemon thread 裡還在跑，正常 shutdown 會讓 rclpy 的 C++ 端抱怨

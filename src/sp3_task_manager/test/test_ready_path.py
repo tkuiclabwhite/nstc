@@ -142,3 +142,107 @@ def test_adjust_shifts_palm():
         assert np.allclose(p1 - p0, edge * we[i] + end * wn[i], atol=2e-4)
         assert np.linalg.norm(rp._rotvec(R1 @ R0.T)) < 2e-3
     assert we.max() == pytest.approx(1.0) and we[-1] == 0 and wn[-1] == 1
+
+
+def stairs(n=6, step=8.0):
+    """站姿往外走的階梯（第 1、2 軸輪流各轉 step°）：轉角很多的折線，像 MoveIt 規劃出來的路線。"""
+    pts, q = [np.zeros(7)], np.zeros(7)
+    for i in range(n):
+        q = q.copy()
+        q[i % 2] += D(step)
+        pts.append(q)
+    return rp.resample(np.array(pts))
+
+
+def test_smooth_keeps_ends_rounds_corners():
+    P = stairs()
+    Q = rp.smooth(P)
+    assert np.allclose(Q[0], P[0]) and np.allclose(Q[-1], P[-1])
+    # 兩端的方向不變（奇對稱延伸）：起點往第 1 軸走、終點從第 2 軸進來
+    d0, d1 = Q[1] - Q[0], Q[-1] - Q[-2]
+    assert abs(d0[0]) > 5 * abs(d0[1]) and abs(d1[1]) > 5 * abs(d1[0])
+    # 轉角磨掉了（不會再經過折點），但離原路線不遠（σ 5°、每段 8°）
+    corner = P[np.argmin(np.abs(rp.arc(P) - D(16)))]           # 第 2 個折點 = (16°, 8°)
+    gap = np.abs(Q - corner).max(axis=1).min()
+    assert D(0.3) < gap < D(4.0)
+    # 細切過的：點距約 SMOOTH_FINE，prepare 之後每 CHECK_STEP 一點
+    assert np.abs(np.diff(Q, axis=0)).max() <= rp.SMOOTH_FINE * 1.01
+    R = rp.prepare(P)
+    assert np.abs(np.diff(R, axis=0)).max(axis=1).max() <= rp.CHECK_STEP + 1e-9
+    assert np.allclose(R[0], P[0]) and np.allclose(R[-1], P[-1])
+
+
+def test_smooth_short_paths():
+    one = np.zeros((1, 7))
+    two = np.vstack([np.zeros(7), np.full(7, D(1))])
+    assert np.allclose(rp.smooth(one), one) and np.allclose(rp.smooth(two), two)
+    short = rp.resample(np.vstack([np.zeros(7), [D(1), 0, 0, 0, 0, 0, 0], [D(1), D(1), 0, 0, 0, 0, 0]]), D(0.5))
+    Q = rp.smooth(short)                                        # 比 σ 短很多也不會出錯
+    assert np.allclose(Q[0], short[0]) and np.allclose(Q[-1], short[-1]) and np.all(np.isfinite(Q))
+
+
+def dips(t, V):
+    """最快那一軸的速度在中間掉下去又加速幾次（局部最低點，掉 10% 以上才算）。"""
+    v = np.abs(V).max(axis=1)
+    n = 0
+    for i in range(1, len(v) - 1):
+        if v[i] < v[i - 1] and v[i] <= v[i + 1]:
+            left, right = v[:i].max(), v[i + 1:].max()
+            if v[i] < 0.9 * min(left, right):
+                n += 1
+    return n
+
+
+def test_ready_timing_smoother():
+    P = stairs()
+    t0, V0 = rp.time_path(rp.resample(P, rp.CHECK_STEP), 50)             # 原本的：每個轉角都減速
+    R = rp.prepare(P)
+    t1, V1 = rp.time_path(R, 50, **rp.READY_TIMING)
+    v_max, _ = rp.limits(50)
+    assert dips(t0, V0) >= 3 and dips(t1, V1) <= 1
+    assert t1[-1] < t0[-1]
+    assert np.all(np.diff(t1) > 0)
+    assert np.abs(V1).max() <= v_max * 1.05
+    assert np.allclose(V1[0], 0) and np.allclose(V1[-1], 0)
+    acc = np.abs(np.diff(V1, axis=0) / np.diff(t1)[:, None]).max()
+    assert acc <= rp.MAX_ACC * 1.15                                      # 有限差分的誤差
+    # 預設參數 = 原本的排法（pose_demo 重播用）
+    t2, V2 = rp.time_path(rp.resample(P, rp.CHECK_STEP), 50, corner_k=1.0, plateau_deg=0.0)
+    assert np.allclose(t2, t0) and np.allclose(V2, V0)
+
+
+def test_real_z_comp_formula():
+    cfg = CFG['ready_pose']
+    assert rp.real_z_comp_cm(cfg, 10.0) == 0.0                      # 前 14.5 以內不補
+    assert rp.real_z_comp_cm(cfg, 25.4) == pytest.approx(0.14 * (25.4 - 14.5))   # 11-26 實量：要補 ≈ 1.4
+    assert 1.2 < rp.real_z_comp_cm(cfg, 25.4) < 1.8
+    assert rp.real_z_comp_cm({}, 50.0) == pytest.approx(0.14 * 35.5)   # 沒設定 = 預設同一組
+
+
+def test_real_z_comp_matches_moveit_bridge():
+    """moveit_bridge 的 REAL_Z_COMP、REAL_Z_FROM 跟設定檔要一樣（任務管理只看模擬時自己補、pose_demo 算實機位置都靠這個）。"""
+    import re
+    src = os.path.join(os.path.dirname(__file__), '..', '..', 'armpackage', 'armpackage', 'scripts', 'moveit_bridge.py')
+    if not os.path.exists(src):
+        pytest.skip('找不到 moveit_bridge.py')
+    text = open(src, encoding='utf-8').read()
+    k = float(re.search(r'^REAL_Z_COMP\s*=\s*([0-9.]+)', text, re.M).group(1))
+    f0 = float(re.search(r'^REAL_Z_FROM\s*=\s*([0-9.]+)', text, re.M).group(1))
+    assert k == pytest.approx(CFG['ready_pose']['real_z_comp'])
+    assert f0 == pytest.approx(CFG['ready_pose']['real_z_from_cm'])
+
+
+def test_time_path_accel_override():
+    """ready_pose.accel：加速度不跟著速度縮。比較快，但加速度、速度都不超過上限。"""
+    R = rp.prepare(stairs())
+    t0, V0 = rp.time_path(R, 50, **rp.READY_TIMING)
+    t1, V1 = rp.time_path(R, 50, accel=1.5, **rp.READY_TIMING)
+    t2, V2 = rp.time_path(R, 50, accel=None, **rp.READY_TIMING)
+    assert np.allclose(t2, t0) and np.allclose(V2, V0)               # None = 原本的
+    assert t1[-1] < 0.9 * t0[-1]
+    v_max, _ = rp.limits(50)
+    assert np.abs(V1).max() <= v_max * 1.05
+    acc = np.abs(np.diff(V1, axis=0) / np.diff(t1)[:, None]).max()
+    assert acc <= 1.5 * 1.15
+    assert np.allclose(V1[0], 0) and np.allclose(V1[-1], 0)
+    assert rp.describe({'left': stairs(), 'right': stairs()}, 50, 1.5).endswith('（速度 50）')

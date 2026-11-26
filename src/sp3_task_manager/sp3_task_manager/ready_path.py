@@ -6,8 +6,8 @@
   錄：手在站姿，用 /arm_move 照舊一隻一隻舉到 ready（moveit_bridge 規劃、每 1.5° 檢查過碰撞），途中記 MoveIt 的 /joint_states，
       左右手各自的路線存成檔案（ready_pose.path_file）。
   走：站姿 → ready = 兩隻手各照自己的路線、按「走了幾成」同步，排成一條 14 軸軌跡一起走（MoveIt /execute_trajectory，
-      同 moveit_bridge 回站姿的做法）；ready → 站姿 = 倒過來走。走之前每 1.5° 問 MoveIt 會不會撞到（場景可能變了），
-      會撞到就不走、改用原本的方法。
+      同 moveit_bridge 回站姿的做法）；ready → 站姿 = 倒過來走。走之前把折線磨圓（smooth，2026-11-26），
+      每 1.5° 問 MoveIt 會不會撞到（場景可能變了）：磨圓的會撞到就改走原本的折線，也會撞到就不走、改用原本的方法。
   手不在站姿也不在 ready（例如放完藥瓶）：先每顆馬達直接轉到 ready（一樣檢查碰撞），要回站姿就再接倒過來的路線。
 """
 import datetime
@@ -28,10 +28,28 @@ AT_TOL = np.radians(2.0)        # 每軸跟某個姿勢差這麼多以內，算�
 RAD_PER_SEC_PER_SPEED = 0.229 * 2 * np.pi / 60
 MAX_VEL = 2.3824
 MAX_ACC = 1.0
+# 照路線走之前先磨圓、排時間時轉角不要每個都慢下來（2026-11-26 使用者：實機 Stand↔Ready「小卡卡的」）。
+# 錄到的是 MoveIt 規劃的折線，轉角很多；原本每個轉角都減速，速度 50 時加速度只有 0.5 rad/s²，一趟 8.7 秒
+# 掌心忽快忽慢 6 次（0→25→9→22→13→32→21→26→6 cm/s…），從來沒有定速；最快一軸只到 0.51 rad/s（上限 1.2）。
+# 實機錄的（motion_probe）：馬達一直在轉（速度 = 平均的 0.9 以上、沒有停頓），所以不是馬達 Profile 的問題，是軌跡本身。
+# 離線算（11/26 的路線）：σ 5° 磨圓 + 轉角加速度 ×2 + 轉角限速前後 15° 一起算 → 7.3 秒、只剩 1 次加減速，
+# 掌心離原路線最多 1.1 cm，最快一軸加速度最大 0.99 rad/s²（joint_limits 1.0）。
+SMOOTH_DEG = 5.0                    # 磨圓：沿路程的高斯濾波 σ（最快那一軸轉幾度）
+SMOOTH_FINE = np.radians(0.25)      # 濾波前先細切成這個點距
+READY_TIMING = {'corner_k': 2.0, 'plateau_deg': 15.0}   # 照路線走（站姿 ↔ ready）的排時間方式，見 time_path
 
 
 def joint_names(arm):
     return [PREFIX[arm] + s for s in JOINT_SUFFIX]
+
+
+def real_z_comp_cm(rp_cfg, front_cm):
+    """實機跟隨開著時 moveit_bridge 把模擬的目標往上補多少 cm（同 moveit_bridge REAL_Z_COMP、REAL_Z_FROM，要一起改）：
+    設定檔 ready_pose.real_z_comp ×（前 − real_z_from_cm），前 = 量測座標的「前」（cm）。
+    2026-11-26 從 0.17 × 前 改成 0.14 ×（前 − 14.5）：0.17 補太多（前 25 實機高 2.9 cm，見 CLAUDE.md）。"""
+    k = float(rp_cfg.get('real_z_comp', 0.14))
+    f0 = float(rp_cfg.get('real_z_from_cm', 14.5))
+    return k * max(float(front_cm) - f0, 0.0)
 
 
 def arc(P):
@@ -92,17 +110,52 @@ def limits(speed):
     return v, MAX_ACC * min(v / MAX_VEL, 1.0)
 
 
-def time_path(P, speed):
+def smooth(P, sigma_deg=SMOOTH_DEG):
+    """路線（N×k）沿路程做高斯濾波（σ = sigma_deg，最快那一軸轉的度數），把折線的轉角磨圓。
+    起點、終點不動，兩端的方向也不變（兩端用奇對稱延伸）。回傳細切的路線（點距約 SMOOTH_FINE），用之前再 resample。
+    磨圓會切轉角，離東西可能近一點，走之前一樣要做碰撞檢查。"""
+    P = np.asarray(P, float)
+    s = arc(P)
+    if len(P) < 3 or s[-1] <= 0 or sigma_deg <= 0:
+        return P
+    n = int(np.ceil(s[-1] / SMOOTH_FINE)) + 1
+    u = np.linspace(0.0, s[-1], n)
+    Q = np.column_stack([np.interp(u, s, P[:, j]) for j in range(P.shape[1])])
+    sig = min(np.radians(sigma_deg) / (s[-1] / (n - 1)), (n - 1) / 4.0)   # 單位：點；路線太短時 σ 跟著縮
+    k = int(np.ceil(4 * sig))
+    w = np.exp(-0.5 * (np.arange(-k, k + 1) / sig) ** 2)
+    w /= w.sum()
+    Z = np.vstack([2 * Q[0] - Q[1:k + 1][::-1], Q, 2 * Q[-1] - Q[-k - 1:-1][::-1]])
+    return np.column_stack([np.convolve(Z[:, j], w, mode='valid') for j in range(Z.shape[1])])
+
+
+def prepare(P):
+    """照路線走之前：磨圓、每 CHECK_STEP 一點（碰撞檢查、排時間都用這組點）。"""
+    return resample(smooth(P), CHECK_STEP)
+
+
+def time_path(P, speed, corner_k=1.0, plateau_deg=0.0, accel=None):
     """關節角清單（N×k，點距要細）排時間：起點、終點速度 0，最快那一軸不超過 speed，加減速不超過對應的加速度。
-    跟 moveit_bridge.time_path 同一個做法（轉角處先慢下來）。回傳 (各點時間 s, 各點關節速度 N×k)。"""
+    預設跟 moveit_bridge.time_path 同一個做法（轉角處先慢下來）。回傳 (各點時間 s, 各點關節速度 N×k)。
+    corner_k：轉角處允許的加速度是幾倍（不超過 joint_limits 的 MAX_ACC）；plateau_deg：轉角限速往前後各延伸這麼多度、
+    取範圍內最慢的，連續幾個轉角時維持定速，不會每個轉角都減速再加速。照路線走用 READY_TIMING（pose_demo 重播用預設）。
+    accel：加速度上限（rad/s²），None = 跟著速度縮（limits，MoveIt 的慣例）；給了就不跟速度綁在一起、轉角也用這個。"""
     P = np.asarray(P, float)
     v_max, a_max = limits(speed)
+    if accel:
+        a_max = float(accel)
     ds = np.maximum(np.abs(np.diff(P, axis=0)).max(axis=1), 1e-9)
     v = np.full(len(P), v_max)
     if len(P) > 2:
         d = np.diff(P, axis=0) / ds[:, None]
         turn = np.abs(np.diff(d, axis=0)).max(axis=1)
-        v[1:-1] = np.minimum(v[1:-1], np.sqrt(a_max * np.minimum(ds[:-1], ds[1:]) / np.maximum(turn, 1e-9)))
+        a_turn = min(corner_k * a_max, max(a_max, MAX_ACC))
+        v[1:-1] = np.minimum(v[1:-1], np.sqrt(a_turn * np.minimum(ds[:-1], ds[1:]) / np.maximum(turn, 1e-9)))
+        if plateau_deg > 0:
+            s = np.concatenate([[0.0], np.cumsum(ds)])
+            w = np.radians(plateau_deg)
+            lo, hi = np.searchsorted(s, s - w, 'left'), np.searchsorted(s, s + w, 'right')
+            v = np.array([v[a:b].min() for a, b in zip(lo, hi)])
     v[0] = v[-1] = 0.0
     for i in range(len(P) - 1):                     # 往前：從 0 加速
         v[i + 1] = min(v[i + 1], np.sqrt(v[i] ** 2 + 2 * a_max * ds[i]))
@@ -249,10 +302,10 @@ def apply_adjust(rec, rp_cfg, shape, frames):
     return out
 
 
-def describe(paths, speed):
+def describe(paths, speed, accel=None):
     """給人看：每隻手轉多少度、一起走要幾秒。"""
     names, P = merge(paths)
-    t, _ = time_path(resample(P, SAVE_STEP), speed)
+    t, _ = time_path(prepare(P), speed, accel=accel, **READY_TIMING)
     each = '、'.join(f'{"左" if a == "left" else "右"}手 {np.degrees(arc(paths[a])[-1]):.0f}°' for a in ARMS if a in paths)
     return f'{each}，兩隻手一起走約 {t[-1]:.1f} 秒（速度 {speed:g}）'
 

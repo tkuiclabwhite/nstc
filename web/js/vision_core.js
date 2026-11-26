@@ -18,7 +18,7 @@
         //   原點 = 桌緣（靠機器人那一邊）上、正對 base_link 左右中線的點，高度 = 桌面；[右, 前, 上] cm
         //   右 = −y×100、前 = x×100 − 桌緣離 base_link、上 = z×100 − 桌面在 base_link 的高度
         table: {
-            edge_from_base_link_cm: 12.0,   // table.edge_from_base_link_cm
+            edge_from_base_link_cm: 13.4,   // 2026-11-25 實量：右肩垂線到桌緣 14.8 − 肩在 base_link 後 1.375（task_manager.yaml 當時仍是 12.0）
             top_z_cm: -39.0,                // 120.2（frames.height_offset_cm）− 81.2（table.top_cm）= 39.0 cm 在 base_link 下方
             depth_cm: 75.0,                 // table.depth_cm
             width_cm: 150.0,                // table.width_cm

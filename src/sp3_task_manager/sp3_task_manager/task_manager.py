@@ -91,6 +91,7 @@ class TaskManager(Node):
         self._gh = None
         self._deadline = float('inf')
         self._arm_used = None
+        self._holding = None         # 上一個任務沒給放置點、藥瓶還在哪隻手上（ready／站姿不改那隻手的手勢）
         self._others = []            # 這次任務的其他藥瓶（場景用）
         self._test_cancel = False   # 網頁測試區按了取消
 
@@ -316,15 +317,17 @@ class TaskManager(Node):
             if c['cmd'] == 'stand':
                 self._test_status('回站姿')
                 self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))   # 場景先放桌子、小桌子再動
-                text = f'回到站姿（{self.arm.stand(self)}）'
+                note = self._hands_to('both', 'stand_pos')     # 先張開再下去：站姿附近一直是全張開（錄路線時也是）
+                text = f'回到站姿（{self.arm.stand(self)}）{note}'
             elif c['cmd'] == 'ready':
                 self._test_status(f'回預備姿勢（{c["arm"]}）')
                 self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
                 text = f'回到預備姿勢（{self.arm.ready(self, c["arm"])}）'
+                text += self._hands_to(c['arm'], 'open_pos')
             elif c['cmd'] == 'record_ready':
                 self._test_status('錄 ready 路線：左手、右手依序舉到 ready')
                 self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
-                text = self.arm.record_ready(self)
+                text = self.arm.record_ready(self) + self._hands_to('both', 'open_pos')
             elif c['cmd'] == 'move':
                 tf = try_cmd.both_frames(c['pos_cm'], self.cfg)['table']
                 self._test_status(f'移到 桌面 右 {tf[0]}、前 {tf[1]}、上 {tf[2]}（{c["arm"]}、{c["approach"]}）')
@@ -429,7 +432,7 @@ class TaskManager(Node):
         self._feedback(0, 0, '回預備姿勢')
         self.arm.set_speed()
         self.arm.set_obstacles(self, grasp_plan.scene(self.cfg, []))
-        self.get_logger().info(f'[{g.task_id}] 回到預備姿勢：{self.arm.ready(self)}')
+        self.get_logger().info(f'[{g.task_id}] 回到預備姿勢：{self.arm.ready(self)}{self._hands_to("both", "open_pos")}')
         for retry in range(max_retry + 1):
             try:
                 poses, size = self._pick(g, retry)
@@ -458,6 +461,7 @@ class TaskManager(Node):
 
         self._feedback(6, 0, '回預備姿勢')      # 任務之間停在 ready，收工才按 Stand
         self.get_logger().info(f'[{g.task_id}] 回到預備姿勢：{self.arm.ready(self)}')
+        self._holding = None if g.place_target else poses.arm
         held = '' if g.place_target else '（沒有放置點，藥瓶還在手上）'
         return f'{poses.arm} 手 {g.bottle_class} → {g.place_target or "—"}{held}'
 
@@ -504,6 +508,8 @@ class TaskManager(Node):
             try:
                 for h in hands:
                     self.hand.open(self, h)
+                    if h == self._holding:      # 上一個任務留在手上的藥瓶在這裡放掉了
+                        self._holding = None
                 arm = self.arm.move(self, plans[hands[0]].pregrasp, plans[hands[0]].approach,
                                     choice, '移到預抓位置')
                 break
@@ -525,6 +531,13 @@ class TaskManager(Node):
         self.arm.move(self, poses.lift, poses.approach, arm, '抬起')
         self.hand.holding(self, arm)
         return poses, size
+
+    def _hands_to(self, arm, which):
+        """ready 到位後擺 open_pos（大拇指橫擺 100，抓瓶蓋用）、回站姿前擺 stand_pos（全張開）。
+        手上還有藥瓶的那隻不動。回傳附加說明（給 log／測試結果）。"""
+        sides = [s for s in (('left', 'right') if arm == 'both' else (arm,)) if s != self._holding]
+        note = self.hand.pose(self, sides, which)
+        return f'；{note}' if note else ''
 
     def _back_off(self):
         """重試前：剛剛用的那隻手張開。手臂留在原地，下一輪會先移到預抓位置。"""
